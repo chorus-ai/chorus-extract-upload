@@ -1,4 +1,4 @@
-# chorus_upload
+# chorus-extract-upload
 Scripts and tools for organizing uploads to the CHoRUS central data repository
 
 ## Site-Specific Upload Environments
