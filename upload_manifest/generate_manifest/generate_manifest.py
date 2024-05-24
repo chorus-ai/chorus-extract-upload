@@ -9,11 +9,13 @@ import pandas as pd
 
 # TODO: DONE - Remove registry
 # TODO: DONE - Change schema of files to include modtime, filesize
-# TODO: Change matching to look at all three (name, time, size) 
-# TODO: calculate MD5 for all non-matching files
-# TODO: DONE Set "ready-to-sync" field for all non-matches
-# TODO: Update to use paths instead of filenames
+# TODO: DONE - Change matching to look at all three (name, time, size) 
+# TODO: DONE - calculate MD5 for all non-matching files
+# TODO: DONE - Set "ready-to-sync" field for all non-matches
+# TODO: DONE - Update to use paths instead of filenames
 # TODO: Datetime format
+# TODO: Add waveform/image option, put all tables in same db file
+# TODO: OMOP option with slightly different gen/update logic
 
 # QUESTION: Datetimes local or unix?
 
@@ -35,15 +37,16 @@ def gen_manifest(folderpath, databasename="journal.db"):
     cur.execute("CREATE TABLE IF NOT EXISTS manifest(\
                 FILE_ID INTEGER NOT NULL PRIMARY KEY, \
                 PERSON_ID INTEGER, \
-                FILENAME TEXT, \
+                FILEPATH TEXT, \
                 MODTIME TEXT, \
                 SIZE INTEGER, \
                 MD5 TEXT, \
                 TIME_VALID TEXT, \
                 TIME_INVALID TEXT, \
-                SYNC_READY INTEGER)")
-        
-    globpath = os.path.join(folderpath, "*", "Waveforms","*")
+                SYNC_READY INTEGER)")  
+    curfolder = os.getcwd()
+    os.chdir(folderpath)
+    globpath = os.path.join("*", "Waveforms","*")
     # print(globpath)
     paths = glob.glob(globpath)
     # print(paths[0])
@@ -54,7 +57,7 @@ def gen_manifest(folderpath, databasename="journal.db"):
     for i_path, path in enumerate(paths):
         # print(path)
         pathstem = os.path.split(path)[0]
-        filename = os.path.split(path)[1]
+        # filename = os.path.split(path)[1]
         personid = os.path.split(os.path.split(pathstem)[0])[1]
         statinfo = os.stat(path)
         filesize = statinfo.st_size
@@ -65,11 +68,12 @@ def gen_manifest(folderpath, databasename="journal.db"):
         # myargs = (i_path, personid,i_path, mydate,mytime, "",1)
         # print(myargs)
         # print([type(item) for item in myargs])        
-        myargs = (i_path, personid,filename,moddt_string,filesize, mymd5,dt_string, None,1)
+        myargs = (i_path, personid,path,moddt_string,filesize, mymd5,dt_string, None,1)
         cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
 
     con.commit() 
     con.close()
+    os.chdir(curfolder)
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
 def update_manifest(folderpath, databasename="journal.db"):
@@ -81,7 +85,9 @@ def update_manifest(folderpath, databasename="journal.db"):
 
     cur = con.cursor()
 
-    globpath = os.path.join(folderpath, "*", "Waveforms","*")
+    curfolder = os.getcwd()
+    os.chdir(folderpath)
+    globpath = os.path.join("*", "Waveforms","*")
     # print(globpath)
     paths = glob.glob(globpath)
     # print(paths[0])
@@ -107,7 +113,7 @@ def update_manifest(folderpath, databasename="journal.db"):
     for i_path, path in enumerate(paths):
         # print(path)
         pathstem = os.path.split(path)[0]
-        filename = os.path.split(path)[1]
+        # filename = os.path.split(path)[1]
         personid = os.path.split(os.path.split(pathstem)[0])[1]
         statinfo = os.stat(path)
         filesize = statinfo.st_size
@@ -116,11 +122,12 @@ def update_manifest(folderpath, databasename="journal.db"):
         moddt_string = moddatetime.strftime("%Y%m%d_%H%M%S")
         
 
-        # query files for filename
-        filecheckrow = cur.execute("Select file_id, md5 from manifest where filename=? and modtime=? and size=? and TIME_INVALID IS NULL",(filename,moddt_string,filesize))
+        # query files by filename, modtime, and size
+        filecheckrow = cur.execute("Select file_id, md5 from manifest where filepath=? and modtime=? and size=? and TIME_INVALID IS NULL",(path,moddt_string,filesize))
         results = filecheckrow.fetchall()
+        # There should only be 1 active file according to the path in a well-formed 
         if len(results) > 1:
-            print("Multiple active files with that filename - can't compare to old files")
+            print("Multiple active files with that path - can't compare to old files")
             print("Exiting update...")
             return
         elif len(results) == 1:
@@ -145,7 +152,7 @@ def update_manifest(folderpath, databasename="journal.db"):
         # if DNE, add new file
         else:
             mymd5 = hashlib.md5(open(path, 'rb').read()).hexdigest()
-            myargs = (i_file, personid,filename,moddt_string,filesize, mymd5,dt_string, None,1)
+            myargs = (i_file, personid,path,moddt_string,filesize, mymd5,dt_string, None,1)
             cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
             i_file += 1
 
@@ -158,3 +165,4 @@ def update_manifest(folderpath, databasename="journal.db"):
 
     con.commit() 
     con.close()
+    os.chdir(curfolder)
