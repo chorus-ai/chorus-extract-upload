@@ -3,13 +3,8 @@ import sqlite3
 import os
 import glob
 import hashlib
-from datetime import datetime, timezone
 import pandas as pd
 import time
-
-#registry will only hold target files
-# upload will need to handle source and target(transformed) files.
-# source to target transform may be m to n.
 
 
 # TODO: DONE - Remove registry
@@ -23,6 +18,26 @@ import time
 # TODO: OMOP option with slightly different gen/update logic
 # TODO: compare first with relativepath, moddate, and filesize. 
 #   mod date could be changed if there is copy.  if all same, assume same.  if any is not same, compute md5 and check.  if md5 same, assume same and update the new date.
+
+
+# current assumptions/working decisions for initial run:
+# TONY:  working with subdirectories of form:  pid/type/files
+# 1 file per record - can be extended to 1 dir per record or using a file-record mapping
+# no upload dir specified on local site's side
+# entity relationships: many sessions per person, many records per session, many files per record
+# TONY removed this assumption: files have a format of PERSONID_STARTDATE_STARTTIME_LENGTH.extension
+
+# [ ]: need support for cloud files.
+
+
+# TODO: DONE - Datetime format
+# TODO: Add waveform/image option, put all tables in same db file
+# TODO: OMOP option with slightly different gen/update logic
+# TODO: Remove sync flag setting to 0 - to be done by uploading
+# TODO: Change comparison for mtimes that are different, but filesize, path, hash are the same
+# --------- Copy ops can change mtimes without changing contents or relative name
+# --------- If other 3 match, invalidate old row, add new row with new mtime and syncflag equal to old syncflag
+
 
 
 # return file metadata from relative path and base_dir
@@ -45,12 +60,12 @@ def get_file_metadata(base_dir: str | os.PathLike, rel_path: str | os.PathLike, 
 
     statinfo = os.stat(fn)
     metadata["size"] = statinfo.st_size
-    metadata["create_time"] = pd.to_datetime(statinfo.st_ctime, unit='s')
-    metadata["modify_time"] = pd.to_datetime(statinfo.st_mtime, unit='s')
+    metadata["create_time"] = statinfo.st_ctime_ns
+    metadata["modify_time"] = statinfo.st_mtime_ns
 
     return metadata
 
-def get_file_md5(base_dir: str | os.PahtLike, file_path: str | os.PathLike) -> str:
+def get_file_md5(base_dir: str | os.PathLike, file_path: str | os.PathLike) -> str:
     """
     Get the MD5 hash of a file.
 
@@ -59,7 +74,7 @@ def get_file_md5(base_dir: str | os.PahtLike, file_path: str | os.PathLike) -> s
     :return: The MD5 hash of the file.
     :rtype: str
     """
-    fn = os.path.join(base_dir, rel_path)
+    fn = os.path.join(base_dir, file_path)
     
     # Initialize the MD5 hash object
     md5 = hashlib.md5()
@@ -91,57 +106,20 @@ def get_files_rel(root_path: str | os.PathLike, datatype : str = None) -> list[s
         print("ERROR: unkown data type requested.", datatype)
         return None
 
-    files = []
+
+    all_files = []
     # now get via os.walk - this will walk through entire subdirectory.
     for dp in data_paths:
-        for root, subdirs, files in os.walk(dp):
+        for root, subdirs, files in os.walk(dp, topdown=True):
             for f in files:
                 fp = os.path.abspath(os.path.join(root, f))
-                files.append(fp)
+                all_files.append(fp)
+                # print(fp)
                 
     root = os.path.abspath(root_path)
                 
-    return [os.path.relpath(f, root) for f in files]
+    return [os.path.relpath(f, root) for f in all_files]
     
-
-# current assumptions/working decisions for initial run:
-# TONY:  working with subdirectories of form:  pid/type/files
-# 1 file per record - can be extended to 1 dir per record or using a file-record mapping
-# no upload dir specified on local site's side
-# entity relationships: many sessions per person, many records per session, many files per record
-# TONY removed this assumption: files have a format of PERSONID_STARTDATE_STARTTIME_LENGTH.extension
-
-# [ ]: need support for cloud files.
-
-
-# def files_are_same(file1: str | os.PathLike, file2: str | os.PathLike) -> bool:
-#     meta1 = get_file_metadata(file1)
-#     meta2 = get_file_metadata(file2)
-
-#     if (meta1["path"] == meta2["path"]) and (meta1["name"] == meta2["name"]) and (meta1["size"] == meta2["size"]) and (meta1["last_modified"] == meta2["last_modified"]):
-#         return True
-        
-#     md5_1 = get_file_md5(file1)
-#     md5_2 = get_file_md5(file2)
-    
-#     if (md5_1 == md5_2):
-#         return True
-    
-#     return False
-
-
-# def file_unchanged(old_meta: dict, old_md5: str, file: str | os.PathLike) -> bool:
-#     new_meta = get_file_metadata(file)
-    
-#     if (old_meta["path"] == new_meta["path"]) and (old_meta["name"] == new_meta["name"]) and (old_meta["size"] == new_meta["size"]) and (old_meta["last_modified"] == new_meta["last_modified"]):
-#         return True
-    
-#     new_md5 = get_file_md5(file)
-    
-#     if (old_md5 == new_md5):
-#         return True
-    
-#     return False
 
 
 # current assumptions/working decisions for initial run:
@@ -150,7 +128,9 @@ def get_files_rel(root_path: str | os.PathLike, datatype : str = None) -> list[s
 # entity relationships: many sessions per person, many records per session, many files per record
 # files have a format of PERSONID_STARTDATE_STARTTIME_LENGTH.extension
 def gen_manifest(folderpath, databasename="journal.db"):
-    # print("Starting Manifest")
+    
+    
+    print("Starting Manifest")
     if os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print("Initial manifest, but a journal with that name already exists. Please delete and re-run.")
@@ -163,13 +143,12 @@ def gen_manifest(folderpath, databasename="journal.db"):
                 FILE_ID INTEGER NOT NULL PRIMARY KEY, \
                 PERSON_ID INTEGER, \
                 FILEPATH TEXT, \
-                MODTIME TEXT, \
+                MODTIME_ns INTEGER, \
                 SIZE INTEGER, \
                 MD5 TEXT, \
-                TIME_VALID TEXT, \
-                TIME_INVALID TEXT, \
+                TIME_VALID_ns INTEGER, \
+                TIME_INVALID_ns INTEGER, \
                 SYNC_READY INTEGER)")
-    
     
     # curfolder = os.getcwd()
     # os.chdir(folderpath)
@@ -177,13 +156,14 @@ def gen_manifest(folderpath, databasename="journal.db"):
     # # print(globpath)
     # paths = glob.glob(globpath)
     # print(paths[0])
-
     paths1 = get_files_rel(folderpath, "Waveforms")
     paths2 = get_files_rel(folderpath, "Images")
     paths3 = get_files_rel(folderpath, "OMOP")
     paths = [*paths1, *paths2, *paths3]
 
-    epoch_now = time.time()
+    print(paths[0])
+
+    curtimestamp = time.time_ns()
 
     for i_path, relpath in enumerate(paths):
         # print(path)
@@ -191,14 +171,16 @@ def gen_manifest(folderpath, databasename="journal.db"):
         # first item is personid.
         personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
         filesize = meta['size']
-        moddatetime = meta['modify_time']
+        modtimestamp = meta['modify_time']
         mymd5 = get_file_md5(folderpath, relpath)
         
-        myargs = (i_path, personid, relpath, moddatetime, filesize, mymd5, epoch_now, None, 1)
+        myargs = (i_path, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
+
         cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
 
     con.commit() 
     con.close()
+    print("completed initial load.")
 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
@@ -218,34 +200,44 @@ def update_manifest(folderpath, databasename="journal.db"):
 
     # print(paths[0])
 
-    dt_nosymbols = datetime.now().strftime("%Y%m%d_%H%M%S")
-    epoch_now = time.time()
+    curtimestamp = time.time_ns()
 
-    filesbackup = "manifest_" + dt_nosymbols
+    filesbackup = "manifest_" + str(curtimestamp)
     cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
     cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM manifest")
 
-    i_file = cur.execute("SELECT MAX(file_id) from manifest").fetchone()[0] + 1
+    i_file = cur.execute("SELECT MAX(file_id) from manifest").fetchone()[0]
+    if i_file is None:
+        print("WARNING:  updating an empty database")
+        i_file = 1
+    else: 
+        i_file += 1
     # print(i_file)
 
     # get all active files, these are active-pending-delete until the file is found in filesystem
-    activefiletuple = cur.execute("Select file_id from manifest where TIME_INVALID IS NULL").fetchall()
+    activefiletuple = cur.execute("Select file_id from manifest where TIME_INVALID_ns IS NULL").fetchall()
     
-    activefileset = {i[0] for i in activefiletuple}
+    files_to_delete = {i[0] for i in activefiletuple}
 
-    cur.execute("UPDATE manifest SET SYNC_READY=?", (0,))
+    # cur.execute("UPDATE manifest SET SYNC_READY=0")
 
-    for i_path, path in enumerate(paths):
+    for i_path, relpath in enumerate(paths):
         # print(path)
+        
+        # get information about the current file
         meta = get_file_metadata(folderpath, relpath)
         # first item is personid.
         personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
         filesize = meta['size']
-        moddatetime = meta['modify_time']
-        # mymd5 = get_file_md5(folderpath, relpath)
+        modtimestamp = meta['modify_time']
+        # 
 
+        # get information about the old file
         # query files by filename, modtime, and size
-        filecheckrow = cur.execute("Select file_id, md5 from manifest where filepath=? and modtime=? and size=? and TIME_INVALID IS NULL",(path, moddatetime, filesize))
+        # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
+        print(relpath, len(relpath))
+        filecheckrow = cur.execute("Select file_id, size, modtime_ns, md5, sync_ready from manifest where filepath=? and TIME_INVALID_ns IS NULL", [(relpath)])
+
         results = filecheckrow.fetchall()
         # There should only be 1 active file according to the path in a well-formed 
         if len(results) > 1:
@@ -255,39 +247,57 @@ def update_manifest(folderpath, databasename="journal.db"):
         elif len(results) == 1:
             results = results[0]
             oldfileid = results[0]
-            # oldmd5 = results[1]
+            oldsize = results[1]
+            oldmtime = results[2]
+            oldmd5 = results[3]
+            oldsync = results[4]
             
-            # check if old and new are the same
-            if 
-            
-            
-            # if exists and md5 is different, invalidate existing file_id
-            # then add new file like above, using new id, increment i_file
-            # keep record the same
-            # if oldmd5 != mymd5:
-            #     cur.execute("UPDATE manifest SET TIME_INVALID=? WHERE file_id=?", (dt_string, oldfileid,))
-            #     myargs = (i_file, personid, filename, moddt_string, filesize, mymd5, dt_string, None, 1)
-            #     cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
-            #     i_file += 1
-            #     activefileset.remove(oldfileid)
-            # # if exists and md5 is same, remove from active-pending-delete list
-            # else:
-            #     activefileset.remove(oldfileid)
-            activefileset.remove(oldfileid)
+            # if old size and new size, old mtime and new mtime are same (name is already matched)
+            # then same file, skip rest.
+            if (oldmtime == modtimestamp):
+                if (oldsize == filesize):
+                    # files are very likely the same because of size and modtime match
+                    files_to_delete.remove(oldfileid)  # do not mark file as inactive.
+                    continue
+                else:
+                    #time stamp same but file size is different?
+                    print("ERROR: File size is different but modtime is the same.", relpath)
+                    continue
+                
+            else:
+                # timestamp changed. we need to compute md5 to check, or to update.
+                mymd5 = get_file_md5(folderpath, relpath)
+
+                # files are extremely likely the same just moved.
+                # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
+                # choosing not to change SYNC_READY
+                # cur.execute("UPDATE manifest SET TIME_INVALID_ns=? WHERE file_id=?", (curtimestamp, oldfileid))
+                if (oldsize == filesize) and (mymd5 == oldmd5):
+                    # essentially copy the old and update the modtime.
+                    myargs = (i_file, personid, relpath, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
+                    # files_to_delete.remove(oldfileid)  # we should mark old as inactive 
+                else:
+                    # files are different.  set the old file as invalid and add a new file.
+                    myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
+                    # modified file. old one should be removed.
+                   
+                i_file += 1 # this is a uid.  so has to increment.
+                    
+                cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
             
         else:
             # if DNE, add new file
-            mymd5 = hashlib.md5(open(path, 'rb').read()).hexdigest()
-            myargs = (i_file, personid, path, moddatetime, filesize, mymd5, epoch_now, None, 1)
+            mymd5 = get_file_md5(folderpath, relpath)
+
+            myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
             cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
             i_file += 1
 
     # for all files that were active but aren't there anymore
     # invalidate in manifest
     # for file_id,record_id in zip(activefilemap.keys(),activefilemap.values()):
-    myargs = map(lambda v: (epoch_now, v), activefileset)
-    cur.executemany("UPDATE manifest SET TIME_INVALID=? WHERE file_id=?", myargs)
-
+    myargs = map(lambda v: (curtimestamp,v), files_to_delete)
+    cur.executemany("UPDATE manifest SET TIME_INVALID_ns=? WHERE file_id=?",myargs)
 
     con.commit() 
     con.close()
