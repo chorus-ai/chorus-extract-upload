@@ -13,10 +13,10 @@ import time
 # TODO: DONE - calculate MD5 for all non-matching files
 # TODO: DONE - Set "ready-to-sync" field for all non-matches
 # TODO: DONE - Update to use paths instead of filenames
-# TODO: Datetime format - integer format. nanosec
-# TODO: Add waveform/image option, put all tables in same db file
-# TODO: OMOP option with slightly different gen/update logic
-# TODO: compare first with relativepath, moddate, and filesize. 
+# TODO: DONE - Datetime format - integer format. nanosec
+# TODO: DONE - Add waveform/image option, put all tables in same db file
+# TODO: DONE - OMOP option with slightly different gen/update logic
+# TODO: DONE - compare first with relativepath, moddate, and filesize. 
 #   mod date could be changed if there is copy.  if all same, assume same.  if any is not same, compute md5 and check.  if md5 same, assume same and update the new date.
 
 
@@ -28,7 +28,7 @@ import time
 # TONY removed this assumption: files have a format of PERSONID_STARTDATE_STARTTIME_LENGTH.extension
 
 # [ ]: need support for cloud files.
-
+# [ ]: commandline argument parsing.
 
 # TODO: DONE - Datetime format
 # TODO: Add waveform/image option, put all tables in same db file
@@ -130,7 +130,8 @@ def get_files_rel(root_path: str | os.PathLike, datatype : str = None) -> list[s
 def gen_manifest(folderpath, databasename="journal.db"):
     
     
-    print("Creating Manifest")
+    print("Creating Manifest...", end='', flush=True)
+    
     if os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print("Initial manifest, but a journal with that name already exists. Please delete and re-run.")
@@ -178,12 +179,13 @@ def gen_manifest(folderpath, databasename="journal.db"):
 
     con.commit() 
     con.close()
+    print("Done", flush = True)
 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
 def update_manifest(folderpath, databasename="journal.db"):
 
-    print("Updating Manifest")
+    print("Updating Manifest...", end='', flush=True)
 
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
@@ -306,4 +308,4 @@ def update_manifest(folderpath, databasename="journal.db"):
 
     con.commit() 
     con.close()
-
+    print("Done", flush = True)
