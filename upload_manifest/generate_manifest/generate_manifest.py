@@ -110,11 +110,11 @@ def get_files_rel(root_path: str | os.PathLike, datatype : str = None) -> list[s
     all_files = []
     # now get via os.walk - this will walk through entire subdirectory.
     for dp in data_paths:
-        for root, subdirs, files in os.walk(dp, topdown=True):
+        for root, subdirs, files in os.walk(dp, topdown=True, followlinks=True):
             for f in files:
                 fp = os.path.abspath(os.path.join(root, f))
                 all_files.append(fp)
-                # print(fp)
+    print(all_files)
                 
     root = os.path.abspath(root_path)
                 
@@ -219,14 +219,14 @@ def update_manifest(folderpath, databasename="journal.db"):
     # get all active files, these are active-pending-delete until the file is found in filesystem
     activefiletuple = cur.execute("Select filepath, file_id, size, modtime_ns, md5, sync_ready from manifest where TIME_INVALID_ns IS NULL").fetchall()
     
-    files_to_delete = {}
+    files_to_inactivate = {}
     for i in activefiletuple:
         fpath = i[0]
-        # print(fpath)
-        if fpath not in files_to_delete.keys():
-            files_to_delete[fpath] = [ (i[1], i[2], i[3], i[4], i[5]) ]
+        print(fpath)
+        if fpath not in files_to_inactivate.keys():
+            files_to_inactivate[fpath] = [ (i[1], i[2], i[3], i[4], i[5]) ]
         else:
-            files_to_delete[fpath].append((i[1], i[2], i[3], i[4], i[5]))
+            files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
     # cur.execute("UPDATE manifest SET SYNC_READY=0")
 
@@ -247,8 +247,8 @@ def update_manifest(folderpath, databasename="journal.db"):
         # filecheckrow = cur.execute("Select file_id, size, modtime_ns, md5, sync_ready from manifest where filepath=? and TIME_INVALID_ns IS NULL", [(relpath)])
 
         # results = filecheckrow.fetchall()
-        if relpath in files_to_delete.keys():
-            results = files_to_delete[relpath]
+        if relpath in files_to_inactivate.keys():
+            results = files_to_inactivate[relpath]
             # There should only be 1 active file according to the path in a well-formed 
             if len(results) > 1:
                 print("Multiple active files with that path - can't compare to old files")
@@ -262,7 +262,7 @@ def update_manifest(folderpath, databasename="journal.db"):
                 if (oldmtime == modtimestamp):
                     if (oldsize == filesize):
                         # files are very likely the same because of size and modtime match
-                        files_to_delete.remove(oldfileid)  # do not mark file as inactive.
+                        del files_to_inactivate[relpath]  # do not mark file as inactive.
                         continue
                     else:
                         #time stamp same but file size is different?
@@ -280,7 +280,7 @@ def update_manifest(folderpath, databasename="journal.db"):
                     if (oldsize == filesize) and (mymd5 == oldmd5):
                         # essentially copy the old and update the modtime.
                         myargs = (i_file, personid, relpath, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
-                        # files_to_delete.remove(oldfileid)  # we should mark old as inactive 
+                        # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
                     else:
                         # files are different.  set the old file as invalid and add a new file.
                         myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
@@ -303,7 +303,12 @@ def update_manifest(folderpath, databasename="journal.db"):
     # for all files that were active but aren't there anymore
     # invalidate in manifest
     # for file_id,record_id in zip(activefilemap.keys(),activefilemap.values()):
-    myargs = map(lambda v: (curtimestamp,v), files_to_delete)
+    # myargs = map(lambda v: (curtimestamp, v), files_to_inactivate)
+    myargs = []
+    for vals in files_to_inactivate.values():
+        for v in vals:
+            myargs.append((curtimestamp, v[0]))
+    print(myargs)
     cur.executemany("UPDATE manifest SET TIME_INVALID_ns=? WHERE file_id=?",myargs)
 
     con.commit() 
