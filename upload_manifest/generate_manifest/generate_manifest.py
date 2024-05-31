@@ -130,7 +130,7 @@ def get_files_rel(root_path: str | os.PathLike, datatype : str = None) -> list[s
 def gen_manifest(folderpath, databasename="journal.db"):
     
     
-    print("Starting Manifest")
+    print("Creating Manifest")
     if os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print("Initial manifest, but a journal with that name already exists. Please delete and re-run.")
@@ -161,8 +161,6 @@ def gen_manifest(folderpath, databasename="journal.db"):
     paths3 = get_files_rel(folderpath, "OMOP")
     paths = [*paths1, *paths2, *paths3]
 
-    print(paths[0])
-
     curtimestamp = time.time_ns()
 
     for i_path, relpath in enumerate(paths):
@@ -180,11 +178,13 @@ def gen_manifest(folderpath, databasename="journal.db"):
 
     con.commit() 
     con.close()
-    print("completed initial load.")
 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
 def update_manifest(folderpath, databasename="journal.db"):
+
+    print("Updating Manifest")
+
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print(f"No manifest exists for filename {databasename}")
@@ -215,9 +215,16 @@ def update_manifest(folderpath, databasename="journal.db"):
     # print(i_file)
 
     # get all active files, these are active-pending-delete until the file is found in filesystem
-    activefiletuple = cur.execute("Select file_id from manifest where TIME_INVALID_ns IS NULL").fetchall()
+    activefiletuple = cur.execute("Select filepath, file_id, size, modtime_ns, md5, sync_ready from manifest where TIME_INVALID_ns IS NULL").fetchall()
     
-    files_to_delete = {i[0] for i in activefiletuple}
+    files_to_delete = {}
+    for i in activefiletuple:
+        fpath = i[0]
+        # print(fpath)
+        if fpath not in files_to_delete.keys():
+            files_to_delete[fpath] = [ (i[1], i[2], i[3], i[4], i[5]) ]
+        else:
+            files_to_delete[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
     # cur.execute("UPDATE manifest SET SYNC_READY=0")
 
@@ -235,56 +242,54 @@ def update_manifest(folderpath, databasename="journal.db"):
         # get information about the old file
         # query files by filename, modtime, and size
         # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
-        print(relpath, len(relpath))
-        filecheckrow = cur.execute("Select file_id, size, modtime_ns, md5, sync_ready from manifest where filepath=? and TIME_INVALID_ns IS NULL", [(relpath)])
+        # filecheckrow = cur.execute("Select file_id, size, modtime_ns, md5, sync_ready from manifest where filepath=? and TIME_INVALID_ns IS NULL", [(relpath)])
 
-        results = filecheckrow.fetchall()
-        # There should only be 1 active file according to the path in a well-formed 
-        if len(results) > 1:
-            print("Multiple active files with that path - can't compare to old files")
-            print("Exiting update...")
-            return
-        elif len(results) == 1:
-            results = results[0]
-            oldfileid = results[0]
-            oldsize = results[1]
-            oldmtime = results[2]
-            oldmd5 = results[3]
-            oldsync = results[4]
-            
-            # if old size and new size, old mtime and new mtime are same (name is already matched)
-            # then same file, skip rest.
-            if (oldmtime == modtimestamp):
-                if (oldsize == filesize):
-                    # files are very likely the same because of size and modtime match
-                    files_to_delete.remove(oldfileid)  # do not mark file as inactive.
-                    continue
-                else:
-                    #time stamp same but file size is different?
-                    print("ERROR: File size is different but modtime is the same.", relpath)
-                    continue
+        # results = filecheckrow.fetchall()
+        if relpath in files_to_delete.keys():
+            results = files_to_delete[relpath]
+            # There should only be 1 active file according to the path in a well-formed 
+            if len(results) > 1:
+                print("Multiple active files with that path - can't compare to old files")
+                print("Exiting update...")
+                return
+            elif len(results) == 1:
+                (oldfileid, oldsize, oldmtime, oldmd5, oldsync) = results[0]
                 
-            else:
-                # timestamp changed. we need to compute md5 to check, or to update.
-                mymd5 = get_file_md5(folderpath, relpath)
-
-                # files are extremely likely the same just moved.
-                # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
-                # choosing not to change SYNC_READY
-                # cur.execute("UPDATE manifest SET TIME_INVALID_ns=? WHERE file_id=?", (curtimestamp, oldfileid))
-                if (oldsize == filesize) and (mymd5 == oldmd5):
-                    # essentially copy the old and update the modtime.
-                    myargs = (i_file, personid, relpath, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
-                    # files_to_delete.remove(oldfileid)  # we should mark old as inactive 
-                else:
-                    # files are different.  set the old file as invalid and add a new file.
-                    myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
-                    # modified file. old one should be removed.
-                   
-                i_file += 1 # this is a uid.  so has to increment.
+                # if old size and new size, old mtime and new mtime are same (name is already matched)
+                # then same file, skip rest.
+                if (oldmtime == modtimestamp):
+                    if (oldsize == filesize):
+                        # files are very likely the same because of size and modtime match
+                        files_to_delete.remove(oldfileid)  # do not mark file as inactive.
+                        continue
+                    else:
+                        #time stamp same but file size is different?
+                        print("ERROR: File size is different but modtime is the same.", relpath)
+                        continue
                     
-                cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
-            
+                else:
+                    # timestamp changed. we need to compute md5 to check, or to update.
+                    mymd5 = get_file_md5(folderpath, relpath)
+
+                    # files are extremely likely the same just moved.
+                    # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
+                    # choosing not to change SYNC_READY
+                    # cur.execute("UPDATE manifest SET TIME_INVALID_ns=? WHERE file_id=?", (curtimestamp, oldfileid))
+                    if (oldsize == filesize) and (mymd5 == oldmd5):
+                        # essentially copy the old and update the modtime.
+                        myargs = (i_file, personid, relpath, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
+                        # files_to_delete.remove(oldfileid)  # we should mark old as inactive 
+                    else:
+                        # files are different.  set the old file as invalid and add a new file.
+                        myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
+                        # modified file. old one should be removed.
+                    
+                    i_file += 1 # this is a uid.  so has to increment.
+                        
+                    cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])            
+            else:
+                print("ERROR: File found but no metadata.", relpath)
+                continue
         else:
             # if DNE, add new file
             mymd5 = get_file_md5(folderpath, relpath)
