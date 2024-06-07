@@ -29,7 +29,7 @@ python create_test_data
 # Generate Test Manifest with Update
 To generate the corresponding manifests for the first upload and the update in the test data, use the following command:
 ```
-python create_test_data
+python generate_manifest
 ```
 
 # Current assumptions, limitations, and working decisions:

@@ -95,7 +95,7 @@ def generateUpdate():
             # do nothing
             # delete and add a new file
             # mod
-            option = random.randint(0,2)
+            option = random.randint(0,3)
             origpath = os.path.join(personwfdir_1,curfile)
             # copy as is
             if option == 0:
@@ -117,6 +117,6 @@ def generateUpdate():
                 newpath = os.path.join(personwfdir_2, curfile)
                 with open(newpath, 'wb') as fout:
                     fout.write(os.urandom(fileSizeInBytes)) 
-            # # delete
-            # if option == 3:
-            #     pass
+            # symbolic link
+            if option == 3:
+                os.symlink(os.path.abspath(origpath), os.path.join(personwfdir_2, curfile))
