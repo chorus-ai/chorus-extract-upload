@@ -5,6 +5,7 @@ import glob
 import hashlib
 import pandas as pd
 import time
+import math
 
 
 # TODO: DONE - Remove registry
@@ -37,6 +38,24 @@ import time
 # TODO: Change comparison for mtimes that are different, but filesize, path, hash are the same
 # --------- Copy ops can change mtimes without changing contents or relative name
 # --------- If other 3 match, invalidate old row, add new row with new mtime and syncflag equal to old syncflag
+
+# TODO: cloud files
+# TODO: integrate with AZCLI
+# TODO: verification of manifest
+# TODO: command processor
+# TODO: update manifest with cloud files.
+
+# process:
+#   1. local manifest is created
+#   2. local manifest is used to generate update list
+#   3. local manifest is used to send data to cloud
+#   4. local manifest is verified with cloud files
+
+
+
+# simple assumption for upload between updates
+# we always compare to the last manifest.
+# all remote stores are dated, so override with partial uploads.
 
 
 
@@ -93,7 +112,7 @@ def get_file_md5(base_dir: str | os.PathLike, file_path: str | os.PathLike) -> s
 
 
 # get the list of files in relative path, one data type at a time.  return relative file paths
-def get_files_rel(root_path: str | os.PathLike, datatype : str = None) -> list[str | os.PathLike]:
+def get_files_relpath(root_path: str | os.PathLike, datatype : str = None) -> list[str | os.PathLike]:
     
     if (datatype == "Waveforms") or (datatype == "Images"):
         # first get the data type subdirs.
@@ -114,7 +133,7 @@ def get_files_rel(root_path: str | os.PathLike, datatype : str = None) -> list[s
             for f in files:
                 fp = os.path.abspath(os.path.join(root, f))
                 all_files.append(fp)
-    print(all_files)
+    # print("all files ", all_files)
                 
     root = os.path.abspath(root_path)
                 
@@ -157,15 +176,16 @@ def gen_manifest(folderpath, databasename="journal.db"):
     # # print(globpath)
     # paths = glob.glob(globpath)
     # print(paths[0])
-    paths1 = get_files_rel(folderpath, "Waveforms")
-    paths2 = get_files_rel(folderpath, "Images")
-    paths3 = get_files_rel(folderpath, "OMOP")
+    paths1 = get_files_relpath(folderpath, "Waveforms")
+    paths2 = get_files_relpath(folderpath, "Images")
+    paths3 = get_files_relpath(folderpath, "OMOP")
     paths = [*paths1, *paths2, *paths3]
 
     curtimestamp = time.time_ns()
 
+    all_args = []
     for i_path, relpath in enumerate(paths):
-        # print(path)
+        # print(i_path, relpath)
         meta = get_file_metadata(folderpath, relpath)
         # first item is personid.
         personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
@@ -175,8 +195,11 @@ def gen_manifest(folderpath, databasename="journal.db"):
         
         myargs = (i_path, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
 
-        cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
+        all_args.append(myargs)
 
+    if len(all_args) > 0:
+        cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+        
     con.commit() 
     con.close()
     print("Done", flush = True)
@@ -185,7 +208,7 @@ def gen_manifest(folderpath, databasename="journal.db"):
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
 def update_manifest(folderpath, databasename="journal.db"):
 
-    print("Updating Manifest...", end='', flush=True)
+    print("Updating Manifest...", databasename, flush=True)
 
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
@@ -195,18 +218,21 @@ def update_manifest(folderpath, databasename="journal.db"):
 
     cur = con.cursor()
 
-    paths1 = get_files_rel(folderpath, "Waveforms")
-    paths2 = get_files_rel(folderpath, "Images")
-    paths3 = get_files_rel(folderpath, "OMOP")
+    paths1 = get_files_relpath(folderpath, "Waveforms")
+    paths2 = get_files_relpath(folderpath, "Images")
+    paths3 = get_files_relpath(folderpath, "OMOP")
     paths = [*paths1, *paths2, *paths3]
 
     # print(paths[0])
 
-    curtimestamp = time.time_ns()
+    # do not back up - this allows changes to accumulate.
+    # backup_timestamp = math.floor(time.time())
+    # filesbackup = "manifest_" + str(backup_timestamp)
+    # cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
+    # cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM manifest")
 
-    filesbackup = "manifest_" + str(curtimestamp)
-    cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
-    cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM manifest")
+
+    curtimestamp = time.time_ns()
 
     i_file = cur.execute("SELECT MAX(file_id) from manifest").fetchone()[0]
     if i_file is None:
@@ -217,12 +243,12 @@ def update_manifest(folderpath, databasename="journal.db"):
     # print(i_file)
 
     # get all active files, these are active-pending-delete until the file is found in filesystem
-    activefiletuple = cur.execute("Select filepath, file_id, size, modtime_ns, md5, sync_ready from manifest where TIME_INVALID_ns IS NULL").fetchall()
+    activefiletuples = cur.execute("Select filepath, file_id, size, modtime_ns, md5, sync_ready from manifest where TIME_INVALID_ns IS NULL").fetchall()
     
+    # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
     files_to_inactivate = {}
-    for i in activefiletuple:
+    for i in activefiletuples:
         fpath = i[0]
-        print(fpath)
         if fpath not in files_to_inactivate.keys():
             files_to_inactivate[fpath] = [ (i[1], i[2], i[3], i[4], i[5]) ]
         else:
@@ -230,6 +256,7 @@ def update_manifest(folderpath, databasename="journal.db"):
 
     # cur.execute("UPDATE manifest SET SYNC_READY=0")
 
+    all_insert_args = []
     for i_path, relpath in enumerate(paths):
         # print(path)
         
@@ -263,6 +290,7 @@ def update_manifest(folderpath, databasename="journal.db"):
                     if (oldsize == filesize):
                         # files are very likely the same because of size and modtime match
                         del files_to_inactivate[relpath]  # do not mark file as inactive.
+                        print("SAME ", relpath )
                         continue
                     else:
                         #time stamp same but file size is different?
@@ -280,15 +308,18 @@ def update_manifest(folderpath, databasename="journal.db"):
                     if (oldsize == filesize) and (mymd5 == oldmd5):
                         # essentially copy the old and update the modtime.
                         myargs = (i_file, personid, relpath, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
+                        print("MOVED ", relpath)
                         # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
                     else:
                         # files are different.  set the old file as invalid and add a new file.
                         myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
+                        print("UPDATE ", relpath)
                         # modified file. old one should be removed.
                     
                     i_file += 1 # this is a uid.  so has to increment.
                         
-                    cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])            
+                    all_insert_args.append(myargs)
+                    # cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)            
             else:
                 print("ERROR: File found but no metadata.", relpath)
                 continue
@@ -297,20 +328,199 @@ def update_manifest(folderpath, databasename="journal.db"):
             mymd5 = get_file_md5(folderpath, relpath)
 
             myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, 1)
-            cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
+            all_insert_args.append(myargs)
+            # cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
+            print("ADD  ", relpath)
             i_file += 1
+
+    if len(all_insert_args) > 0:
+        cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
 
     # for all files that were active but aren't there anymore
     # invalidate in manifest
     # for file_id,record_id in zip(activefilemap.keys(),activefilemap.values()):
     # myargs = map(lambda v: (curtimestamp, v), files_to_inactivate)
+    
     myargs = []
-    for vals in files_to_inactivate.values():
+    for relpath, vals in files_to_inactivate.items():
+        if (relpath in paths):
+            print("OLD  ", relpath)
+        else:
+            print("DELETED  ", relpath)
+        
         for v in vals:
             myargs.append((curtimestamp, v[0]))
-    print(myargs)
-    cur.executemany("UPDATE manifest SET TIME_INVALID_ns=? WHERE file_id=?",myargs)
+    print("SQLITE update arguments ", myargs)
+    if (len(myargs) > 0):
+        cur.executemany("UPDATE manifest SET TIME_INVALID_ns=? WHERE file_id=?",myargs)
 
     con.commit() 
     con.close()
     print("Done", flush = True)
+
+
+
+# all files to upload are marked as sync_ready. 
+def select_files_to_upload(databasename="journal.db", outfilename = "files.txt"):
+
+    print("Extracting Active Files...", end='', flush=True)
+
+    if not os.path.exists(databasename):
+        # os.remove(pushdir_name + ".db")
+        print(f"No manifest exists for filename {databasename}")
+        return
+    con = sqlite3.connect(databasename)
+
+    cur = con.cursor()
+
+    # identify 3 subsets:   deleted, updated, and added.
+    # deleted:  sync_ready file with invalid time stamp.  No additional valid time stamp
+    # added:  sync_ready file with null invalid time stemp and no prior entry with non-null invalid time stamp
+    # modified:  sync_ready file with null invalid time, and a prior entry with non-null invalid time stamp
+    # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_ns from manifest where sync_ready == 1").fetchall()
+    # to_remove = [ ]
+    
+    files_to_update = cur.execute("Select file_id, filepath, size, md5, time_invalid_ns from manifest where sync_ready == 1").fetchall()
+    
+    # print(files_to_update)
+    # only need to add, not delete.  rely on manifest to mark deletion.
+    
+    
+    # print("to inactivate ", files_to_inactivate)
+    # myargs = set()
+    active_files = set()
+    inactive_files = set()
+    for (file_id, fn, size, md5, invalidtime) in files_to_update:
+        if invalidtime is not None:
+            inactive_files.add(fn)
+        else:
+            active_files.add(fn)
+
+    files = set()
+    for (file_id, fn, size, md5, invalidtime) in files_to_update:
+        if fn in active_files:
+            if fn in inactive_files:
+                print("UPDATE ", fn)
+            else:
+                print("ADD ", fn)
+            files.add(fn)
+        else:
+            if fn in inactive_files:
+                print("DEL ", fn)
+            else:
+                print("IMPOSSIBLE: file not in active or inactive list ", fn)
+        
+        # myargs.add((0, file_id))
+    # convert to list then sort
+    file_list = list(files)
+    # sort the file-list
+    file_list.sort()
+    
+    # now update the manifest's sync flag.
+    # if len(myargs) > 0:
+    #     print("updating sync flag")
+    #     cur.executemany("UPDATE manifest SET SYNC_READY=? WHERE FILE_ID=?",myargs)
+    
+    # do we need to delete files in central at all?  manifest will be updated.
+    # we only need to add new files
+    
+    con.close()
+
+    with open(outfilename, 'w') as f:
+        f.write("\n".join(file_list))
+        
+    print("Done", flush = True)
+    
+
+def list_manifests(databasename="journal.db"):
+    if not os.path.exists(databasename):
+        print(f"No manifest exists for filename {databasename}")
+        return
+    
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
+    
+    # List tables in the SQLite database
+    tables = cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
+    
+    if tables:
+        print("Tables in the database:")
+        for table in tables:
+            print(table[0])
+    else:
+        print("No tables found in the database.")
+    
+    con.close()
+
+
+
+def delete_manifest(manifest_name, databasename="journal.db"):
+    if manifest_name == "manifest":
+        print("ERROR: you are trying to delete 'manifest'.  this is not allowed")
+        return
+    
+    if not os.path.exists(databasename):
+        # os.remove(pushdir_name + ".db")
+        print(f"No manifest exists for filename {databasename}")
+        return
+
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
+
+    cur.execute(f"DROP TABLE IF EXISTS {manifest_name}")
+
+    print("Dropped database ", manifest_name)
+
+    con.close()
+    
+    
+# this should only be called when an upload is initiated.
+def backup_manifest(databasename="journal.db"):
+    if not os.path.exists(databasename):
+        # os.remove(pushdir_name + ".db")
+        print(f"No manifest exists for filename {databasename}")
+        return
+
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
+
+    backup_timestamp = round(time.time())
+
+    filesbackup = "manifest_" + str(backup_timestamp)
+    cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
+    cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM manifest")
+
+    print("backed up database manifest to ", filesbackup)
+
+    con.close()
+
+
+    
+# this should only be called when an upload is initiated.
+def restore_manifest(manifestname, databasename="journal.db"):
+    if manifestname == "manifest":
+        print("ERROR: trying to restrore 'manifest' to 'manifest'")
+        return
+    
+    if not os.path.exists(databasename):
+        # os.remove(pushdir_name + ".db")
+        print(f"No manifest exists for filename {databasename}")
+        return
+
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
+
+    backup_timestamp = round(time.time())
+
+    # first do a backup
+    filesbackup = "manifest_" + str(backup_timestamp)
+    cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
+    cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM manifest")
+
+    # then restore
+    cur.execute(f"DROP TABLE IF EXISTS manifest")
+    cur.execute(f"CREATE TABLE manifest AS SELECT * FROM {manifestname}")
+
+    print("restored database manifest from ", manifestname, ".  original manifest table backed up to ", filesbackup)
+
+    con.close()
