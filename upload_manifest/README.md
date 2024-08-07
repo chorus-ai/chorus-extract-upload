@@ -40,3 +40,25 @@ python generate_manifest
 - Entity relationships: many sessions per person, many records per session, many files per record (currently one record per session is used, leaving session in the table in case we want another level in hierarchy)
 - Files have a format of PERSONID_STARTDATE_STARTTIME_LENGTH.extension
   - Needed information per file: person_id, start datetime, record grouping (e.g. visit_occurence_id)
+
+
+# Install and configuration
+1. need a Azure account
+1a.  optionally install azcli. https://learn.microsoft.com/en-us/cli/azure/install-azure-cli-linux?pivots=apt.  and configure on local install using https://learn.microsoft.com/en-us/cli/azure/get-started-tutorial-1-prepare-environment?tabs=bash
+
+
+1b. configure with azure portal etc.
+
+2. configure python.  preferably with conda
+2a.   conda installation instructions
+
+3. install packge dependencies.   activate conda environment
+3a.  pip install pandas fs fs-azureblob fs-s3fs sqlite3 azure-identity
+
+# usage
+
+4. run
+python upload_manifest/generate_manifest ... 
+
+blob account name is the first part of the blob url, which can be retrieved from resource json for the storage account. account key will be provided  container should be provided as well.
+
