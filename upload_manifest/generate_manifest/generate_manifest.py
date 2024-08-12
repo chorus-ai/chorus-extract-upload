@@ -23,7 +23,7 @@ from time import strftime, gmtime
 
 
 # current assumptions/working decisions for initial run:
-# TONY:  working with subdirectories of form:  pid/type/files
+# TONY:  working with subdirectories of form:  pid/type/dir.../files
 # 1 file per record - can be extended to 1 dir per record or using a file-record mapping
 # no upload dir specified on local site's side
 # entity relationships: many sessions per person, many records per session, many files per record
@@ -46,34 +46,104 @@ from time import strftime, gmtime
 # TODO: DONE - command processor
 # TODO: DONE - update manifest with cloud files.
 
+# TODO: DONE save command history
+# TODO: DONE upload only allow unuploaded files.
+# TODO: DONE upload allows amending the LAST upload.
+
+
 # process:
 #   1. local manifest is created
 #   2. local manifest is used to generate update list
-#   3. local manifest is used to send data to cloud
+#   3. local manifest is used to send data to cloud, local manifest is sent to cloud as well
 #   4. local manifest is verified with cloud files
 
 
-
-# simple assumption for upload between updates
+# okay to have multiple updates between uploads
 # we always compare to the last manifest.
 # all remote stores are dated, so override with partial uploads.
 
+DEFAULT_MODALITIES = ['Waveforms', 'Images', 'OMOP']
+
+def save_command_history(cmd:str, parameters:str, databasename="journal.db"):
+    """
+    Saves the command history to a SQLite database.
+
+    Parameters:
+    - cmd (str): The command that was executed.
+    - parameters (str): The parameters passed to the command.
+    - databasename (str): The name of the SQLite database file. Default is "journal.db".
+    """
+    
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
+    
+    curtimestamp = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
+    # curtimestamp = int(math.floor(time.time() * 1e6))
+
+    cur.execute("CREATE TABLE IF NOT EXISTS command_history (\
+                        COMMAND_ID INTEGER PRIMARY KEY AUTOINCREMENT, \
+                        DATETIME TEXT, \
+                        COMMAND TEXT, \
+                        PARAMS TEXT)")
+ 
+    cur.execute("INSERT INTO command_history (DATETIME, COMMAND, PARAMS) VALUES(?, ?, ?)", (curtimestamp, cmd, parameters))
+    con.commit()
+    
+    con.close()
+    
+def show_command_history(databasename="journal.db"):
+    """
+    Retrieve and display the command history from the specified SQLite database.
+
+    Parameters:
+    - databasename (str): The name of the SQLite database file. Default is "journal.db".
+
+    Returns:
+    None
+    """
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
+
+    # get all the commands
+    commands = cur.execute("SELECT * FROM command_history").fetchall()
+    con.close()
+    
+    for (id, timestamp, cmd, params) in commands:
+        # convert microsecond timestamp to datetime
+        # dt = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(int(timestamp/1e6)))
+        print(f"  {id}\t{timestamp}:\t{cmd} {params}")
 
 
-# current assumptions/working decisions for initial run:
-# 1 file per record - can be extended to 1 dir per record or using a file-record mapping
-# no upload dir specified on local site's side
-# entity relationships: many sessions per person, many records per session, many files per record
-# files have a format of PERSONID_STARTDATE_STARTTIME_LENGTH.extension
-def gen_manifest(root : FileSystemHelper, subdirs: list[str] = ['Waveforms', 'Images', 'OMOP'], databasename="journal.db", verbose: bool = False):
+
+def update_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, databasename="journal.db", verbose: bool = False):
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
     
-    
+    # check if manifest table exists in sqlite
+    table_exists = cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='manifest'").fetchone()
+    con.close()
+
+    # check if manifest table exists
+    if (table_exists is not None) and (table_exists[0] == "manifest"):
+        return _update_manifest(root, modalities, databasename, verbose= verbose)
+    else:
+        return _gen_manifest(root, modalities, databasename, verbose = verbose)
+        
+
+
+def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, 
+                  databasename="journal.db", verbose: bool = False):
+    """
+    Generate a manifest for the given root directory and subdirectories.
+
+    Args:
+        root (FileSystemHelper): The root directory to generate the manifest for.
+        modalities (list[str], optional): The subdirectories to include in the manifest. Defaults to ['Waveforms', 'Images', 'OMOP'].
+        databasename (str, optional): The name of the database to store the manifest. Defaults to "journal.db".
+        verbose (bool, optional): Whether to print verbose output. Defaults to False.
+    """
     print("INFO: Creating Manifest...", flush=True)
     
-    if os.path.exists(databasename):
-        # os.remove(pushdir_name + ".db")
-        print("ERROR: Initial manifest, but a journal with that name already exists. Please delete and re-run.")
-        exit()
         
     con = sqlite3.connect(databasename)
     cur = con.cursor()
@@ -82,71 +152,70 @@ def gen_manifest(root : FileSystemHelper, subdirs: list[str] = ['Waveforms', 'Im
                 FILE_ID INTEGER NOT NULL PRIMARY KEY, \
                 PERSON_ID INTEGER, \
                 FILEPATH TEXT, \
+                MODALITY TEXT, \
                 SRC_MODTIME_us INTEGER, \
                 SIZE INTEGER, \
                 MD5 TEXT, \
                 TIME_VALID_us INTEGER, \
                 TIME_INVALID_us INTEGER, \
                 UPLOAD_DTSTR TEXT)")  # datetime string of the upload.
+    con.commit()
+    con.close()
     
     paths = []
-    for subdir in subdirs:
-        paths1 = root.get_files(subdir)
-        paths += paths1
-        
-
     curtimestamp = int(math.floor(time.time() * 1e6))
-
     all_args = []
-    for i_path, relpath in enumerate(paths):
-        # print(i_path, relpath)
-        meta = root.get_file_metadata(relpath)
-        # first item is personid.
-        personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
-        filesize = meta['size']
-        modtimestamp = meta['modify_time_us']
-        mymd5 = root.get_file_md5(relpath)
+    
+    modalities = modalities if modalities else DEFAULT_MODALITIES
+    
+    for modality in modalities:
+        paths = root.get_files(modality)
+        # paths += paths1
         
-        myargs = (i_path, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, None)
+        for i_path, relpath in enumerate(paths):
+            # print(i_path, relpath)
+            meta = root.get_file_metadata(relpath)
+            # first item is personid.
+            personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
+            filesize = meta['size']
+            modtimestamp = meta['modify_time_us']
+            mymd5 = root.get_file_md5(relpath)
+            
+            myargs = (i_path, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, None)
 
-        if verbose:
-            print("INFO: ADDED ", relpath)
+            if verbose:
+                print("INFO: ADDED ", relpath)
 
-        all_args.append(myargs)
+            all_args.append(myargs)
 
     if len(all_args) > 0:
-        cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+        con = sqlite3.connect(databasename)
+        cur = con.cursor()
+
+        cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
         
-    con.commit() 
-    con.close()
+        con.commit() 
+        con.close()
 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
-def update_manifest(root: FileSystemHelper, subdirs: list[str] = ['Waveforms', 'Images', 'OMOP'], databasename="journal.db", verbose: bool = False):
+def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
+                     databasename="journal.db", verbose: bool = False):
+    """
+    Update the manifest database with the files found in the specified root directory.
 
+    Args:
+        root (FileSystemHelper): The root directory to search for files.
+        modalities (list[str], optional): The subdirectories to search for files. Defaults to ['Waveforms', 'Images', 'OMOP'].
+        databasename (str, optional): The name of the manifest database. Defaults to "journal.db".
+        verbose (bool, optional): Whether to print verbose output. Defaults to False.
+    """
     print("INFO: Updating Manifest...", databasename, flush=True)
 
-    if not os.path.exists(databasename):
-        # os.remove(pushdir_name + ".db")
-        print(f"ERROR: No manifest exists for filename {databasename}")
-        return
-    
     con = sqlite3.connect(databasename)
     cur = con.cursor()
     
     # check if manifest table exists.
-    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='manifest'").fetchone():
-        print(f"ERROR:  table manifest does not exist.")
-        con.close()
-        return
-
-    paths = []
-    for subdir in subdirs:
-        paths1 = root.get_files(subdir)
-        paths += paths1
-
-    # print(paths[0])
-
     curtimestamp = int(math.floor(time.time() * 1e6))
 
     i_file = cur.execute("SELECT MAX(file_id) from manifest").fetchone()[0]
@@ -155,119 +224,125 @@ def update_manifest(root: FileSystemHelper, subdirs: list[str] = ['Waveforms', '
         i_file = 1
     else: 
         i_file += 1
-    # print(i_file)
+    con.close()    
 
-    # get all active files, these are active-pending-delete until the file is found in filesystem
-    activefiletuples = cur.execute("Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr from manifest where TIME_INVALID_us IS NULL").fetchall()
-    con.close()
+    modalities = modalities if modalities else DEFAULT_MODALITIES
     
-    # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
-    files_to_inactivate = {}
-    for i in activefiletuples:
-        fpath = i[0]
-        if fpath not in files_to_inactivate.keys():
-            files_to_inactivate[fpath] = [ (i[1], i[2], i[3], i[4], i[5]) ]
-        else:
-            files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
+    paths = []
     all_insert_args = []
-    for i_path, relpath in enumerate(paths):
-        # print(path)
+    all_del_args = []
+    files_to_inactivate = {}
+    for modality in modalities:
+        paths = root.get_files(modality)
         
-        # get information about the current file
-        meta = root.get_file_metadata(relpath)
-        # first item is personid.
-        personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
-        filesize = meta['size']
-        modtimestamp = meta['modify_time_us']
-        # 
+        con = sqlite3.connect(databasename)
+        cur = con.cursor()
+        # get all active files, these are active-pending-delete until the file is found in filesystem
+        activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr from manifest where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
+        con.close()
+        
+        # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
+        modality_files_to_inactivate = {}
+        for i in activefiletuples:
+            fpath = i[0]
+            if fpath not in modality_files_to_inactivate.keys():
+                modality_files_to_inactivate[fpath] = [ (i[1], i[2], i[3], i[4], i[5]) ]
+            else:
+                modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
-        # get information about the old file
-        # query files by filename, modtime, and size
-        # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
-        # filecheckrow = cur.execute("Select file_id, size, src_modtime_us, md5, upload_dtstr from manifest where filepath=? and TIME_INVALID_us IS NULL", [(relpath)])
+        for i_path, relpath in enumerate(paths):
+            # print(path)
+            
+            # get information about the current file
+            meta = root.get_file_metadata(relpath)
+            # first item is personid.
+            personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
+            filesize = meta['size']
+            modtimestamp = meta['modify_time_us']
+            # 
 
-        # results = filecheckrow.fetchall()
-        if relpath in files_to_inactivate.keys():
-            results = files_to_inactivate[relpath]
-            # There should only be 1 active file according to the path in a well-formed 
-            if len(results) > 1:
-                print("ERROR: Multiple active files with that path - can't compare to old files")
-                return
-            elif len(results) == 1:
-                (oldfileid, oldsize, oldmtime, oldmd5, oldsync) = results[0]
-                
-                # if old size and new size, old mtime and new mtime are same (name is already matched)
-                # then same file, skip rest.
-                if (oldmtime == modtimestamp):
-                    if (oldsize == filesize):
-                        # files are very likely the same because of size and modtime match
-                        del files_to_inactivate[relpath]  # do not mark file as inactive.
-                        # print("SAME ", relpath )
-                        continue
-                    else:
-                        #time stamp same but file size is different?
-                        print("ERROR: File size is different but modtime is the same.", relpath)
-                        continue
+            # get information about the old file
+            # query files by filename, modtime, and size
+            # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
+            # filecheckrow = cur.execute("Select file_id, size, src_modtime_us, md5, upload_dtstr from manifest where filepath=? and TIME_INVALID_us IS NULL", [(relpath)])
+
+            # results = filecheckrow.fetchall()
+            if relpath in modality_files_to_inactivate.keys():
+                results = modality_files_to_inactivate[relpath]
+                # There should only be 1 active file according to the path in a well-formed 
+                if len(results) > 1:
+                    print("ERROR: Multiple active files with that path - manifest is not consistent")
+                    return
+                elif len(results) == 1:
+                    (oldfileid, oldsize, oldmtime, oldmd5, oldsync) = results[0]
                     
-                else:
-                    # timestamp changed. we need to compute md5 to check, or to update.
-                    mymd5 = root.get_file_md5(relpath)
-
-                    # files are extremely likely the same just moved.
-                    # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
-                    # choosing not to change SYNC_TIME
-                    # cur.execute("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
-                    if (oldsize == filesize) and (mymd5 == oldmd5):
-                        # essentially copy the old and update the modtime.
-                        myargs = (i_file, personid, relpath, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
-                        if verbose:
-                            print("INFO: COPIED/MOVED ", relpath)
-                        # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
-                    else:
-                        # files are different.  set the old file as invalid and add a new file.
-                        myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, None)
-                        if verbose:
-                            print("INFO: UPDATED ", relpath)
-                        # modified file. old one should be removed.
-                    
-                    i_file += 1 # this is a uid.  so has to increment.
+                    # if old size and new size, old mtime and new mtime are same (name is already matched)
+                    # then same file, skip rest.
+                    if (oldmtime == modtimestamp):
+                        if (oldsize == filesize):
+                            # files are very likely the same because of size and modtime match
+                            del modality_files_to_inactivate[relpath]  # do not mark file as inactive.
+                            # print("SAME ", relpath )
+                            continue
+                        else:
+                            #time stamp same but file size is different?
+                            print("ERROR: File size is different but modtime is the same.", relpath)
+                            continue
                         
-                    all_insert_args.append(myargs)
-                    # cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)            
+                    else:
+                        # timestamp changed. we need to compute md5 to check, or to update.
+                        mymd5 = root.get_file_md5(relpath)
+
+                        # files are extremely likely the same just moved.
+                        # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
+                        # choosing not to change SYNC_TIME
+                        # cur.execute("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
+                        if (oldsize == filesize) and (mymd5 == oldmd5):
+                            # essentially copy the old and update the modtime.
+                            myargs = (i_file, personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
+                            if verbose:
+                                print("INFO: COPIED/MOVED ", relpath)
+                            # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
+                        else:
+                            # files are different.  set the old file as invalid and add a new file.
+                            myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, None)
+                            if verbose:
+                                print("INFO: UPDATED ", relpath)
+                            # modified file. old one should be removed.
+                        
+                        i_file += 1 # this is a uid.  so has to increment.
+                            
+                        all_insert_args.append(myargs)
+                else:
+                    print("ERROR: File found but no metadata.", relpath)
+                    continue
             else:
-                print("ERROR: File found but no metadata.", relpath)
-                continue
-        else:
-            # if DNE, add new file
-            mymd5 = root.get_file_md5(relpath)
+                # if DNE, add new file
+                mymd5 = root.get_file_md5(relpath)
 
-            myargs = (i_file, personid, relpath, modtimestamp, filesize, mymd5, curtimestamp, None, None)
-            all_insert_args.append(myargs)
-            # cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", [myargs])
-            if verbose:
-                print("INFO: ADDED  ", relpath)
-            i_file += 1
+                myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, None)
+                all_insert_args.append(myargs)
+                if verbose:
+                    print("INFO: ADDED  ", relpath)
+                i_file += 1
+        files_to_inactivate.update(modality_files_to_inactivate)
 
-
-    # for all files that were active but aren't there anymore
-    # invalidate in manifest
-    # for file_id,record_id in zip(activefilemap.keys(),activefilemap.values()):
-    # myargs = map(lambda v: (curtimestamp, v), files_to_inactivate)
-    
-    myargs = []
-    for relpath, vals in files_to_inactivate.items():
-        if verbose:
-            if (relpath in paths):
-                print("INFO: OUTDATED  ", relpath)
-            else:
-                print("INFO: DELETED  ", relpath)
+        # for all files that were active but aren't there anymore
+        # invalidate in manifest
         
-        for v in vals:
-            myargs.append((curtimestamp, v[0]))
-    # print("SQLITE update arguments ", myargs)
+        for relpath, vals in modality_files_to_inactivate.items():
+            if verbose:
+                if (relpath in paths):
+                    print("INFO: OUTDATED  ", relpath)
+                else:
+                    print("INFO: DELETED  ", relpath)
+            
+            for v in vals:
+                all_del_args.append((curtimestamp, v[0]))
+        # print("SQLITE update arguments ", all_del_args)
 
-    if (len(all_insert_args) > 0) or (len(myargs) > 0):
+    if (len(all_insert_args) > 0) or (len(all_del_args) > 0):
         # back up only on upload
         # backup_manifest(databasename)
         
@@ -275,9 +350,9 @@ def update_manifest(root: FileSystemHelper, subdirs: list[str] = ['Waveforms', '
         cur = con.cursor()
 
         if len(all_insert_args) > 0:
-            cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
-        if (len(myargs) > 0):
-            cur.executemany("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?",myargs)
+            cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+        if (len(all_del_args) > 0):
+            cur.executemany("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?",all_del_args)
 
         con.commit() 
         con.close()
@@ -286,17 +361,24 @@ def update_manifest(root: FileSystemHelper, subdirs: list[str] = ['Waveforms', '
         
 
 
-
 # all files to upload are marked with upload_dtstr = NULL. 
-def select_files_to_upload(databasename="journal.db", outfilename : Optional[str] = None, verbose:bool = False):
+def list_files(databasename="journal.db", version: Optional[str] = None, 
+                         modalities: list[str] = None,
+                         verbose:bool = False):
+    """
+    Selects the files to upload from the manifest database.  Print to stdout if outfile is not specified, and return list.
 
-    print("INFO: Extracting Active Files to upload.  Deleted files are not reported.", flush=True)
+    Args:
+        databasename (str, optional): The name of the manifest database. Defaults to "journal.db".
+        version (str, optional): The version of the upload, which is the datetime of an upload.  If None (default) the un-uploaded files are returned
+        outfilename (Optional[str], optional): The name of the output file to write the selected files. Defaults to None.
+        verbose (bool, optional): Whether to print verbose output. Defaults to False.
 
-    if not os.path.exists(databasename):
-        # os.remove(pushdir_name + ".db")
-        print(f"ERROR: No manifest exists for filename {databasename}")
-        return
-    
+    Returns:
+        List[str]: The list of files to upload.
+    """
+    # Rest of the code...
+        
     con = sqlite3.connect(databasename)
     cur = con.cursor()
 
@@ -306,17 +388,26 @@ def select_files_to_upload(databasename="journal.db", outfilename : Optional[str
         return None
 
     # identify 3 subsets:   deleted, updated, and added.
-    # deleted:  upload_dtstr=NULL file with invalid time stamp.  No additional valid time stamp
-    # added:  upload_dtstr=NULL file with null invalid time stemp and no prior entry with non-null invalid time stamp
-    # modified:  upload_dtstr=NULL file with null invalid time, and a prior entry with non-null invalid time stamp
+    # deleted:  file with invalid time stamp.  No additional valid time stamp
+    # added:  file with null invalid time stemp and no prior entry with non-null invalid time stamp
+    # modified:  file with null invalid time, and a prior entry with non-null invalid time stamp
     # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_us from manifest where upload_dtstr IS NULL").fetchall()
     # to_remove = [ ]
     
-    # select where upload_dtstr is NULL or time_invalid_us is NULL
-    files_to_update = cur.execute("Select filepath, time_invalid_us from manifest where upload_dtstr IS NULL").fetchall()
+    version_where = f"= '{version}'" if version is not None else "IS NULL"
+    if (modalities is None) or (len(modalities) == 0):    
+        # select where upload_dtstr is NULL or time_invalid_us is NULL
+        files_to_update = cur.execute(f"Select filepath, time_invalid_us from manifest where upload_dtstr {version_where}").fetchall()
+    else:
+        files_to_update = []
+        for modality in modalities:
+            files_to_update += cur.execute(f"Select filepath, time_invalid_us from manifest where upload_dtstr {version_where} AND MODALITY = '{modality}'").fetchall()
     # print(files_to_update)
     # only need to add, not delete.  rely on manifest to mark deletion.
     con.close()
+    
+    print("INFO: extracted files to upload for ", ("current" if version is None else version), " upload version and modalities =", 
+          (",".join(modalities) if modalities is not None else "all"))
     
     # this is pulling back only files with changes during since the last upload.  an old file may be inactivated but is in a previous upload
     # so we only see the "new" part, which would look like an add.
@@ -344,6 +435,7 @@ def select_files_to_upload(databasename="journal.db", outfilename : Optional[str
             print("INFO: UPDATE ", f)
         for f in deletes:
             print("INFO: DELETE ", f)
+            
     file_list = list(active_files)
     # sort the file-list
     # file_list.sort()
@@ -353,17 +445,24 @@ def select_files_to_upload(databasename="journal.db", outfilename : Optional[str
     
     # do we need to delete files in central at all? NO.  manifest will be updated.
     # we only need to add new files
-    
-    if outfilename is not None:
-        with open(outfilename, 'w') as f:
-            f.write("\n".join(file_list))
-    # else:
-    #     print("Files to upload: ")
-    #     print("\n".join(file_list))
                 
     return file_list
 
 def list_uploads(databasename="journal.db"):
+    """
+    Retrieve a list of unique upload dates from the manifest database.
+
+    Args:
+        databasename (str): The name of the manifest database file. Defaults to "journal.db".
+
+    Returns:
+        list: A list of unique upload dates from the manifest database.
+
+    Raises:
+        None
+
+    """
+    
     if not os.path.exists(databasename):
         print(f"ERROR: No manifest exists for filename {databasename}")
         return None
@@ -385,6 +484,20 @@ def list_uploads(databasename="journal.db"):
     return uploads
 
 def list_manifests(databasename="journal.db"):
+    """
+    Lists the tables in the SQLite database specified by the given database name.
+
+    Args:
+        databasename (str): The name of the SQLite database file. Defaults to "journal.db".
+
+    Returns:
+        list: A list of tables in the database.
+
+    Raises:
+        None
+
+    """
+    
     if not os.path.exists(databasename):
         print(f"ERROR: No manifest exists for filename {databasename}")
         return None
@@ -434,6 +547,20 @@ def list_manifests(databasename="journal.db"):
     
 # this should only be called when an upload is initiated.
 def backup_manifest(databasename="journal.db", suffix:str = None):
+    """
+    Backs up the database manifest table to a new table with a given suffix.
+
+    Args:
+        databasename (str): The name of the database file. Defaults to "journal.db".
+        suffix (str, optional): The suffix to be added to the backup table name. Defaults to None.
+
+    Returns:
+        str: The name of the backup table.
+
+    Raises:
+        None
+
+    """
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print(f"ERROR: No manifest exists for filename {databasename}")
@@ -462,6 +589,20 @@ def backup_manifest(databasename="journal.db", suffix:str = None):
     
 # this should only be called when an upload is initiated.
 def restore_manifest(databasename="journal.db", suffix:str = None):
+    """
+    Restores the database manifest from a backup table.
+
+    Args:
+        databasename (str, optional): The name of the database file. Defaults to "journal.db".
+        suffix (str, optional): The suffix of the backup table. If not specified, an error message is printed.
+
+    Returns:
+        str: The name of the restored backup table.
+
+    Raises:
+        None
+
+    """
     if suffix is None:
         print("ERROR: previous version not specified.  please supply a suffix.")
         return
@@ -484,7 +625,7 @@ def restore_manifest(databasename="journal.db", suffix:str = None):
     # do not backup, similar to git checkout - current changes are lost if not committed.
     # backup_name = backup_manifest(databasename)
     
-    # then restor
+    # then restore
     cur.execute(f"DROP TABLE IF EXISTS manifest")
     cur.execute(f"CREATE TABLE manifest AS SELECT * FROM {manifestname}")
 
@@ -494,64 +635,129 @@ def restore_manifest(databasename="journal.db", suffix:str = None):
     return manifestname
 
 
-
 def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
-                 databasename="journal.db", upload_datetime_str: Optional[str] = None):
+                 databasename="journal.db",
+                 modalities: list[str] = DEFAULT_MODALITIES, amend:bool = False, verbose: bool = False):
+    """
+    Uploads files from the source path to the destination path and updates the manifest.
+    only allows uploaded new files and not reupload of previous upload.
+    note that manifest is updated only when verified. 
+
+    Args:
+        src_path (FileSystemHelper): The source path from where the files will be uploaded.
+        dest_path (FileSystemHelper): The destination path where the files will be copied to.
+        databasename (str, optional): The name of the manifest database file. Defaults to "journal.db".
+        upload_datetime_str (str, optional): The upload datetime string. Defaults to None.
+
+    Returns:
+        str: The upload version string.
+
+    Raises:
+        FileNotFoundError: If the manifest database file does not exist.
+        AssertionError: If some uploaded files are not in the manifest or if there are mismatched files.
+
+    """
 
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print(f"ERROR: No manifest exists for filename {databasename}")
         return
 
-    # get the current datetime
-    upload_ver_str = strftime("%Y%m%d%H%M%S", gmtime()) if upload_datetime_str is None else upload_datetime_str
-
-    #---------- upload files.    
-    # first get the list of files
-    files_to_upload = select_files_to_upload(databasename)
-
+    # if amend then get the latest version from db
+    if amend:
+        con = sqlite3.connect(databasename)
+        cur = con.cursor()
+    
+        upload_ver_str = cur.execute("SELECT MAX(upload_dtstr) FROM manifest").fetchone()[0]
+        con.close()
+    else:
+        # get the current datetime
+        upload_ver_str = strftime("%Y%m%d%H%M%S", gmtime())
+        
     # create a dated root directory to receive the files
     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(upload_ver_str))
+
+    #---------- upload files.    
+    # first get the list of files for the requested version
+    files_to_upload = list_files(databasename, version=None, modalities=modalities, verbose = False)
+
     # then copy the files over
-    src_path.copy_files_to(files_to_upload, dated_dest_path)
+    count = src_path.copy_files_to(files_to_upload, dated_dest_path, verbose=verbose)
     
+    print("INFO: copied ", count, " files from ", src_path.root, " to ", dated_dest_path.root)
+
     #----------- verify upload and update manifest
+    
+    # get list of files that have been uploaded and needs to be updated.
     # update the manifest with what's uploaded, verifying the size and md5 also.
     con = sqlite3.connect(databasename)
     cur = con.cursor()
-    # note that this is not the same list as the selected files since that one excludes deleted    
-    entries_to_update = cur.execute("Select file_id, filepath, size, md5, time_invalid_us from manifest where upload_dtstr IS NULL").fetchall()
+    # note that this is not the same list as the selected files since that one excludes deleted  
+    entries_in_version = cur.execute("Select file_id, filepath, modality, size, md5 from manifest where time_invalid_us is NULL AND upload_dtstr is NULL").fetchall()
+    con.close()
+
+    # check for boundary cases
     uploaded_files = set(files_to_upload)
-    files_to_update = set([f[1] for f in entries_to_update])
+    files_to_update = set([f[1] for f in entries_in_version])
     if len(uploaded_files - files_to_update) > 0:
         print("ERROR: some uploaded files are not in manifest.  ", uploaded_files - files_to_update)
+        
     # other cases are handled below.
     
-    args_verified = []
-    args_deleted = []
-    for (file_id, fn, size, md5, invalidtime) in entries_to_update:
+    modality_set = set(modalities) if modalities is not None else set(DEFAULT_MODALITIES)
+    update_args = []  # merged deleted and updated.
+    matched = set()
+    missing = set()
+    mismatched = set()
+    for (file_id, fn, modality, size, md5) in entries_in_version:
+        if modality not in modality_set:
+            # exclude the files that do not have requested modality
+            continue
+                
         if fn in uploaded_files:
             dest_meta = dated_dest_path.get_file_metadata(fn)
+            if dest_meta is None:
+                missing.add(fn)
+                print("ERROR:  missing file at destination", fn)
+                continue
+
             dest_md5 = dated_dest_path.get_file_md5(fn)
             
             if (size == dest_meta['size']) and (md5 == dest_md5):
-                args_verified.append((upload_ver_str, file_id))
-            else:
-                print("ERROR:  mismatched file ", fn, " fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
-        else:  # should be the deleted files
-            if (invalidtime is not None):
-                args_deleted.append((upload_ver_str, file_id))
-            else:
-                print("ERROR:  missing file ", fn, " fileid ", file_id, " : size ", size, " md5 ", md5)
-            
-    cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", args_verified)
-    cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", args_verified)
-    con.commit() 
+                matched.add(fn)
+                update_args.append((upload_ver_str, file_id))  # verified
+            else:      
+                mismatched.add(fn)
+                # entries are not updated because of mismatch.
+                print("ERROR:  mismatched file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
+        else:  
+            print("ERROR:  active file in upload set ", fn, " fileid ", file_id, " : size ", size, " md5 ", md5)
+
+    # deleted or outdated set.
+    con = sqlite3.connect(databasename)
+    cur = con.cursor()
+    # note that this is not the same list as the selected files since that one excludes deleted  
+    entries_in_version = cur.execute("Select file_id, filepath, modality, size, md5 from manifest where time_invalid_us is not NULL AND upload_dtstr is NULL").fetchall()
     con.close()
+
+    deleted = set()
+    for (file_id, fn, modality, size, md5) in entries_in_version:
+        if modality not in modality_set:
+            # exclude the files that do not have requested modality
+            continue
+        
+        deleted.add(fn)
+        update_args.append((upload_ver_str, file_id))  # deleted
+    
+    if len(update_args) > 0:
+        con = sqlite3.connect(databasename)
+        cur = con.cursor()
+        cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+        con.commit() 
+        con.close()
     
     # create a versioned backup - AFTER updating the manifest.
     backup_manifest(databasename, suffix=upload_ver_str) 
-    
     
     # finally, upload the manifest.
     manifest_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
@@ -561,12 +767,26 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # Question - do we copy the manifest into the source directory? YES for now (in case of overwrite)
     manifest_fn = os.path.basename(databasename)
     manifest_path.copy_files_to([manifest_fn], dated_dest_path)
-    manifest_path.copy_files_to([(manifest_fn, "_".join([manifest_fn, upload_ver_str]))], src_path)
+    # manifest_path.copy_files_to([(manifest_fn, "_".join([manifest_fn, upload_ver_str]))], src_path)
 
     return upload_ver_str
 
+# verify a set of files that have been uploaded.  version being None means using the last upload
+def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", 
+                 version: Optional[str] = None, 
+                 modalities: Optional[list] = None, verbose: bool = False):
+    """
+    Verify the integrity of uploaded files by comparing their metadata and MD5 checksums.
 
-def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", upload_datetime_str: Optional[str] = None):
+    Args:
+        dest_path (FileSystemHelper): The destination path where the files are stored.
+        databasename (str, optional): The name of the database file. Defaults to "journal.db".
+        upload_datetime_str (str, optional): The upload datetime string. If not provided, the latest upload datetime will be used.
+
+    Returns:
+        set: A set of filenames that have mismatched metadata or MD5 checksums.
+    """
+    
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print(f"ERROR: No manifest exists for filename {databasename}")
@@ -576,15 +796,22 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", upl
     cur = con.cursor()
 
     # get the current datetime
-    dtstr = cur.execute("SELECT MAX(upload_dtstr) FROM manifest").fetchone()[0] if upload_datetime_str is None else upload_datetime_str
+    dtstr = cur.execute("SELECT MAX(upload_dtstr) FROM manifest").fetchone()[0] if version is None else version
     
     if dtstr is None:
         print("INFO: no previous upload found.")
+        con.close()
         return
     
     
     # get the list of files, md5, size for upload_dtstr matching dtstr
-    files_to_verify = cur.execute("Select filepath, size, md5 from manifest where upload_dtstr=?", [dtstr]).fetchall()
+    if modalities is None:
+        files_to_verify = cur.execute(f"Select file_id, filepath, size, md5 from manifest where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL").fetchall()
+    else:
+        files_to_verify = []
+        for modality in modalities:
+            files_to_verify += cur.execute(f"Select file_id, filepath, size, md5 from manifest where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL AND MODALITY = '{modality}'").fetchall()
+        
     con.close()
     
     #---------- verify files.    
@@ -592,22 +819,28 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", upl
     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr))
     
     # now compare the metadata and md5
+    missing = set()
+    matched = set()
     mismatched = set()
-    for (fn, size, md5) in files_to_verify:
+    for (fid, fn, size, md5) in files_to_verify:
         # what if the file is missing?
         
         dest_meta = dated_dest_path.get_file_metadata(fn)
         if dest_meta is None:
             print("ERROR:  missing file ", fn)
-            mismatched.add(fn)
+            missing.add(fn)
             continue
         
         dest_md5 = dated_dest_path.get_file_md5(fn)
         
         if (size == dest_meta['size']) and (md5 == dest_md5):
-            print("INFO: Verified upload", dtstr, " ", fn)
+            if verbose:
+                print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
+            matched.add(fn)
         else:
-            print("ERROR:  mismatched file ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
+            print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
             mismatched.add(fn)
             
-    return mismatched
+    print("INFO:  verified ", len(matched), " files, ", len(mismatched), " mismatched, ", len(missing), " missing.")
+            
+    return matched, mismatched, missing

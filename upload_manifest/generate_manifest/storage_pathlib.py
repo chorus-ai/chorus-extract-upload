@@ -40,7 +40,7 @@
 # seems a little easier to use but slightly more complex to set up.
 # md5 appears working.
 
-# TODO:  check file metadata before writing.
+# TODO:  check file existence and metadata before copying.
 
 from cloudpathlib import AnyPath, CloudPath, S3Path, AzureBlobPath, GSPath
 from cloudpathlib.client import Client
@@ -58,7 +58,7 @@ import shutil
 
 # to ensure consistent interface, we use default profile (S3) or require environment variables to be set
 # azure:  url:  az://{container}/
-#     credential:  {AZURE_STORAGE_CONNECTION_STRING} or {AZURE_ACCOUNT_NAME}+{AZURE_ACCOUNT_KEY} 
+#     credential:  {AZURE_STORAGE_CONNECTION_STRING} or {AZURE_ACCOUNT_NAME}+{AZURE_ACCOUNT_KEY} or {AZURE_ACCOUNT_NAME}+{AZURE_SAS_TOKEN}
 # aws:    url:  s3://{container}/
 #     credential:  default profile, or {AWS_ACCESS_KEY_ID} {AWS_SECRET_ACCESS_KEY} {AWS_DEFAULT_REGION}
 # gcp:    url:  gs://{bucket}/
@@ -85,6 +85,14 @@ class FileSystemHelper:
     #  session token
     #  existing session object
     def __init__(self, path: Union[str, CloudPath, Path], client : Optional[Client] = None):
+        """
+        Initialize the StoragePath object.
+
+        Args:
+            path (Union[str, CloudPath, Path]): The path to the storage location. It can be a string URL, a CloudPath object, or a Path object.
+            client (Optional[Client]): An optional client object for accessing the storage location. Defaults to None.
+
+        """
         
         # check if data is in kwargs
             
@@ -97,16 +105,21 @@ class FileSystemHelper:
             
         self.is_cloud = isinstance(self.root, CloudPath)
         
-        
-    def get_file_metadata(self, path: Union[str, Path, CloudPath]  ) -> dict:
+    def get_file_metadata(self, path: Union[str, Path, CloudPath]) -> dict:
         """
-        Get the metadata of a file.
+        Retrieves the metadata of a file.
 
-        :param file_path: The path to the file.
-        :type file_path: str 
-        :return: A dictionary containing the metadata of the file.
-        :rtype: dict
+        Args:
+            path (Union[str, Path, CloudPath]): The path of the file.
+
+        Returns:
+            dict: A dictionary containing the file metadata.
+                - "path" (str): The relative path of the file.
+                - "size" (int): The size of the file in bytes.
+                - "create_time_us" (int): The creation time of the file in microseconds.
+                - "modify_time_us" (int): The modification time of the file in microseconds.
         """
+        
         # Initialize the dictionary to store the metadata
         metadata = {}
         
@@ -130,6 +143,15 @@ class FileSystemHelper:
         return metadata
     
     def calc_file_md5(self, path: Union[str, Path, CloudPath]) -> str:
+        """
+        Calculate the MD5 hash of a file.
+
+        Args:
+            path (Union[str, Path, CloudPath]): The path to the file.
+
+        Returns:
+            str: The hexadecimal representation of the MD5 hash.
+        """
         curr = self.root.joinpath(path) if isinstance(path, str) else path
         if not curr.exists():
             return None
@@ -151,12 +173,14 @@ class FileSystemHelper:
     # limited testing seems to show that the md5 aws etag and azure content-md5 are okay.
     def get_file_md5(self, path: Union[str, Path, CloudPath], verify:bool = False  ) -> str:
         """
-        Get the MD5 hash of a file.  Need to test with large dat.
+        Get the MD5 hash of a file.
 
-        :param file_path: The path to the file.
-        :type file_path: str 
-        :return: The MD5 hash of the file.
-        :rtype: str
+        Args:
+            path (Union[str, Path, CloudPath]): The path of the file.
+            verify (bool, optional): Whether to verify the MD5 hash. Defaults to False.
+
+        Returns:
+            str: The MD5 hash of the file.
         """
         
         curr = self.root.joinpath(path) if isinstance(path, str) else path
@@ -186,6 +210,16 @@ class FileSystemHelper:
     
     
     def get_files(self, subpath : str = None) -> list[str]:
+        """
+        Returns a list of file paths within the specified subpath.
+
+        Args:
+            subpath (str, optional): The subpath within the root directory to search for files. Defaults to None.
+
+        Returns:
+            list[str]: A list of file paths relative to the root directory.
+        """
+
         paths = []
         for f in self.root.rglob(subpath + "/**/*"):  # this may be inconsistently implemented in different connectors.
             if not f.is_file():
@@ -198,7 +232,20 @@ class FileSystemHelper:
     
 
     # copy multiple files from one location to another.
-    def copy_files_to(self, paths : list, dest_path : Union[Self, Path, CloudPath]):
+    def copy_files_to(self, paths: list, dest_path: Union[Self, Path, CloudPath], verbose: bool = False):
+        """
+        Copy files from the current storage path to the destination path.
+
+        Args:
+            paths (list): A list of file paths to be copied.
+            dest_path (Union[Self, Path, CloudPath]): The destination path where the files will be copied to.
+
+        Returns:
+            None
+
+        Raises:
+            None
+        """
         if len(paths) == 0:
             return
         
@@ -208,40 +255,52 @@ class FileSystemHelper:
         src_is_cloud = self.is_cloud
         dest = dest_path if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
         dest_is_cloud = isinstance(dest, CloudPath)
-        if (src_is_cloud):
-            if (dest_is_cloud):
+        count = 0
+        if src_is_cloud:
+            if dest_is_cloud:
                 for sf, df in files:
-                    print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
+                    if verbose:
+                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     src_file.copy(dest_file, force_overwrite_to_cloud=True)
+                    count += 1
             else:
                 for sf, df in files:
-                    print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
+                    if verbose:
+                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     src_file.download_to(dest_file)
+                    count += 1
+
         else:
-            if (dest_is_cloud):
+            if dest_is_cloud:
                 for sf, df in files:
-                    print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
+                    if verbose:
+                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
+                    count += 1
             else:
                 for sf, df in files:
-                    print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
+                    if verbose:
+                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         shutil.copy2(str(src_file), str(dest_file))
+                        count += 1
                     except shutil.SameFileError:
                         pass
                     except PermissionError:
                         print("ERROR: permission issue copying file ", src_file, " to ", dest_file)
                     except Exception as e:
                         print("ERROR: issue copying file ", src_file, " to ", dest_file, " exception ", e)
+                        
+        return count
