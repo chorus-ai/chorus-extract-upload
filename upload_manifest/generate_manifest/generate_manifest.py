@@ -165,6 +165,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
     paths = []
     curtimestamp = int(math.floor(time.time() * 1e6))
     all_args = []
+    i_path = 1
     
     modalities = modalities if modalities else DEFAULT_MODALITIES
     
@@ -172,7 +173,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
         paths = root.get_files(modality)
         # paths += paths1
         
-        for i_path, relpath in enumerate(paths):
+        for relpath in paths:
             # print(i_path, relpath)
             meta = root.get_file_metadata(relpath)
             # first item is personid.
@@ -182,7 +183,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
             mymd5 = root.get_file_md5(relpath)
             
             myargs = (i_path, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, None)
-
+            i_path += 1
             if verbose:
                 print("INFO: ADDED ", relpath)
 
@@ -192,8 +193,12 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
         con = sqlite3.connect(databasename)
         cur = con.cursor()
 
-        cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
-        
+        try:
+            cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+        except sqlite3.IntegrityError as e:
+            print("ERROR: create ", e)
+            print(all_args)
+                
         con.commit() 
         con.close()
 
@@ -251,7 +256,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
             else:
                 modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
-        for i_path, relpath in enumerate(paths):
+        for relpath in paths:
             # print(path)
             
             # get information about the current file
@@ -349,11 +354,15 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
         con = sqlite3.connect(databasename)
         cur = con.cursor()
 
-        if len(all_insert_args) > 0:
-            cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+        try:
+            if len(all_insert_args) > 0:
+                cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+        except sqlite3.IntegrityError as e:
+            print("ERROR: update ", e)
+            print(all_insert_args)
         if (len(all_del_args) > 0):
             cur.executemany("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?",all_del_args)
-
+            
         con.commit() 
         con.close()
     else:
