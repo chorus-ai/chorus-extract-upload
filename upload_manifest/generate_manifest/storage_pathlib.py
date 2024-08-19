@@ -247,7 +247,7 @@ class FileSystemHelper:
             None
         """
         if len(paths) == 0:
-            return
+            return 0
         
         files = paths if isinstance(paths[0], tuple) else [(f, f) for f in paths]
         

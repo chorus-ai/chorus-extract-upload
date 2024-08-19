@@ -176,7 +176,7 @@ def __make_az_client(args, for_central: bool):
     
     # parse out all the relevant argument
     azure_account_url = getattr(args, f"{prefix}_azure_account_url")
-    azure_sas_token = getattr(args, f"{prefix}_azure_sas_token")
+    azure_sas_token = getattr(args, f"{prefix}_azure_sas_token").strip("'").strip("\"")
     azure_account_name = getattr(args, f"{prefix}_azure_account_name")
     if azure_account_url is None:
         azure_account_url = f"https://{azure_account_name}.blob.core.windows.net/?{azure_sas_token}" if azure_account_name and azure_sas_token else None

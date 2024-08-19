@@ -689,7 +689,10 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     #---------- upload files.    
     # first get the list of files for the requested version
     files_to_upload = list_files(databasename, version=None, modalities=modalities, verbose = False)
-
+    if len(files_to_upload) == 0:
+        print("INFO: no files copied.  Done")
+        return None
+    
     # then copy the files over
     count = src_path.copy_files_to(files_to_upload, dated_dest_path, verbose=verbose)
     
