@@ -22,3 +22,9 @@ dependencies = [
     "cloudpathlib[s3]",
     "aiosqlite",
 ]
+
+[project.optional-dependencies]
+s3 = ["cloudpathlib[s3]",
+]
+gs = ["cloudpathlib[gs]",
+]
