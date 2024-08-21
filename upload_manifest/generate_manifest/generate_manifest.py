@@ -8,6 +8,11 @@ from storage_pathlib import FileSystemHelper
 from typing import Optional, Union
 from time import strftime, gmtime
 
+from cloudpathlib import AnyPath
+from pathlib import Path
+
+import re
+
 
 # TODO: DONE - Remove registry
 # TODO: DONE - Change schema of files to include modtime, filesize
@@ -129,7 +134,9 @@ def update_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MOD
     else:
         return _gen_manifest(root, modalities, databasename, verbose = verbose)
         
-
+# compile a regex for extracting person id from waveform and iamge paths
+# the personid is the first part of the path, followed by the modality, then the rest of the path
+PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images)/.*")
 
 def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, 
                   databasename="journal.db", verbose: bool = False):
@@ -170,14 +177,20 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
     modalities = modalities if modalities else DEFAULT_MODALITIES
     
     for modality in modalities:
-        paths = root.get_files(modality)
+        paths = root.get_files(modality)  # list of relative paths in posix format and in string form.
         # paths += paths1
         
         for relpath in paths:
             # print(i_path, relpath)
             meta = root.get_file_metadata(relpath)
             # first item is personid.
-            personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
+            
+            # extract personid using regex
+            matched = PERSONID_REGEX.match(relpath)
+            personid = matched.group(1) if matched else None
+            # p = AnyPath(relpath)
+            # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
+            
             filesize = meta['size']
             modtimestamp = meta['modify_time_us']
             mymd5 = root.get_file_md5(relpath)
@@ -239,7 +252,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
     all_del_args = []
     files_to_inactivate = {}
     for modality in modalities:
-        paths = root.get_files(modality)
+        paths = root.get_files(modality)  # relative paths, posix format, string form.
         
         con = sqlite3.connect(databasename)
         cur = con.cursor()
@@ -256,13 +269,16 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
             else:
                 modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
-        for relpath in paths:
-            # print(path)
-            
+        for relpath in paths:            
             # get information about the current file
             meta = root.get_file_metadata(relpath)
+            
             # first item is personid.
-            personid = relpath.split(os.path.sep)[0] if ("Waveforms" in relpath) or ("Images" in relpath) else None
+            matched = PERSONID_REGEX.match(relpath)
+            personid = matched.group(1) if matched else None
+            # p = AnyPath(relpath)
+            # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
+            
             filesize = meta['size']
             modtimestamp = meta['modify_time_us']
             # 
@@ -694,7 +710,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         return None
     
     # then copy the files over
-    count = src_path.copy_files_to(files_to_upload, dated_dest_path, verbose=verbose)
+    count = src_path.copy_files_to(files_to_upload, dated_dest_path, verbose=verbose, )
     
     print("INFO: copied ", count, " files from ", src_path.root, " to ", dated_dest_path.root)
 

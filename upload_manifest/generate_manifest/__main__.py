@@ -8,6 +8,7 @@ from generate_manifest import restore_manifest, list_uploads, list_manifests
 from generate_manifest import upload_files, verify_files, list_files
 from generate_manifest import save_command_history, show_command_history
 from storage_pathlib import FileSystemHelper
+from pathlib import Path
 
 # TODO: DONE need to support folder for different file types being located at different places.
 #       each location can be checked for specific set of file types.
@@ -31,6 +32,8 @@ def _strip_account_info(args):
     for arg in vars(args):
         if ("aws_" in arg) or ("azure_" in arg) or ("google_" in arg):
             continue
+        if (arg == "func"):
+            continue
         filtered_args[arg] = getattr(args, arg)
         
     return filtered_args
@@ -39,8 +42,6 @@ def _recreate_params(filtered_args: dict):
     params = ""
     command = ""
     for arg, val in filtered_args.items():
-        if arg == "func":
-            continue
         if arg == "command":
             command = val
             continue
@@ -51,8 +52,12 @@ def _recreate_params(filtered_args: dict):
     print(command, params) 
     return (command, params)
 
+def _getattr(args, argname):
+    out = getattr(args, argname)
+    return out.strip("'").strip("\"") if out else None
+
 def _show_history(args):
-    manifest_fn = args.manifest if args.manifest else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if args.manifest else str(Path("journal.db"))
     print("Command History: please note account information were not saved.")
     show_command_history(manifest_fn)
 
@@ -103,10 +108,10 @@ def _print_auth_usage(args):
 
 def _add_data_dir_args(parser, for_central: bool):
     prefix = "central" if for_central else "site"
-    parser.add_argument(f"--{prefix}-path", help=f"onprem/cloud {prefix} data folder. Examples: az://container/, aws://container/, or /mnt/x/project/chorus/data", required=True)
+    parser.add_argument(f"--{prefix}-path", help=f"onprem/cloud {prefix} data folder. Examples: az://container/, s3://container/, or /mnt/x/project/chorus/data", required=True)
     
 def _add_manifest_args(parser):
-    parser.add_argument("-m", "--manifest", help="onprem site manifest file (defaults to ./journal.db). this should be a local file, and will be uploaded during 'upload'", required=True)
+    parser.add_argument("-m", "--manifest", help="onprem site manifest file (defaults to journal.db). this should be a local file, and will be uploaded during 'upload'", required=True)
 
 # helper for command line argument set up
 def _add_cloud_credential_args(parser, for_central: bool):
@@ -133,10 +138,10 @@ def __make_aws_client(args, for_central: bool):
     # Azure format for account_url
     prefix = "central" if for_central else "site"
 
-    aws_session_token = getattr(args, f"{prefix}_aws_session_token")
-    aws_profile = getattr(args, f"{prefix}_aws_profile")    
-    aws_access_key_id = getattr(args, f"{prefix}_aws_access_key_id")
-    aws_secret_access_key = getattr(args, f"{prefix}_aws_secret_access_key")
+    aws_session_token = _getattr(args, f"{prefix}_aws_session_token")
+    aws_profile = _getattr(args, f"{prefix}_aws_profile")
+    aws_access_key_id = _getattr(args, f"{prefix}_aws_access_key_id")    
+    aws_secret_access_key = _getattr(args, f"{prefix}_aws_secret_access_key")
     
     from cloudpathlib import S3Client
     if aws_session_token:  # preferred.
@@ -175,9 +180,9 @@ def __make_az_client(args, for_central: bool):
     prefix = "central" if for_central else "site"
     
     # parse out all the relevant argument
-    azure_account_url = getattr(args, f"{prefix}_azure_account_url")
-    azure_sas_token = getattr(args, f"{prefix}_azure_sas_token").strip("'").strip("\"")
-    azure_account_name = getattr(args, f"{prefix}_azure_account_name")
+    azure_account_url = _getattr(args, f"{prefix}_azure_account_url")
+    azure_sas_token = _getattr(args, f"{prefix}_azure_sas_token")
+    azure_account_name = _getattr(args, f"{prefix}_azure_account_name")
     if azure_account_url is None:
         azure_account_url = f"https://{azure_account_name}.blob.core.windows.net/?{azure_sas_token}" if azure_account_name and azure_sas_token else None
 
@@ -187,8 +192,8 @@ def __make_az_client(args, for_central: bool):
     # format for path:  az://{container}/...
     # note if container is specified in account_url, we will get duplicates.
     
-    azure_storage_connection_string = getattr(args, f"{prefix}_azure_storage_connection_string")
-    azure_account_key = getattr(args, f"{prefix}_azure_account_key")
+    azure_storage_connection_string = _getattr(args, f"{prefix}_azure_storage_connection_string")
+    azure_account_key = _getattr(args, f"{prefix}_azure_account_key")
     if azure_storage_connection_string is None:
         azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" if azure_account_name and azure_account_key else None 
     
@@ -239,7 +244,7 @@ def _make_client(args, for_central: bool):
 # helper to call update manifest
 def _update_manifest(args):
     
-    manifest_fn = args.manifest if args.manifest else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if args.manifest else str(Path("journal.db"))
 
     datafs = FileSystemHelper(args.site_path, client = _make_client(args, IS_SITE))
 
@@ -249,7 +254,7 @@ def _update_manifest(args):
     
 # helper to list known update manifests
 def _list_manifests(args):
-    manifest_fn = args.manifest if args.manifest else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if args.manifest else str(Path("journal.db"))
     print("Backed up Manifests: ")
     list_manifests(manifest_fn)
     print("Uploads known in current manifest: ")
@@ -257,7 +262,7 @@ def _list_manifests(args):
     
 # helper to revert to a previous manifest
 def _revert_manifest(args):
-    manifest_fn = args.manifest if args.manifest else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if args.manifest else str(Path("journal.db"))
     revert_time = args.version
     print("Revert to: ", revert_time)
     restore_manifest(manifest_fn, revert_time)
@@ -295,7 +300,7 @@ def _write_files(file_list, dt, outfilename, outtype : str = "list"):
             
 # helper to display/save files to upload
 def _select_files(args):
-    manifest_fn = args.manifest if args.manifest else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if args.manifest else str(Path("journal.db"))
     
     mods = args.modalities.split(',') if args.modalities else None
     file_list = list_files(manifest_fn, version = args.version, modalities = mods, verbose=args.verbose)
@@ -305,7 +310,7 @@ def _select_files(args):
 
 # helper to upload files
 def _upload_files(args):
-    manifest_fn = args.manifest if args.manifest else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if args.manifest else str(Path("journal.db"))
 
     if (args.site_path is None):
         raise ValueError("site path is required")
@@ -322,7 +327,7 @@ def _upload_files(args):
     
 # helper to report file verification
 def _verify_files(args):
-    manifest_fn = args.manifest if args.manifest else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if args.manifest else str(Path("journal.db"))
     central_fs = FileSystemHelper(args.central_path, client = _make_client(args, IS_CENTRAL))
     mods = args.modalities.split(',') if args.modalities else None
     verify_files(central_fs, manifest_fn, version = args.version, modalities = mods, verbose = args.verbose)
@@ -333,7 +338,7 @@ if __name__ == "__main__":
     # parse command line arguments
     parser = argparse.ArgumentParser(description="Generate manifest for a site folder")
     parser.add_argument("-v", "--verbose", help="verbose output", action="store_true")
-    parser.add_argument("-m", "--manifest", help="onprem site manifest file (defaults to ./journal.db). this should be a local file, and will be uploaded during 'upload'", required=True)
+    parser.add_argument("-m", "--manifest", help="onprem site manifest file (defaults to journal.db). this should be a local file, and will be uploaded during 'upload'", required=True)
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
     subparsers.required = True
     
@@ -404,7 +409,12 @@ if __name__ == "__main__":
         
     args = parser.parse_args()
     
-    manifest_fn = args.manifest if "manifest" in vars(args) else os.path.join(".", "journal.db")
+    manifest_fn = args.manifest if "manifest" in vars(args) else str(Path("journal.db"))
+    
+    # check that manifest file exists
+    if (Path(manifest_fn).exists() == False):
+        raise ValueError("Manifest file does not exist")
+    
     save_command_history(*(_recreate_params(_strip_account_info(args))), manifest_fn)
     
     args.func(args)

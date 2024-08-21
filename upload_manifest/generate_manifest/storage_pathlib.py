@@ -44,7 +44,7 @@
 
 from cloudpathlib import AnyPath, CloudPath, S3Path, AzureBlobPath, GSPath
 from cloudpathlib.client import Client
-from pathlib import Path
+from pathlib import Path, WindowsPath, PureWindowsPath, PurePosixPath
 import hashlib
 import math
 from typing import Optional, Union
@@ -53,6 +53,8 @@ if sys.version_info >= (3, 11):
     from typing import Self
 else:
     from typing_extensions import Self
+
+import os
 
 import shutil
 
@@ -84,6 +86,68 @@ class FileSystemHelper:
     #  profile name in credential file
     #  session token
     #  existing session object
+    @classmethod
+    def _make_path(cls, path: Union[str, CloudPath, Path], client : Optional[Client] = None):
+        """
+        Create a Path object.
+
+        Args:
+            path (Union[str, CloudPath, Path]): The path to be converted.
+            client (Optional[Client]): An optional client object for accessing the storage location. Defaults to None.
+
+        Returns:
+            a path object depending on the path type.
+        """
+        
+        if isinstance(path, CloudPath) or isinstance(path, PureWindowsPath):
+            # cloud path, does not need to do anything more
+            # windows path or subclass. don't need to do anything more.
+            return path
+                
+        if isinstance(path, PurePosixPath):
+            # check to see if this is really a posix path
+            if path.is_absolute() and (":\\" in path.parts[0]) and ("/" not in path.parts[0]):
+                # absolute path but has ":" and "\" in the first part, so it's a windows path
+                raise ValueError("path is a windows path, but passed in as a posix path " + str(path))
+                # if isinstance(path.PosixPath):
+                #     return WindowsPath(str(path))
+                # else:
+                #     return PureWindowsPath(str(path))
+            return path
+        
+        if isinstance(path, str):
+            if (":\\" in path) and ("/" not in path):
+                # windows path
+                if os.name == 'nt':
+                    return WindowsPath(path)
+                else:
+                    return PureWindowsPath(path)
+            else:
+                return AnyPath(path, client = client)  # supports either pathlib.Path or cloudpathlib.CloudPath
+    
+    # class method to convert a path to a POSIX-compliant string
+    @classmethod
+    def _as_posix(cls, path: Union[str, Path, CloudPath], client : Optional[Client] = None) -> str:
+        """
+        Convert the path to a POSIX-compliant string.
+
+        Args:
+            path (Union[str, Path, CloudPath]): The path to be converted.
+
+        Returns:
+            str: The POSIX-compliant string representation of the path.
+        """
+
+        # if string is provided, it may be a url, posix, or windows path.  so convert to a Path or CloudPath object first.
+        p = FileSystemHelper._make_path(path, client)
+        
+        if isinstance(p, PureWindowsPath):
+            return p.as_posix()
+        else:
+            # CloudPath does not provide as_posix() method, but should already be using "/" as separator.
+            return str(p)
+
+    
     def __init__(self, path: Union[str, CloudPath, Path], client : Optional[Client] = None):
         """
         Initialize the StoragePath object.
@@ -95,16 +159,11 @@ class FileSystemHelper:
         """
         
         # check if data is in kwargs
-            
-        if (isinstance(path, str)):
-            # input is url string. possibly a client is passed in.  If no client, then environment variable, or default profile (s3) is used.
-            self.root = AnyPath(path, client = client)  # supports either pathlib.Path or cloudpathlib.CloudPath
-        elif (isinstance(path, Path)) or (isinstance(path, CloudPath)):
-            # existing Path object has been passed in.
-            self.root = path
-            
+        self.client = client
+        self.root = FileSystemHelper._make_path(path, client = client)  # supports either pathlib.Path or cloudpathlib.CloudPath
+        # If no client, then environment variable, or default profile (s3) is used.            
         self.is_cloud = isinstance(self.root, CloudPath)
-        
+                        
     def get_file_metadata(self, path: Union[str, Path, CloudPath]) -> dict:
         """
         Retrieves the metadata of a file.
@@ -123,12 +182,16 @@ class FileSystemHelper:
         # Initialize the dictionary to store the metadata
         metadata = {}
         
-        curr = self.root.joinpath(path) if isinstance(path, str) else path
+        test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+        curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
+        
         if not curr.exists():
             return None
         info = curr.stat()
         
-        metadata["path"] = str(curr.relative_to(self.root))
+        metadata["path"] = FileSystemHelper._as_posix(curr.relative_to(self.root), client = self.client)
+        if ("\\" in metadata["path"]):
+            print("WARNING:  path contains backslashes: ", metadata["path"])
         metadata["size"] = info.st_size
 
         # in cloudpathlib, only size and mtime are populated, mtime is the time of last upload, in second granularity, so not super useful
@@ -142,18 +205,21 @@ class FileSystemHelper:
 
         return metadata
     
-    def calc_file_md5(self, path: Union[str, Path, CloudPath]) -> str:
+    def _calc_file_md5(self, path: Union[Path, CloudPath]) -> str:
         """
         Calculate the MD5 hash of a file.
 
         Args:
-            path (Union[str, Path, CloudPath]): The path to the file.
+            path (Union[Path, CloudPath]): The path to the file, as Path or CloudPath, incorporating.
 
         Returns:
             str: The hexadecimal representation of the MD5 hash.
         """
-        curr = self.root.joinpath(path) if isinstance(path, str) else path
+        test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+        curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
+
         if not curr.exists():
+            print("ERROR:  file does not exist: ", curr)
             return None
         
         # Initialize the MD5 hash object
@@ -176,14 +242,15 @@ class FileSystemHelper:
         Get the MD5 hash of a file.
 
         Args:
-            path (Union[str, Path, CloudPath]): The path of the file.
+            path (Union[str, Path, CloudPath]): The path of the file, could be relative to the root.
             verify (bool, optional): Whether to verify the MD5 hash. Defaults to False.
 
         Returns:
             str: The MD5 hash of the file.
         """
         
-        curr = self.root.joinpath(path) if isinstance(path, str) else path
+        test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+        curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
         
         md5_str = None
         
@@ -199,11 +266,11 @@ class FileSystemHelper:
             if (self.is_cloud): 
                 print("INFO: calculating md5 for ", curr)
             # Calculate the MD5 hash locally
-            md5_str = self.calc_file_md5(curr)
+            md5_str = self._calc_file_md5(curr)
             
         else:
             if (self.is_cloud) and verify: 
-                md5_calced = self.calc_file_md5(curr)
+                md5_calced = self._calc_file_md5(curr)
                 print("INFO: INTERNAL VERIFICIATION:  md5 for ", curr, ": cloud ", md5_str, ", calc", md5_calced)
             
         return md5_str
@@ -221,23 +288,24 @@ class FileSystemHelper:
         """
 
         paths = []
-        for f in self.root.rglob(subpath + "/**/*"):  # this may be inconsistently implemented in different connectors.
+        # all pathlib and cloudpathlib paths can use "/"
+        for f in self.root.rglob(subpath + "/**/*"):  # this may be inconsistently implemented in different clouds.
             if not f.is_file():
                 continue
             
-            paths.append(str(f.relative_to(self.root)))
+            paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client = self.client))
             
         # return relative path
         return paths
     
 
     # copy multiple files from one location to another.
-    def copy_files_to(self, paths: list, dest_path: Union[Self, Path, CloudPath], verbose: bool = False):
+    def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False):
         """
-        Copy files from the current storage path to the destination path.
+        Copy a file from the current storage path to the destination path.
 
         Args:
-            paths (list): A list of file paths to be copied.
+            paths (list): A list of file paths, relative to the src.root, to be copied.
             dest_path (Union[Self, Path, CloudPath]): The destination path where the files will be copied to.
 
         Returns:
@@ -246,32 +314,83 @@ class FileSystemHelper:
         Raises:
             None
         """
-        if len(paths) == 0:
-            return 0
+        if relpath is None:
+            return
         
-        files = paths if isinstance(paths[0], tuple) else [(f, f) for f in paths]
+        (sf, df) = relpath if isinstance(relpath, tuple) else (relpath, relpath)
         
         src = self.root
         src_is_cloud = self.is_cloud
-        dest = dest_path if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
+        dest = FileSystemHelper._make_path(dest_path) if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
+        dest_is_cloud = isinstance(dest, CloudPath)
+        src_file = src.joinpath(sf)
+        dest_file = dest.joinpath(df)
+        if verbose:
+            print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+        dest_file.parent.mkdir(parents=True, exist_ok=True)
+
+        if src_is_cloud:
+            if dest_is_cloud:
+                src_file.copy(dest_file, force_overwrite_to_cloud=True)
+            else:
+                src_file.download_to(dest_file)
+        else:
+            if dest_is_cloud:
+                dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
+            else:
+                try:
+                    shutil.copy2(str(src_file), str(dest_file))
+                except shutil.SameFileError:
+                    pass
+                except PermissionError:
+                    print("ERROR: permission issue copying file ", src_file, " to ", dest_file)
+                except Exception as e:
+                    print("ERROR: issue copying file ", src_file, " to ", dest_file, " exception ", e)
+                        
+    
+
+
+    # copy multiple files from one location to another.
+    def copy_files_to(self, relpaths: list, dest_path: Union[Self, Path, CloudPath], verbose: bool = False) -> int:
+        """
+        Copy files from the current storage path to the destination path.
+
+        Args:
+            paths (list): A list of file paths, relative to the src.root, to be copied.
+            dest_path (Union[Self, Path, CloudPath]): The destination path where the files will be copied to.
+
+        Returns:
+            list of (name, file size, and md5) of the target
+
+        Raises:
+            None
+        """
+        if len(relpaths) == 0:
+            return 0
+        
+        files = relpaths if isinstance(relpaths[0], tuple) else [(f, f) for f in relpaths]
+        
+        src = self.root
+        src_is_cloud = self.is_cloud
+        dest = FileSystemHelper._make_path(dest_path) if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
         dest_is_cloud = isinstance(dest, CloudPath)
         count = 0
         if src_is_cloud:
             if dest_is_cloud:
                 for sf, df in files:
-                    if verbose:
-                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
+                    if verbose:
+                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     src_file.copy(dest_file, force_overwrite_to_cloud=True)
                     count += 1
             else:
                 for sf, df in files:
-                    if verbose:
-                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
+                    if verbose:
+                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     src_file.download_to(dest_file)
                     count += 1
@@ -279,19 +398,19 @@ class FileSystemHelper:
         else:
             if dest_is_cloud:
                 for sf, df in files:
-                    if verbose:
-                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
+                    if verbose:
+                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
                     count += 1
             else:
                 for sf, df in files:
-                    if verbose:
-                        print("INFO:  copying ", src, "/", sf, " to ", dest, "/", df)
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
+                    if verbose:
+                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         shutil.copy2(str(src_file), str(dest_file))
