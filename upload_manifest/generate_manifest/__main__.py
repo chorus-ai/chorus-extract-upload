@@ -411,10 +411,6 @@ if __name__ == "__main__":
     
     manifest_fn = args.manifest if "manifest" in vars(args) else str(Path("journal.db"))
     
-    # check that manifest file exists
-    if (Path(manifest_fn).exists() == False):
-        raise ValueError("Manifest file does not exist")
-    
     save_command_history(*(_recreate_params(_strip_account_info(args))), manifest_fn)
     
     args.func(args)
