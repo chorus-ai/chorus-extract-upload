@@ -51,7 +51,7 @@ def generateFirstFiles():
                 datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
                 fileSizeInBytes = 1024
                 # outputfilename = str(id) +  "_" + str(random.randint(10000,20000)) + "_"
-                outputfilename = str(id) +  "_" + datestr + "_" + (str(interval_dur) if modality == "Waveforms" else "CT_01_" + str(filenum))
+                outputfilename = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm"))
                 outputfilepath = os.path.join(personwfdir, outputfilename)
                 with open(outputfilepath, 'wb') as fout:
                     fout.write(os.urandom(fileSizeInBytes)) 
@@ -62,7 +62,7 @@ def generateFirstFiles():
     
     for filenum in range(14):
         fileSizeInBytes = 1024
-        outputfilename = str(filenum)
+        outputfilename = str(filenum) + ".csv"
         outputfilepath = os.path.join(personwfdir, outputfilename)
         with open(outputfilepath, 'wb') as fout:
             fout.write(os.urandom(fileSizeInBytes)) 
@@ -138,7 +138,7 @@ def generateUpdate():
                         interval_end = temp
                     interval_dur = interval_end - interval_st
                     datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
-                    newpath = str(id) +  "_" + datestr + "_" + str(interval_dur)
+                    newpath = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm"))
                     with open(os.path.join(dest_dir, newpath), 'wb') as fout:
                         fout.write(os.urandom(fileSizeInBytes)) 
                 # modify contents
@@ -148,7 +148,7 @@ def generateUpdate():
                 # symbolic link
                 elif option == 3:
                     # if on windows, this will fail
-                    if (os.name == 'nt'):
+                    if os.name == 'nt':
                         shutil.copy(origpath, dest_path)
                     else:
                         os.symlink(os.path.abspath(origpath), os.path.abspath(dest_path))
@@ -174,18 +174,18 @@ def generateUpdate():
                     datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
                     fileSizeInBytes = 1024
                     # outputfilename = str(id) +  "_" + str(random.randint(10000,20000)) + "_"
-                    outputfilename = str(id) +  "_" + datestr + "_" + str(interval_dur)
+                    outputfilename = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm")) 
                     outputfilepath = os.path.join(personwfdir, outputfilename)
                     with open(outputfilepath, 'wb') as fout:
                         fout.write(os.urandom(fileSizeInBytes)) 
 
     # OMOP directory - all updated
-    personwfdir = os.path.join(initpushdir, "OMOP")
+    personwfdir = os.path.join(secpushdir, "OMOP")
     os.makedirs(personwfdir, exist_ok=True)
-    
+    print("Updating OMOP")
     for filenum in range(14):
         fileSizeInBytes = 1024
-        outputfilename = str(filenum)
+        outputfilename = str(filenum) + ".csv"
         outputfilepath = os.path.join(personwfdir, outputfilename)
         with open(outputfilepath, 'wb') as fout:
             fout.write(os.urandom(fileSizeInBytes)) 
