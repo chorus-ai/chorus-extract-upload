@@ -4,4 +4,3 @@ cloudpathlib==0.18.1
 cloudpathlib[azure]
 cloudpathlib[gs]
 cloudpathlib[s3]
-aiosqlite==0.20.0
