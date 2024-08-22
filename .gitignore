@@ -3,3 +3,4 @@
 **/journal.db
 **/TestData
 **/*.db
+**/config*.toml
