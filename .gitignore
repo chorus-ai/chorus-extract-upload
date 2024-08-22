@@ -2,3 +2,4 @@
 **/__pycache__
 **/journal.db
 **/TestData
+**/*.db

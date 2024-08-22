@@ -45,15 +45,24 @@ def _strip_account_info(args):
 
 def _recreate_params(filtered_args: dict):
     params = ""
+    common_params = ""
     command = ""
-    # first specify the config file
-    if "config" not in filtered_args:
-        params += f" --config config.toml"
+    # catch verbose and config first
     for arg, val in filtered_args.items():
-        if arg == "command":
-            command = val
-            continue
-        if  val is not None:
+        if (arg in ["verbose", "config"]) and (val is not None):
+            arg_str = arg.replace("_", "-")
+            if (type(val) == bool):
+                if val == True:
+                    common_params += f" --{arg_str}"
+            else:
+                common_params += f" --{arg_str} {val}"
+    
+    if ("command" in filtered_args.keys()) and (filtered_args["command"] is not None):
+        command = filtered_args["command"]
+    
+    # cat the rest
+    for arg, val in filtered_args.items():
+        if (arg not in ["command", "verbose", "config"]) and (val is not None):
             arg_str = arg.replace("_", "-")
             if type(val) == bool:
                 params += f" --{arg_str}"
@@ -61,8 +70,9 @@ def _recreate_params(filtered_args: dict):
                 params += f" --{arg_str} {val}"
     
     params = params.strip()
-    print(command, params) 
-    return (command, params)
+    common_params = common_params.strip()
+    print(common_params, command, params) 
+    return (common_params, command, params)
 
 # def _getattr(args, argname):
 #     out = getattr(args, argname)
@@ -360,7 +370,7 @@ if __name__ == "__main__":
     # parse command line arguments
     parser = argparse.ArgumentParser(description="Generate manifest for a site folder")
     parser.add_argument("-v", "--verbose", help="verbose output", action="store_true")
-    parser.add_argument("-c", "--config", help="config file (defaults to config.toml) with storage path locations", required=False, default="config.toml")
+    parser.add_argument("-c", "--config", help="config file (defaults to config.toml) with storage path locations", required=False)
     # parser.add_argument("-m", "--manifest", help="onprem site manifest file (defaults to journal.db). this should be a local file, and will be uploaded during 'upload'", required=True)
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
     subparsers.required = True
@@ -426,14 +436,22 @@ if __name__ == "__main__":
     args = parser.parse_args()
     
     # parse the config file
-    config_fn = args.config if "config" in vars(args) else str(Path("config.toml"))
+    # get the current script path
+    scriptdir = Path(__file__).absolute().parent
+    toml_file = scriptdir.joinpath("config.toml")
+    
+    config_fn = args.config if args.config is not None else str(toml_file)
+    print("Using config file: ", config_fn)
     config = config_helper.load_config(config_fn)
     
     # get the manifest file  (download from cloud to local)
     manifest_fn = config_helper.get_journal_config(config)["path"]
     
     # save command history
-    save_command_history(*(_recreate_params(_strip_account_info(args))), manifest_fn)
+    args_dict = _strip_account_info(args)
+    if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
+        args_dict["config"] = config_fn
+    save_command_history(*(_recreate_params(args_dict)), manifest_fn)
     
     # call the subcommand function.
     args.func(args, config, manifest_fn)

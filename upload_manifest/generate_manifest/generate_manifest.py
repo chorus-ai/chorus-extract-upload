@@ -71,7 +71,7 @@ import re
 
 DEFAULT_MODALITIES = ['Waveforms', 'Images', 'OMOP']
 
-def save_command_history(cmd:str, parameters:str, databasename="journal.db"):
+def save_command_history(common_params:str, cmd:str, parameters:str, databasename="journal.db"):
     """
     Saves the command history to a SQLite database.
 
@@ -90,10 +90,11 @@ def save_command_history(cmd:str, parameters:str, databasename="journal.db"):
     cur.execute("CREATE TABLE IF NOT EXISTS command_history (\
                         COMMAND_ID INTEGER PRIMARY KEY AUTOINCREMENT, \
                         DATETIME TEXT, \
+                        COMMON_PARAMS TEXT, \
                         COMMAND TEXT, \
                         PARAMS TEXT)")
  
-    cur.execute("INSERT INTO command_history (DATETIME, COMMAND, PARAMS) VALUES(?, ?, ?)", (curtimestamp, cmd, parameters))
+    cur.execute("INSERT INTO command_history (DATETIME, COMMON_PARAMS, COMMAND, PARAMS) VALUES(?, ?, ?, ?)", (curtimestamp, common_params, cmd, parameters))
     con.commit()
     
     con.close()
@@ -115,10 +116,10 @@ def show_command_history(databasename="journal.db"):
     commands = cur.execute("SELECT * FROM command_history").fetchall()
     con.close()
     
-    for (id, timestamp, cmd, params) in commands:
+    for (id, timestamp, common_params, cmd, params) in commands:
         # convert microsecond timestamp to datetime
         # dt = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(int(timestamp/1e6)))
-        print(f"  {id}\t{timestamp}:\t{cmd} {params}")
+        print(f"  {id}\t{timestamp}:\t{common_params} {cmd} {params}")
 
 
 
