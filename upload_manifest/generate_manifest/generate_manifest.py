@@ -54,6 +54,8 @@ import re
 # TODO: DONE save command history
 # TODO: DONE upload only allow unuploaded files.
 # TODO: DONE upload allows amending the LAST upload.
+# TODO: DONE upload and verify each file at a time
+# TODO: DONE support windows paths
 
 
 # process:
@@ -744,7 +746,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             continue
         
         # src metadata
-        print(result)
+        # print(result)
         file_id, size, md5 = result[0]
 
         # get the dest file info
@@ -776,8 +778,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             result = cur.execute(f"Select file_id from manifest where time_invalid_us is NOT NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
             con.close()
 
-            if result is not None and len(result) > 0:
-                for file_id in result:
+            if (result is not None) and (len(result) > 0):
+                for (file_id,) in result:
                     deleted.add(fn)
                     update_args.append((upload_ver_str, file_id))  # this may not be paralleizable.
             
@@ -785,7 +787,11 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         if len(update_args) >= step:
             con = sqlite3.connect(databasename)
             cur = con.cursor()
-            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+            try:        
+                cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+            except sqlite3.InterfaceError as e:
+                print("ERROR: update ", e)
+                print(update_args)
             con.commit() 
             con.close()
             update_args = []
@@ -845,7 +851,12 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     if len(update_args) > 0:
         con = sqlite3.connect(databasename)
         cur = con.cursor()
-        cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+        try:        
+            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+        except sqlite3.InterfaceError as e:
+            print("ERROR: update ", e)
+            print(update_args)
+            
         con.commit() 
         con.close()
         update_args = []
@@ -869,7 +880,11 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     if len(update_args) > 0:
         con = sqlite3.connect(databasename)
         cur = con.cursor()
-        cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+        try:        
+            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+        except sqlite3.InterfaceError as e:
+            print("ERROR: update ", e)
+            print(update_args)
         con.commit() 
         con.close()
 

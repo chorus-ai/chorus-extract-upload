@@ -1,0 +1,50 @@
+# each section below indicates a path.
+# each of the paths can be specified as a local or a cloud path
+# cloud paths are specified as "az://container/path" or "s3://container/path"
+# supported cloud crendentials are below.  parentheses indicate required pairing.
+# (azure_account_name, azure_sas_token), (azure_account_name, azure_account_key), azure_connection_string, azure_account_url
+# (aws_access_key_id, aws_secret_access_key), aws_session_token, aws_profile
+# fallbacks are environment variables for these.
+
+[journal]
+path = "journal.db"   # specify the journal file name. defaults to cloud storage
+# example:  "az://container/path/to/journal.db"
+# example:  "/home/user/journal.db"
+# azure_account_name = "account_name"
+# azure_sas_token = "sastoken"
+
+[central_path]
+# specify the central (target) container/path, to which files are uploaded.  
+# This is also the default location for the journal file
+
+# example:  "az://container/path"
+path = "az://test/"
+# azure account credentials are specified as one or more of the following.
+azure_account_name = "account_name"
+azure_sas_token = "sastoken"
+# azure_account_key = "account_key"
+# azure_connection_string = "connection_string"
+# azure_account_url = "account_url"
+
+[site_path]
+  [site_path.default]
+  # specify the default site (source) path
+  path = "/mnt/data/site"
+
+  # each can have its own access credentials
+  [site_path.omop]
+  # optional:  specific paths for omop data
+  path = "/mnt/data/site/omop"
+
+  [site_path.images]
+  # optional:  specific paths for images
+  path = "s3://container/path/images"
+  aws_access_key_id = "access_key_id"
+  aws_secret_access_key = "secret_access"
+  # can also specify aws session token, or profile.
+  # aws_session_token = "session_token"
+  # aws_profile = "profile"
+
+  [site_path.waveforms]
+  path = "/mnt/data/site/waveforms"
+
