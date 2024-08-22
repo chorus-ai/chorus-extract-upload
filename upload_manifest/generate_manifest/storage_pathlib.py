@@ -299,7 +299,7 @@ class FileSystemHelper:
         return paths
     
 
-    # copy multiple files from one location to another.
+    # copy 1 file from one location to another.
     def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False):
         """
         Copy a file from the current storage path to the destination path.

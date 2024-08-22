@@ -71,7 +71,9 @@ import re
 
 DEFAULT_MODALITIES = ['Waveforms', 'Images', 'OMOP']
 
-def save_command_history(common_params:str, cmd:str, parameters:str, databasename="journal.db"):
+def save_command_history(common_params:str, cmd:str, parameters:str, 
+                         src_paths:str, dest_path:str,
+                         databasename="journal.db"):
     """
     Saves the command history to a SQLite database.
 
@@ -92,9 +94,11 @@ def save_command_history(common_params:str, cmd:str, parameters:str, databasenam
                         DATETIME TEXT, \
                         COMMON_PARAMS TEXT, \
                         COMMAND TEXT, \
-                        PARAMS TEXT)")
+                        PARAMS TEXT, \
+                        SRC_PATHS TEXT, \
+                        DEST_PATH TEXT)")
  
-    cur.execute("INSERT INTO command_history (DATETIME, COMMON_PARAMS, COMMAND, PARAMS) VALUES(?, ?, ?, ?)", (curtimestamp, common_params, cmd, parameters))
+    cur.execute("INSERT INTO command_history (DATETIME, COMMON_PARAMS, COMMAND, PARAMS, SRC_PATHS, DEST_PATH) VALUES(?, ?, ?, ?, ?, ?)", (curtimestamp, common_params, cmd, parameters, src_paths, dest_path))
     con.commit()
     
     con.close()
@@ -116,10 +120,10 @@ def show_command_history(databasename="journal.db"):
     commands = cur.execute("SELECT * FROM command_history").fetchall()
     con.close()
     
-    for (id, timestamp, common_params, cmd, params) in commands:
+    for (id, timestamp, common_params, cmd, params, src_paths, dest_path) in commands:
         # convert microsecond timestamp to datetime
         # dt = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(int(timestamp/1e6)))
-        print(f"  {id}\t{timestamp}:\t{common_params} {cmd} {params}")
+        print(f"  {id}\t{timestamp}:\t{common_params} {cmd} {params}.  {src_paths}->{dest_path}")
 
 
 
