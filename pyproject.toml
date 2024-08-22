@@ -18,6 +18,7 @@ dependencies = [
     "pandas",
     "cloudpathlib",
     "cloudpathlib[azure]",
+    "tomli"
 ]
 
 [project.optional-dependencies]

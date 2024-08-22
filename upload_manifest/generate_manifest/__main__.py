@@ -21,10 +21,10 @@ import config_helper
 # TODO: NOT AT THIS TIME: function to generate bash scripts (azcopy and azcli) for upload instead of using built in.  This would require a verfication and mark_uploaded function.
 # TODO: DONE check the sas token to account url conversion.
 # TODO: DONE update and upload one or more modality only
-# TODO: hide some login options.
 
-# TODO: config file to reduce command line parameters
+# TODO: DONE config file to reduce command line parameters
 # TODO: pull and push journal files from central.
+# TODO: manifest track source path and dest container
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -83,76 +83,54 @@ def _show_history(args, config, manifest_fn):
     show_command_history(manifest_fn)
 
 def _print_usage(args, config, manifest_fn):
-    # TODO: update this
+    # TODO: DONE update this
     print("The following are example usage for each of the commands:")
     print("  Please use 'auth_help' to see help information about authentication methods")
     print("  Please use each subcommand's help to get a detailed list of parameters")
+    print("For each command, the following parameters are common and can be specified before the command name:")
+    print("  -v or --verbose:  verbose output")
+    print("  -c or --config:   config file (defaults to config.toml in the script directory) with storage path locations")
     print("generating manifest")
-    print("  update:    python generate_manifest --manifest ./journal.db update --site-path /mnt/x/project/chorus/data")
-    print("             python generate_manifest --manifest ./journal.db update --site-path s3://chorus --site-aws-profile default")
-    print("             python generate_manifest --manifest ./journal.db update --site-path s3://chorus --site-aws-access-key-id=xxxxxxx; --site-aws-secret-access-key=yyyyyyyyyy")
-    print("             python generate_manifest --manifest ./journal.db update --site-path az://chorus --site-azure-account-name=yyyyyyyyyy --site-azure-sas-token XXXXXXX")
-    print("             AZURE_CONNECTION_STRING=\"DefaultEndpointsProtocol=https;AccountName=xxxxxx;AccountKey=yyyyyyyyyyyy;EndpointSuffix=core.windows.net\"; python generate_manifest --manifest ./journal.db update --site-path az://chorus")
+    print("  update:    python generate_manifest --config ./config.toml update")
+    print("             python generate_manifest update --modalities Waveforms,Images,OMOP")
     print("generating upload file list")
-    print("  select:    python generate_manifest --manifest ./journal.db select")
-    print("             python generate_manifest --manifest ./journal.db select --version 20210901120000 -f filelist.txt")
+    print("  select:    python generate_manifest select")
+    print("             python generate_manifest select --version 20210901120000 -f filelist.txt")
     print("uploading to and verifying with central")
-    print("  upload:    python generate_manifest --manifest ./journal.db upload --site-path /mnt/x/project/chorus/data --central-path az://chorus/site")
-    print("             python generate_manifest --manifest ./journal.db upload --site-path s3://chorus --site-aws-profile default --central-path az://chorus/site --central-account-name abcd --central-account-key xxxxxxxxxxx")
-    print("             AZURE_CONNECTION_STRING=\"DefaultEndpointsProtocol=https;AccountName=xxxxxx;AccountKey=yyyyyyyyyyyy;EndpointSuffix=core.windows.net\"; python generate_manifest verify --central-path az://chorus/site --version 20210901120000")
-    print("  verify:    python generate_manifest --manifest ./journal.db verify --central-path az://chorus/site --central-account-name abcd --central-account-key xxxxxxxxxxx --version 20210901120000")
+    print("  upload:    python generate_manifest upload ")
+    print("             python generate_manifest upload --modalities Images")
+    print("  verify:    python generate_manifest verify --modalities Imgaes --version 20210901120000")
     print("working with manifests:")
-    print("  list:      python generate_manifest --manifest ./journal.db list")
-    print("  revert:    python generate_manifest --manifest ./journal.db revert --version 20210901120000")
+    print("  list:      python generate_manifest list-versions")
+    print("  revert:    python generate_manifest revert-version --version 20210901120000")
     
 # print authentication help info
-def _print_auth_usage(args, config, manifest_fn):
-    print("The following commands require authentication WHEN using cloud storage:")
-    print("  update: requires site directory (onprem or cloud) and site manifest file (onprem or cloud)")
-    print("  upload: requires site directory/manifest (onprem or cloud) and central directory (onprem or cloud)")
-    print("  verify: requires updated site manifest file (onprem or cloud) and central directory (onprem or cloud)")
-    print("Local file system is assumed to not require authentication.")
-    print("Cloud storage requires authentication FOR EACH DIRECTORY/URL and parameters depends on cloud service provider")
-    print("  AWS:   requires in ordre of precedence")
+def _print_config_usage(args, config, manifest_fn):
+    print("The script requires a configuration file (config.toml file in the script generate_manifest directory) to be populated.")
+    print("This file can be generated by filling in the config_template.toml file.")
+    print("")
+    print("The config.toml file contains 3 sections, each contains one or more paths, and each path can be local or cloud storage.")
+    print("[journal]:  contains the path to the journal file.  This file will typically be in the azure container.")
+    print("[central_path]:  contains the path to the default central storage location.  This is where the files will be uploaded to.")
+    print("[site_path]:  contains the path to the default DGS storage location.  This is where the files will be uploaded from.")
+    print("Site_path may contain subsections for each modality, for example [site_path.Waveforms].  This allows different modality files to be stored in different locations")
+    print("")    
+    print("For each section or subsection, if the path is a cloud path, e.g. s3:// or az://, then the following parameters are required for authentication.")
+    print("Authentication is only needed for update, upload, and verify commands Local file system is assumed to not require authentication.")
+    print("")
+    print("  AWS:   in order of precedence")
     print("         aws-session-token  (temporary credential)")
-    print("         aws-access-key-id, aws-secre-access-key.  (may be set as env-var)")
+    print("         aws-access-key-id, aws-secre-access-key.  (may be set as env-vars AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)")
     print("         aws-profile.  see aws/credentials files in home directory")
     print("         if none specified, profile `default` is used.")
-    print("  Azure: requires in order of precendence")
-    print("         account-url.   with sas token")
+    print("  Azure: in order of precedence")
+    print("         account-url with embedded sas token")
     print("         azure-account-name, azure-sas-token.  constructs an account-url")
     print("         azure-storage_connection_string.")
     print("         azure-account-name, azure-account-key. constructs a connection string")
-    print("         connection string can be set as a environment variable (see subcommand help)")
+    print("         connection string can be set as a environment variable: AZURE_STORAGE_CONNECTION_STRING")
     # print("  Google: (UNTESTED) requires google-application-credentials")
     # print("         application credentials may be specified on the commandline, or as an environment variable (see subcommand help)")
-
-# def _add_data_dir_args(parser, for_central: bool):
-#     prefix = "central" if for_central else "site"
-#     parser.add_argument(f"--{prefix}-path", help=f"onprem/cloud {prefix} data folder. Examples: az://container/, s3://container/, or /mnt/x/project/chorus/data", required=True)
-    
-# def _add_manifest_args(parser):
-#     parser.add_argument("-m", "--manifest", help="onprem site manifest file (defaults to journal.db). this should be a local file, and will be uploaded during 'upload'", required=True)
-
-# # helper for command line argument set up
-# def _add_cloud_credential_args(parser, for_central: bool):
-#     prefix = "central" if for_central else "site"
-    
-#     aws_group = parser.add_argument_group(title = f"{prefix} aws authentication parameters")    
-#     aws_group.add_argument(f"--{prefix}-aws-access-key-id", help="AWS access key. Can also specify as environment variable AWS_ACCESS_KEY_ID", required=False)
-#     aws_group.add_argument(f"--{prefix}-aws-secret-access-key", help="AWS access secret key. Can also specify as environment variable AWS_SECRET_ACCESS_KEY", required=False)
-#     aws_group.add_argument(f"--{prefix}-aws-session-token", help="AWS session token. Can also specify as environment variable AWS_SESSION_TOKEN", required=False)
-#     aws_group.add_argument(f"--{prefix}-aws-profile", help="AWS access secret key.  if no authentication parameters are specified, default profile is used.", required=False)
-    
-#     azure_group = parser.add_argument_group(title = f"{prefix} azure authentication parameters")
-#     azure_group.add_argument(f"--{prefix}-azure-account-url", help="Azure account url. should contain SAS token", required=False)
-#     azure_group.add_argument(f"--{prefix}-azure-sas-token", help="Azure SAS token.", required=False)
-#     azure_group.add_argument(f"--{prefix}-azure-account-name", help="Azure account name.", required=False)
-#     azure_group.add_argument(f"--{prefix}-azure-account-key", help="Azure account key.", required=False)
-#     azure_group.add_argument(f"--{prefix}-azure-storage_connection_string", help="Azure account connection string. . can also specify as environment variable AZURE_STORAGE_CONNECTION_STRING", required=False)
-    
-#     # google_group = parser.add_argument_group(title = f"{prefix} google authentication parameters")
-#     # google_group.add_argument(f"--{prefix}-google-application-credentials", help="Google application credentials. can also specify as environment variable GOOGLE_APPLICATION_CREDENTIALS", required=False)
 
 # internal helper to create the cloud client
 def __make_aws_client(auth_params: dict):
@@ -266,11 +244,6 @@ def _update_manifest(args, config, manifest_fn):
     # get the config path for each modality.  if not matched, use default.
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
 
-    # print configurations
-    # print("Configurations: ", config)
-    # print("modalities: ", mods)
-    # print("modality configurations", mod_configs)
-
     # for each modality, create the file system help and process
     for mod, mod_config in mod_configs.items():        
         # create the file system helper    
@@ -371,7 +344,6 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Generate manifest for a site folder")
     parser.add_argument("-v", "--verbose", help="verbose output", action="store_true")
     parser.add_argument("-c", "--config", help="config file (defaults to config.toml) with storage path locations", required=False)
-    # parser.add_argument("-m", "--manifest", help="onprem site manifest file (defaults to journal.db). this should be a local file, and will be uploaded during 'upload'", required=True)
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
     subparsers.required = True
     
@@ -379,13 +351,11 @@ if __name__ == "__main__":
     parser_help.set_defaults(func = _print_usage)
     
     #------ authentication help
-    parser_auth = subparsers.add_parser("auth_help", help = "show help information about authentication methods")
-    parser_auth.set_defaults(func = _print_auth_usage)
+    parser_auth = subparsers.add_parser("config_help", help = "show help information about the configuration file")
+    parser_auth.set_defaults(func = _print_config_usage)
     
     #------ create the parser for the "update" command
     parser_update = subparsers.add_parser("update", help = "create or update the current manifest")
-    # _add_data_dir_args(parser_update, IS_SITE)
-    # _add_cloud_credential_args(parser_update, IS_SITE)
     parser_update.add_argument("--modalities", help="list of modalities to include in the manifest update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
     parser_update.set_defaults(func = _update_manifest)
     
@@ -416,17 +386,11 @@ if __name__ == "__main__":
     parser_upload.add_argument("--amend", help="amend the last upload", action="store_true")
     # optional list of files. if not present, use current manifest
     # when upload, mark the manifest version as uploaded.
-    # _add_data_dir_args(parser_upload, IS_SITE)
-    # _add_data_dir_args(parser_upload, IS_CENTRAL)
-    # _add_cloud_credential_args(parser_upload, IS_SITE)
-    # _add_cloud_credential_args(parser_upload, IS_CENTRAL)
     parser_upload.set_defaults(func = _upload_files)
     
     parser_verify = subparsers.add_parser("verify", help = "verify manifest with file system")
     parser_verify.add_argument("--version", help="datetime of an upload (use list to get date times).  defaults to most recent uploaded files.", required=False)
     parser_verify.add_argument("--modalities", help="list of modalities to include in the manifest update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
-    # _add_data_dir_args(parser_verify, IS_CENTRAL)
-    # _add_cloud_credential_args(parser_verify, IS_CENTRAL)
     parser_verify.set_defaults(func = _verify_files)
         
     parser_history = subparsers.add_parser("history", help = "show command history")
@@ -437,17 +401,21 @@ if __name__ == "__main__":
     
     # parse the config file
     # get the current script path
-    scriptdir = Path(__file__).absolute().parent
-    toml_file = scriptdir.joinpath("config.toml")
-    
-    config_fn = args.config if args.config is not None else str(toml_file)
+    if args.config is not None:
+        config_fn = args.config
+    else:
+        scriptdir = Path(__file__).absolute().parent
+        config_fn = str(scriptdir.joinpath("config.toml"))
+    if (not Path(config_fn).exists()):
+        raise ValueError("Config file does not exist: ", config_fn, " please create one from the config_template.toml file.")
+        
     print("Using config file: ", config_fn)
     config = config_helper.load_config(config_fn)
     
     # get the manifest file  (download from cloud to local)
     manifest_fn = config_helper.get_journal_config(config)["path"]
     
-    # save command history
+    # === save command history
     args_dict = _strip_account_info(args)
     if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
         args_dict["config"] = config_fn

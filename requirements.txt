@@ -4,3 +4,4 @@ cloudpathlib==0.18.1
 cloudpathlib[azure]
 cloudpathlib[gs]
 cloudpathlib[s3]
+tomli==2.0.1
