@@ -19,8 +19,8 @@ echo python upload_manifest/generate_manifest -c upload_manifest/generate_manife
 python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config.toml select --modalities Images
 
 echo "UPLOAD 1 - waveforms and images"
-echo python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config.toml upload
-python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config.toml upload
+echo python upload_manifest/generate_manifest -v -c upload_manifest/generate_manifest/config.toml upload
+python upload_manifest/generate_manifest -v -c upload_manifest/generate_manifest/config.toml upload
 
 echo "verify 1"
 echo python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config.toml verify
@@ -51,8 +51,8 @@ echo python upload_manifest/generate_manifest -c upload_manifest/generate_manife
 python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml select --modalities Images,OMOP
 
 echo "UPLOAD 2 - amend.  verify will only verify uploads."
-echo python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml upload --amend --modalities Images,OMOP
-python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml upload --amend --modalities Images,OMOP
+echo python upload_manifest/generate_manifest -v -c upload_manifest/generate_manifest/config2.toml upload --amend --modalities Images,OMOP
+python upload_manifest/generate_manifest -v -c upload_manifest/generate_manifest/config2.toml upload --amend --modalities Images,OMOP
 
 echo "verify 2.  this can verify more than the amended - because the amended version is verified in total."
 echo python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml verify --modalities Images,OMOP
@@ -67,8 +67,8 @@ echo python upload_manifest/generate_manifest -c upload_manifest/generate_manife
 python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml select
 
 echo "UPLOAD 2.2 - should add new waveforms"
-echo python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml upload
-python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml upload
+echo python upload_manifest/generate_manifest -v -c upload_manifest/generate_manifest/config2.toml upload
+python upload_manifest/generate_manifest -v -c upload_manifest/generate_manifest/config2.toml upload
 
 echo "verify 2.2"
 echo python upload_manifest/generate_manifest -c upload_manifest/generate_manifest/config2.toml verify

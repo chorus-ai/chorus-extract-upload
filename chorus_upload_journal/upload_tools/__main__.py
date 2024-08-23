@@ -33,6 +33,133 @@ import json
 IS_SITE = False
 IS_CENTRAL = True
 
+
+# check out a journal to work on
+# local name is what is in the config file
+# cloud file will be renamed to .locked_{timestamp}
+# which will be returned as a key for unlocking later.
+def _checkout_journal(config):
+    #============= get the manifest file name and path obj  (download from cloud to local)
+    manifest_path_str = config_helper.get_journal_config(config)["path"]  # full file name
+    manifest_path = FileSystemHelper(manifest_path_str, client = _make_client(config_helper.get_journal_config(config)))
+    
+    # if not cloud, then we are done.
+    if not manifest_path.is_cloud:
+        return (manifest_path, None, manifest_path, manifest_path.get_file_md5())
+    
+    # since it's a cloud path, we want to lock as soon as possible.
+    manifest_file = manifest_path.root
+    manifest_fn = manifest_file.name
+    # see if any lock files exists.
+    manifest_dir = manifest_file.parent
+    lock_file = manifest_dir.joinpath(manifest_fn + ".locked_" + str(int(time.time())))
+    
+    # so we try to lock by renaming. if it fails, then we handle if possible.
+    downloadable = False
+    try:
+        manifest_file.rename(lock_file)
+        downloadable = True
+        # locks = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+        # print(locks)
+    except Exception as e:
+        # if journal file is not found, it's either that we don't have a file, or it's locked.
+        locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+
+        if (len(locked_files) == 0):
+            # not locked, so journal does not exist.  create a lock.  this is to indicate to others that there is a lock
+            lock_file.touch()
+        else:           
+            raise ValueError("Manifest is locked. " + str(len(locked_files)) + " Please try again later.")
+    # except FileExistsError as e:
+       
+    local_path = FileSystemHelper(manifest_fn)
+    lock_path = FileSystemHelper(lock_file, client = manifest_path.client)
+    
+    if downloadable:  # only if there something to download.
+        # download the file
+        remote_md5 = lock_path.get_file_md5()
+        
+        if (local_path.root.exists()):
+            # compare md5
+            local_md5 = local_path.get_file_md5()
+            if (local_md5 != remote_md5):
+                # remove localfile and then download.
+                local_path.root.unlink()
+                lock_path.copy_file_to(relpath = None, dest_path = local_path.root)
+                local_md5 = local_path.get_file_md5()
+            # if md5 matches, don't need to copy.
+        else:
+            # local file does not exist, need to copy 
+            lock_path.copy_file_to(relpath = None, dest_path = local_path.root)
+            local_md5 = local_path.get_file_md5()
+    else:
+        # nothing to download, using local file 
+        remote_md5 = ""
+        local_md5 = ""
+
+    if remote_md5 != local_md5:
+        raise ValueError(f"Manifest file is not downloaded correctly - MD5 remote {remote_md5}, local {local_md5}.  Please check the file.")
+
+    # return manifest_file (final in cloud), lock_file (locked in cloud), and local_file (local)
+    return (manifest_path, lock_path, local_path, remote_md5)
+
+
+def _checkin_journal(manifest_path, lock_path, local_path, remote_md5):
+    # check journal file in.
+    
+    if not manifest_path.is_cloud:
+        # not cloud, so nothing to do.
+        return
+
+    # first copy local to cloud as lockfile. (with overwrite)
+    # since each lock is dated, unlikely to have conflicts.
+    if lock_path.root.exists():
+        local_path.copy_file_to(relpath = None, dest_path = lock_path)
+    else:
+        raise ValueError("Locked file lost, unable to unlock.")
+    
+    # then rename lock back to manifest.
+    try:
+        lock_path.root.rename(manifest_path.root)
+    except FileExistsError as e:
+        raise ValueError("unlocked manifest exists, unable to unlock.")
+    except FileNotFoundError as e:
+        raise ValueError("Locked file lost, unable to unlock.")
+
+# force unlocking.
+def _unlock_journal(args, config, manifest_fn):
+    manifest_path_str = config_helper.get_journal_config(config)["path"]  # full file name
+    manifest_path = FileSystemHelper(manifest_path_str, client = _make_client(config_helper.get_journal_config(config)))
+    
+    manifest_file = manifest_path.root
+    manifest_fn = manifest_file.name
+    # see if any lock files exists.
+    manifest_dir = manifest_file.parent
+    
+    locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+    if len(locked_files) == 0:
+        print("INFO: Manifest ", str(manifest_file), " is not locked.")
+        return
+            
+    if not manifest_file.exists():
+        if (len(locked_files) > 1):
+            # force unlock so use the most recent.
+            # multiple locked files
+            fns = [str(f.name) for f in locked_files].sort()
+            last = fns[-1]
+            manifest_dir.joinpath(last).rename(manifest_file)
+            
+        elif (len(locked_files) == 1):
+            # no need to sort.
+            locked_files[0].rename(manifest_file)
+    
+    locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+    # delete all lock files
+    for lock_file in locked_files:
+        lock_file.unlink()
+    
+    print("INFO: force unlocked ", str(manifest_file))
+
 def _strip_account_info(args):
     filtered_args = {}
     for arg in vars(args):
@@ -66,7 +193,8 @@ def _recreate_params(filtered_args: dict):
         if (arg not in ["command", "verbose", "config"]) and (val is not None):
             arg_str = arg.replace("_", "-")
             if type(val) == bool:
-                params += f" --{arg_str}"
+                if val == True:
+                    params += f" --{arg_str}"
             else:
                 params += f" --{arg_str} {val}"
     
@@ -413,6 +541,9 @@ if __name__ == "__main__":
     parser_verify.add_argument("--modalities", help="list of modalities to include in the manifest update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
     parser_verify.set_defaults(func = _verify_files)
         
+    parser_unlock = subparsers.add_parser("unlock", help = "unlock a cloud manifest file")
+    parser_unlock.set_defaults(func = _unlock_journal)
+        
     parser_history = subparsers.add_parser("history", help = "show command history")
     parser_history.set_defaults(func = _show_history)
         
@@ -432,28 +563,26 @@ if __name__ == "__main__":
     print("Using config file: ", config_fn)
     config = config_helper.load_config(config_fn)
     
-    
-    #============= get the manifest file  (download from cloud to local)
-    manifest_fn = config_helper.get_journal_config(config)["path"]
-    # if (manifest_fn.startswith("az://")):
-    #     remote_fn = FileSystemHelper(manifest_fn, client = _make_client(config_helper.get_journal_config(config)))
-    #     local_manifest = manifest_fs.download_file(manifest_fn, manifest_fn)
-    # elif (manifest_fn.startswith("s3://")):
-    #     ...
+    if (args.command not in ["config_help", "usage", "unlock"]):
+        manifest_path, locked_path, local_path, manifest_md5 = _checkout_journal(config)
         
-    #     # push up a lock file.
+        #     # push up a lock file.
+        manifest_fn = str(local_path.root)
+        # === save command history
+        args_dict = _strip_account_info(args)
+        if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
+            args_dict["config"] = config_fn
+        save_command_history(*(_recreate_params(args_dict)), *(_get_paths_for_history(args, config)), manifest_fn)
+
+        # call the subcommand function.
+        args.func(args, config, manifest_fn)
     
-    # === save command history
-    args_dict = _strip_account_info(args)
-    if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
-        args_dict["config"] = config_fn
-    save_command_history(*(_recreate_params(args_dict)), *(_get_paths_for_history(args, config)),
-                         manifest_fn, )
+        # push journal up.
+        _checkin_journal(manifest_path, locked_path, local_path, manifest_md5)
+        
+    else:
+        manifest_fn = config_helper.get_journal_config(config)["path"]
     
-    # call the subcommand function.
-    args.func(args, config, manifest_fn)
-    
-    
-    # upload the manifest and unlock.
-    
+        # call the subcommand function.
+        args.func(args, config, manifest_fn)
     

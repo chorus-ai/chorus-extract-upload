@@ -163,8 +163,9 @@ class FileSystemHelper:
         self.root = FileSystemHelper._make_path(path, client = client)  # supports either pathlib.Path or cloudpathlib.CloudPath
         # If no client, then environment variable, or default profile (s3) is used.            
         self.is_cloud = isinstance(self.root, CloudPath)
+        # self.is_dir = self.root.is_dir()  what is the path is mean to be a directory but does not exist yet?  can't tell if it's a directory.
                         
-    def get_file_metadata(self, path: Union[str, Path, CloudPath]) -> dict:
+    def get_file_metadata(self, path: Union[str, Path, CloudPath] = None) -> dict:
         """
         Retrieves the metadata of a file.
 
@@ -181,8 +182,10 @@ class FileSystemHelper:
         
         # Initialize the dictionary to store the metadata
         metadata = {}
-        
-        test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+        if path is None:
+            test = self.root
+        else:
+            test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
         curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
         
         if not curr.exists():
@@ -205,7 +208,7 @@ class FileSystemHelper:
 
         return metadata
     
-    def _calc_file_md5(self, path: Union[Path, CloudPath]) -> str:
+    def _calc_file_md5(self, path: Union[Path, CloudPath] = None) -> str:
         """
         Calculate the MD5 hash of a file.
 
@@ -215,7 +218,10 @@ class FileSystemHelper:
         Returns:
             str: The hexadecimal representation of the MD5 hash.
         """
-        test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+        if path is None:
+            test = self.root
+        else:
+            test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
         curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
 
         if not curr.exists():
@@ -237,7 +243,7 @@ class FileSystemHelper:
 
     
     # limited testing seems to show that the md5 aws etag and azure content-md5 are okay.
-    def get_file_md5(self, path: Union[str, Path, CloudPath], verify:bool = False  ) -> str:
+    def get_file_md5(self, path: Union[str, Path, CloudPath] = None, verify:bool = False  ) -> str:
         """
         Get the MD5 hash of a file.
 
@@ -248,8 +254,10 @@ class FileSystemHelper:
         Returns:
             str: The MD5 hash of the file.
         """
-        
-        test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+        if path is None:
+            test = self.root
+        else:
+            test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
         curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
         
         md5_str = None
@@ -305,8 +313,8 @@ class FileSystemHelper:
         Copy a file from the current storage path to the destination path.
 
         Args:
-            paths (list): A list of file paths, relative to the src.root, to be copied.
-            dest_path (Union[Self, Path, CloudPath]): The destination path where the files will be copied to.
+            paths (Union[str, tuple]): a relative path to the root dir, or None if the root is a file.
+            dest_path (Union[Self, Path, CloudPath]): The destination path, either a directory or a path
 
         Returns:
             None
@@ -314,17 +322,22 @@ class FileSystemHelper:
         Raises:
             None
         """
-        if relpath is None:
-            return
+        # if relpath is None, treat the both src and dest as directories.
         
-        (sf, df) = relpath if isinstance(relpath, tuple) else (relpath, relpath)
-        
-        src = self.root
-        src_is_cloud = self.is_cloud
+        # if this is a directory, relpath is required.
+        # if this is a file, relpath is ignored.
         dest = FileSystemHelper._make_path(dest_path) if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
         dest_is_cloud = isinstance(dest, CloudPath)
-        src_file = src.joinpath(sf)
-        dest_file = dest.joinpath(df)
+        src_is_cloud = self.is_cloud
+                
+        if relpath is None:
+            src_file = self.root
+            dest_file = dest
+        else:
+            # relpath is specified, so src and dest are directories            
+            src_file = self.root.joinpath(relpath[0] if isinstance(relpath, tuple) else relpath)
+            dest_file = dest.joinpath(relpath[1] if isinstance(relpath, tuple) else relpath)
+
         if verbose:
             print("INFO:  copying ", str(src_file), " to ", str(dest_file))
         dest_file.parent.mkdir(parents=True, exist_ok=True)
