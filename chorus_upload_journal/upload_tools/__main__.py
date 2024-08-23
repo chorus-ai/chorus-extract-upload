@@ -4,7 +4,7 @@ import time
 import argparse
 
 from generate_manifest import update_manifest 
-from generate_manifest import restore_manifest, list_uploads, list_manifests
+# from generate_manifest import restore_manifest, list_uploads, list_manifests
 from generate_manifest import upload_files, verify_files, list_files
 from generate_manifest import save_command_history, show_command_history
 from generate_manifest import DEFAULT_MODALITIES
@@ -120,9 +120,9 @@ def _print_usage(args, config, manifest_fn):
     print("  upload:    python generate_manifest upload ")
     print("             python generate_manifest upload --modalities Images")
     print("  verify:    python generate_manifest verify --modalities Imgaes --version 20210901120000")
-    print("working with manifests:")
-    print("  list:      python generate_manifest list-versions")
-    print("  revert:    python generate_manifest revert-version --version 20210901120000")
+    # print("working with manifests:")
+    # print("  list:      python generate_manifest list-versions")
+    # print("  revert:    python generate_manifest revert-version --version 20210901120000")
     
 # print authentication help info
 def _print_config_usage(args, config, manifest_fn):
@@ -273,17 +273,17 @@ def _update_manifest(args, config, manifest_fn):
         update_manifest(datafs, modalities = [mod], databasename = manifest_fn, verbose = args.verbose)
     
 # helper to list known update manifests
-def _list_manifests(args, config, manifest_fn):
-    print("Uploads known in current manifest: ")
-    list_uploads(manifest_fn)
-    print("Backed up Manifests: ")
-    list_manifests(manifest_fn)
+# def _list_manifests(args, config, manifest_fn):
+#     print("Uploads known in current manifest: ")
+#     list_uploads(manifest_fn)
+#     print("Backed up Manifests: ")
+#     list_manifests(manifest_fn)
         
 # helper to revert to a previous manifest
-def _revert_manifest(args, config, manifest_fn):
-    revert_time = args.version
-    print("Revert to: ", revert_time)
-    restore_manifest(manifest_fn, revert_time)
+# def _revert_manifest(args, config, manifest_fn):
+#     revert_time = args.version
+#     print("Revert to: ", revert_time)
+#     restore_manifest(manifest_fn, revert_time)
     
 def _write_files(file_list, dt, outfilename, outtype : str = "list"):
     if args.output_file is None:
@@ -380,13 +380,13 @@ if __name__ == "__main__":
     parser_update.set_defaults(func = _update_manifest)
     
     # create the parser for the "list" command
-    parser_list = subparsers.add_parser("list-versions", help = "list the versions in a manifest database")
-    parser_list.set_defaults(func = _list_manifests)
+    # parser_list = subparsers.add_parser("list-versions", help = "list the versions in a manifest database")
+    # parser_list.set_defaults(func = _list_manifests)
     
     # DANGEROUS
-    parser_revert = subparsers.add_parser("revert-version", help = "revert to a previous manifest version.")
-    parser_revert.add_argument("--version", help="datetime of an upload (use list to get date times).", required=False)
-    parser_revert.set_defaults(func = _revert_manifest)
+    # parser_revert = subparsers.add_parser("revert-version", help = "revert to a previous manifest version.")
+    # parser_revert.add_argument("--version", help="datetime of an upload (use list to get date times).", required=False)
+    # parser_revert.set_defaults(func = _revert_manifest)
 
     # # DANGEROUS
     # parser_delete = subparsers.add_parser("delete", help = "delete version in a manifest database")
