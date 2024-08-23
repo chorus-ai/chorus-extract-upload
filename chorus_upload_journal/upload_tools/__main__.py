@@ -3,14 +3,14 @@ import shutil
 import time
 import argparse
 
-from generate_manifest import update_manifest 
-# from generate_manifest import restore_manifest, list_uploads, list_manifests
-from generate_manifest import upload_files, verify_files, list_files
-from generate_manifest import save_command_history, show_command_history
-from generate_manifest import DEFAULT_MODALITIES
-from storage_pathlib import FileSystemHelper
+from chorus_upload_journal.upload_tools.generate_manifest import update_manifest 
+# from chorus_upload_journal.upload_tools.generate_manifest import restore_manifest, list_uploads, list_manifests
+from chorus_upload_journal.upload_tools.generate_manifest import upload_files, verify_files, list_files
+from chorus_upload_journal.upload_tools.generate_manifest import save_command_history, show_command_history
+from chorus_upload_journal.upload_tools.generate_manifest import DEFAULT_MODALITIES
+from chorus_upload_journal.upload_tools.storage_pathlib import FileSystemHelper
 from pathlib import Path
-import config_helper
+from chorus_upload_journal.upload_tools import config_helper
 import json
 
 # TODO: DONE need to support folder for different file types being located at different places.
@@ -474,11 +474,12 @@ def _upload_files(args, config, manifest_fn):
     
     # if (args.central_path is None):
     #     raise ValueError("central path is required")
-    
+    first = True  # first upload is based on user specification whether its amend or not.
+    # subsequent modalities in this call always amend.
     for mod, mod_config in mod_configs.items():
         sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-        upload_files(sitefs, centralfs, manifest_fn, modalities = [mod], amend = args.amend, verbose = args.verbose)
-    
+        upload_files(sitefs, centralfs, manifest_fn, modalities = [mod], amend = (args.amend if first else True), verbose = args.verbose)
+        first = False
     
 # helper to report file verification
 def _verify_files(args, config, manifest_fn):

@@ -12,6 +12,9 @@ from cloudpathlib import AnyPath
 from pathlib import Path
 
 import re
+from enum import Enum
+import concurrent.futures
+
 
 
 # TODO: DONE - Remove registry
@@ -83,7 +86,7 @@ def save_command_history(common_params:str, cmd:str, parameters:str,
     - databasename (str): The name of the SQLite database file. Default is "journal.db".
     """
     
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
     curtimestamp = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
@@ -113,7 +116,7 @@ def show_command_history(databasename="journal.db"):
     Returns:
     None
     """
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
     # get all the commands
@@ -128,7 +131,7 @@ def show_command_history(databasename="journal.db"):
 
 
 def update_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, databasename="journal.db", verbose: bool = False):
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
     # check if manifest table exists in sqlite
@@ -159,7 +162,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
     print("INFO: Creating Manifest...", flush=True)
     
         
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
     cur.execute("CREATE TABLE IF NOT EXISTS manifest(\
@@ -210,7 +213,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
             all_args.append(myargs)
 
     if len(all_args) > 0:
-        con = sqlite3.connect(databasename)
+        con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
 
         try:
@@ -237,7 +240,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
     """
     print("INFO: Updating Manifest...", databasename, flush=True)
 
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
     # check if manifest table exists.
@@ -261,7 +264,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
     for modality in modalities:
         paths = root.get_files(modality)  # relative paths, posix format, string form.
         
-        con = sqlite3.connect(databasename)
+        con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         # get all active files, these are active-pending-delete until the file is found in filesystem
         activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr from manifest where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
@@ -374,7 +377,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
         # back up only on upload
         # backup_manifest(databasename)
         
-        con = sqlite3.connect(databasename)
+        con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
 
         try:
@@ -411,7 +414,7 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     """
     # Rest of the code...
         
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
     if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='manifest'").fetchone():
@@ -499,7 +502,7 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
 #         print(f"ERROR: No manifest exists for filename {databasename}")
 #         return None
     
-#     con = sqlite3.connect(databasename)
+#     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
     
 #     # List unique values in upload_dtstr column in manifest table
@@ -534,7 +537,7 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
 #         print(f"ERROR: No manifest exists for filename {databasename}")
 #         return None
     
-#     con = sqlite3.connect(databasename)
+#     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
     
 #     # List tables in the SQLite database
@@ -562,7 +565,7 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
 #         print(f"ERROR: No manifest exists for filename {databasename}")
 #         return None
 
-#     con = sqlite3.connect(databasename)
+#     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
 
 #     # check if the target table exists
@@ -598,7 +601,7 @@ def backup_manifest(databasename="journal.db", suffix:str = None):
         print(f"ERROR: No manifest exists for filename {databasename}")
         return None
 
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
     if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='manifest'").fetchone():
@@ -644,7 +647,7 @@ def backup_manifest(databasename="journal.db", suffix:str = None):
 #         print(f"ERROR: No manifest exists for filename {databasename}")
 #         return
 
-#     con = sqlite3.connect(databasename)
+#     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
 
 #     # check if the target table exists
@@ -665,6 +668,88 @@ def backup_manifest(databasename="journal.db", suffix:str = None):
 
 #     con.close()
 #     return manifestname
+
+
+class sync_state(Enum):
+    UNKNOWN = 0
+    MATCHED = 1
+    MISMATCHED = 2
+    MISSING = 3
+    DELETED = 4
+    MISSING_IN_DB = 5
+
+def _upload_and_verify(src_path : FileSystemHelper, 
+                       fn : str,
+                       dated_dest_path : FileSystemHelper,
+                       databasename="journal.db",
+                       verbose: bool = False):
+    state = sync_state.UNKNOWN
+    fid_list = []
+    
+    # ======= copy.  parallelizable
+    src_path.copy_file_to(fn, dated_dest_path, verbose = verbose) 
+
+    # ======= read metadata from db.  May be parallelizable        
+    con = sqlite3.connect(databasename, check_same_thread=False)
+    cur = con.cursor()
+    # note that this is not the same list as the selected files since that one excludes deleted  
+    result = cur.execute(f"Select file_id, size, md5 from manifest where time_invalid_us is NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
+    con.close()
+
+    verified = False
+    
+    # ======= verify.  parallelizable.
+    # 4 cases:  
+    # case 1 missing in db. this should not happen.;
+    if (result is None) or (len(result) == 0):
+        state = sync_state.MISSING_IN_DB
+        print("ERROR: uploaded file is not matched in manifest.  should not happen.")
+        return
+    elif (len(result) > 1):
+        print("ERROR: multiple entries in manifest for ", fn)
+        return
+    
+    # src metadata
+    # print(result)
+    file_id, size, md5 = result[0]
+
+    # get the dest file info
+    dest_meta = dated_dest_path.get_file_metadata(fn)
+    # case 2 missing in cloud.  this is the missing case;
+    if dest_meta is None:
+        state = sync_state.MISSING
+        print("ERROR:  missing file at destination", fn)
+        return
+
+    dest_md5 = dated_dest_path.get_file_md5(fn)    
+    if (size == dest_meta['size']) and (md5 == dest_md5):
+        # case 3: matched
+        state = sync_state.MATCHED
+        verified = True
+        fid_list.append(file_id)  # verified.  this may not be parallelizable.
+    else:
+        # case 4: mismatched.
+        state = sync_state.MISMATCHED
+        # entries are not updated because of mismatch.
+        print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
+
+    # if verified upload, then remove any old file
+    # ======= read metadata from db.  May be parallelizable
+    if verified:        
+        con = sqlite3.connect(databasename, check_same_thread=False)
+        cur = con.cursor()
+        # note that this is not the same list as the selected files since that one excludes deleted  
+        result = cur.execute(f"Select file_id from manifest where time_invalid_us is NOT NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
+        con.close()
+
+        if (result is not None) and (len(result) > 0):
+            for (file_id,) in result:
+                state = sync_state.DELETED
+                fid_list.append(file_id)  # this may not be paralleizable.
+
+    return (fn, state, fid_list)
+
+
 
 
 def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
@@ -697,7 +782,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     # if amend then get the latest version from db
     if amend:
-        con = sqlite3.connect(databasename)
+        con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
     
         upload_ver_str = cur.execute("SELECT MAX(upload_dtstr) FROM manifest").fetchone()[0]
@@ -726,81 +811,41 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     # NEW    
     step = 100
-    for fn in files_to_upload:
-        # ======= copy.  parallelizable
-        src_path.copy_file_to(fn, dated_dest_path, verbose = verbose) 
-
-        # ======= read metadata from db.  May be parallelizable        
-        con = sqlite3.connect(databasename)
-        cur = con.cursor()
-        # note that this is not the same list as the selected files since that one excludes deleted  
-        result = cur.execute(f"Select file_id, size, md5 from manifest where time_invalid_us is NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
-        con.close()
-
-        verified = False
+    nthreads = max(1, os.cpu_count() - 2)
+    with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
+        futures = []
+        for fn in files_to_upload:
+            future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename, verbose)
+            futures.append(future)
         
-        # ======= verify.  parallelizable.
-        # 4 cases:  
-        # case 1 missing in db. this should not happen.;
-        if (result is None) or (len(result) == 0):
-            missing_in_db.add(fn)
-            print("ERROR: uploaded file is not matched in manifest.  should not happen.")
-            continue
-        elif (len(result) > 1):
-            print("ERROR: multiple entries in manifest for ", fn)
-            continue
-        
-        # src metadata
-        # print(result)
-        file_id, size, md5 = result[0]
-
-        # get the dest file info
-        dest_meta = dated_dest_path.get_file_metadata(fn)
-        # case 2 missing in cloud.  this is the missing case;
-        if dest_meta is None:
-            missing.add(fn)
-            print("ERROR:  missing file at destination", fn)
-            continue
-    
-        dest_md5 = dated_dest_path.get_file_md5(fn)    
-        if (size == dest_meta['size']) and (md5 == dest_md5):
-            # case 3: matched
-            matched.add(fn)
-            verified = True
-            update_args.append((upload_ver_str, file_id))  # verified.  this may not be parallelizable.
-        else:
-            # case 4: mismatched.
-            mismatched.add(fn)
-            # entries are not updated because of mismatch.
-            print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
-
-        # if verified upload, then remove any old file
-        # ======= read metadata from db.  May be parallelizable
-        if verified:        
-            con = sqlite3.connect(databasename)
-            cur = con.cursor()
-            # note that this is not the same list as the selected files since that one excludes deleted  
-            result = cur.execute(f"Select file_id from manifest where time_invalid_us is NOT NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
-            con.close()
-
-            if (result is not None) and (len(result) > 0):
-                for (file_id,) in result:
-                    deleted.add(fn)
-                    update_args.append((upload_ver_str, file_id))  # this may not be paralleizable.
+        for future in concurrent.futures.as_completed(futures):
+            (fn2, state, fid_list) = future.result()
+            if state == sync_state.MISSING_IN_DB:
+                missing_in_db.add(fn2)
+            elif state == sync_state.MISSING:
+                missing.add(fn2)
+            elif state == sync_state.MATCHED:
+                matched.add(fn2)
+            elif state == sync_state.MISMATCHED:
+                mismatched.add(fn2)
+            elif state == sync_state.DELETED:
+                deleted.add(fn2)
+            # merge the updates.
+            update_args += [(upload_ver_str, fid) for fid in fid_list]
             
-        # update the manifest - likely not parallelizable.
-        if len(update_args) >= step:
-            con = sqlite3.connect(databasename)
-            cur = con.cursor()
-            try:        
-                cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
-            except sqlite3.InterfaceError as e:
-                print("ERROR: update ", e)
-                print(update_args)
-            con.commit() 
-            con.close()
-            update_args = []
-        # 
+            # update the manifest - likely not parallelizable.
+            if len(update_args) >= step:
+                con = sqlite3.connect(databasename, check_same_thread=False)
+                cur = con.cursor()
+                try:        
+                    cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+                except sqlite3.InterfaceError as e:
+                    print("ERROR: update ", e)
+                    print(update_args)
+                con.commit() 
+                con.close()
+                update_args = []
+            # 
     
     #### --------------OLD begin
     # # then copy the files over
@@ -812,7 +857,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     
     # # get list of files that have been uploaded and needs to be updated.
     # # update the manifest with what's uploaded, verifying the size and md5 also.
-    # con = sqlite3.connect(databasename)
+    # con = sqlite3.connect(databasename, check_same_thread=False)
     # cur = con.cursor()
     # # note that this is not the same list as the selected files since that one excludes deleted  
     # entries_in_version = cur.execute("Select file_id, filepath, modality, size, md5 from manifest where time_invalid_us is NULL AND upload_dtstr is NULL").fetchall()
@@ -854,7 +899,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     #### --------------OLD end
     
     if len(update_args) > 0:
-        con = sqlite3.connect(databasename)
+        con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         try:        
             cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
@@ -867,7 +912,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         update_args = []
 
     # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     # note that this is not the same list as the selected files since that one excludes deleted  
     entries_in_version = cur.execute("Select file_id, filepath, modality from manifest where time_invalid_us is not NULL AND upload_dtstr is NULL").fetchall()
@@ -883,7 +928,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         update_args.append((upload_ver_str, file_id))  # deleted
         
     if len(update_args) > 0:
-        con = sqlite3.connect(databasename)
+        con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         try:        
             cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
@@ -908,6 +953,15 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     return upload_ver_str
 
+def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
+    
+    fid, fn, size, md5 = file_info
+    
+    dest_meta = dated_dest_path.get_file_metadata(fn)            
+    dest_md5 = dated_dest_path.get_file_md5(fn)
+        
+    return (dest_meta, dest_md5, fid, fn, size, md5)
+
 # verify a set of files that have been uploaded.  version being None means using the last upload
 def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", 
                  version: Optional[str] = None, 
@@ -929,7 +983,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
         print(f"ERROR: No manifest exists for filename {databasename}")
         return
 
-    con = sqlite3.connect(databasename)
+    con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
     # get the current datetime
@@ -959,25 +1013,28 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     missing = set()
     matched = set()
     mismatched = set()
-    for (fid, fn, size, md5) in files_to_verify:
-        # what if the file is missing?
-        
-        dest_meta = dated_dest_path.get_file_metadata(fn)
-        if dest_meta is None:
-            print("ERROR:  missing file ", fn)
-            missing.add(fn)
-            continue
-        
-        dest_md5 = dated_dest_path.get_file_md5(fn)
-        
-        if (size == dest_meta['size']) and (md5 == dest_md5):
-            if verbose:
-                print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
-            matched.add(fn)
-        else:
-            print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
-            mismatched.add(fn)
+    threads = max(1, os.cpu_count() - 2)
+    with concurrent.futures.ThreadPoolExecutor(max_workers = threads) as executor:
+        futures = []
+        for file_info in files_to_verify:
+            future = executor.submit(_get_file_info, dated_dest_path, file_info )
+            futures.append(future)
             
+        for future in concurrent.futures.as_completed(futures):
+            (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
+            if dest_meta is None:
+                missing.add(fn)
+                print("ERROR:  missing file ", fn)
+                continue
+
+            if (size == dest_meta['size']) and (md5 == dest_md5):
+                if verbose:
+                    print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
+                matched.add(fn)
+            else:
+                print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
+                mismatched.add(fn)
+                
     print("INFO:  verified ", len(matched), " files, ", len(mismatched), " mismatched, ", len(missing), " missing.")
             
     return matched, mismatched, missing
