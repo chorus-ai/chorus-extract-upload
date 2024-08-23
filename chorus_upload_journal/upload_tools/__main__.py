@@ -56,20 +56,24 @@ def _checkout_journal(config):
     
     # so we try to lock by renaming. if it fails, then we handle if possible.
     downloadable = False
+    already_locked = False
     try:
         manifest_file.rename(lock_file)
         downloadable = True
         # locks = list(manifest_dir.glob(manifest_fn + ".locked_*"))
         # print(locks)
-    except Exception as e:
+    except:
         # if journal file is not found, it's either that we don't have a file, or it's locked.
         locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
 
         if (len(locked_files) == 0):
             # not locked, so journal does not exist.  create a lock.  this is to indicate to others that there is a lock
             lock_file.touch()
-        else:           
-            raise ValueError("Manifest is locked. " + str(len(locked_files)) + " Please try again later.")
+        else:
+            already_locked = True
+            
+    if already_locked:      
+        raise ValueError("Manifest is locked. Please try again later.")
     # except FileExistsError as e:
        
     local_path = FileSystemHelper(manifest_fn)
@@ -119,12 +123,14 @@ def _checkin_journal(manifest_path, lock_path, local_path, remote_md5):
         raise ValueError("Locked file lost, unable to unlock.")
     
     # then rename lock back to manifest.
+    unlock_failed = False
     try:
         lock_path.root.rename(manifest_path.root)
-    except FileExistsError as e:
-        raise ValueError("unlocked manifest exists, unable to unlock.")
-    except FileNotFoundError as e:
-        raise ValueError("Locked file lost, unable to unlock.")
+    except:
+        unlock_failed = True
+        
+    if unlock_failed:
+        raise ValueError("unable to unlock - lockfile lost, or manifest already unlocked.")
 
 # force unlocking.
 def _unlock_journal(args, config, manifest_fn):
