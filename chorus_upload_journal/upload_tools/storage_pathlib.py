@@ -218,14 +218,16 @@ class FileSystemHelper:
             if isinstance(curr, S3Path):
                 # Get the MD5 hash from the ETag
                 md5_str = curr.etag.strip('"')
-            elif isinstance(curr, AzureBlobPath):          
+            elif isinstance(curr, AzureBlobPath):  
+                # if (curr.md5 is None):
+                #     print("WARNING:  md5 is None for ", curr)        
                 md5_str = curr.md5.hex()
             elif isinstance(curr, GSPath):
                 md5_str = curr.etag.strip('"')
 
             if md5_str is None:
-                if isinstance(curr, CloudPath): 
-                    print("INFO: calculating md5 for ", curr)
+                # if isinstance(curr, CloudPath): 
+                #     print("INFO: calculating md5 for ", curr)
                 
                 # Calculate the MD5 hash locally
                 
@@ -419,8 +421,6 @@ class FileSystemHelper:
             src_file = self.root.joinpath(relpath[0] if isinstance(relpath, tuple) else relpath)
             dest_file = dest.joinpath(relpath[1] if isinstance(relpath, tuple) else relpath)
 
-        if verbose:
-            print("INFO:  copying ", str(src_file), " to ", str(dest_file))
         dest_file.parent.mkdir(parents=True, exist_ok=True)
 
         if src_is_cloud:
@@ -478,8 +478,8 @@ class FileSystemHelper:
                 for sf, df in files:
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
-                    if verbose:
-                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+                    # if verbose:
+                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     src_file.copy(dest_file, force_overwrite_to_cloud=True)
                     count += 1
@@ -487,8 +487,8 @@ class FileSystemHelper:
                 for sf, df in files:
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
-                    if verbose:
-                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+                    # if verbose:
+                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     src_file.download_to(dest_file)
                     count += 1
@@ -498,8 +498,8 @@ class FileSystemHelper:
                 for sf, df in files:
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
-                    if verbose:
-                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+                    # if verbose:
+                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
                     count += 1
@@ -507,8 +507,8 @@ class FileSystemHelper:
                 for sf, df in files:
                     src_file = src.joinpath(sf)
                     dest_file = dest.joinpath(df)
-                    if verbose:
-                        print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+                    # if verbose:
+                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
                     dest_file.parent.mkdir(parents=True, exist_ok=True)
                     try:
                         shutil.copy2(str(src_file), str(dest_file))

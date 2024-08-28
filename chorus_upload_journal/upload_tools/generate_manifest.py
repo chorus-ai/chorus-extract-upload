@@ -168,6 +168,30 @@ def update_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MOD
 # the personid is the first part of the path, followed by the modality, then the rest of the path
 PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images)/.*")
 
+def _gen_manifest_one_file(root : FileSystemHelper, relpath:str, modality:str, curtimestamp:int):
+    # print(i_path, relpath)
+    start = time.time()
+    meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata=True, with_md5=True)
+    # first item is personid.
+    md5_time = time.time() - start
+    
+    # extract personid using regex
+    matched = PERSONID_REGEX.match(relpath)
+    personid = matched.group(1) if matched else None
+    # p = AnyPath(relpath)
+    # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
+    
+    filesize = meta['size']
+    modtimestamp = meta['modify_time_us']
+    
+    mymd5 = meta['md5']
+                
+    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, "ADDED", md5_time)
+
+    return myargs
+
+
+
 def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, 
                   databasename="journal.db", verbose: bool = False):
     """
@@ -186,7 +210,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
     cur = con.cursor()
 
     cur.execute("CREATE TABLE IF NOT EXISTS manifest(\
-                FILE_ID INTEGER NOT NULL PRIMARY KEY, \
+                FILE_ID INTEGER PRIMARY KEY AUTOINCREMENT, \
                 PERSON_ID INTEGER, \
                 FILEPATH TEXT, \
                 MODALITY TEXT, \
@@ -206,7 +230,6 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
     paths = []
     curtimestamp = int(math.floor(time.time() * 1e6))
     all_args = []
-    i_path = 1
     
     modalities = modalities if modalities else DEFAULT_MODALITIES
     
@@ -214,53 +237,123 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
         paths = root.get_files(modality)  # list of relative paths in posix format and in string form.
         # paths += paths1
         
-        for relpath in paths:
-            # print(i_path, relpath)
-            start = time.time()
-            meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata=True, with_md5=True)
-            # first item is personid.
-            md5_time = time.time() - start
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for relpath in paths:
+                future = executor.submit(_gen_manifest_one_file, root, relpath, modality, curtimestamp)
+                futures.append(future)
             
-            # extract personid using regex
-            matched = PERSONID_REGEX.match(relpath)
-            personid = matched.group(1) if matched else None
-            # p = AnyPath(relpath)
-            # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
-            
-            filesize = meta['size']
-            modtimestamp = meta['modify_time_us']
-            
-            mymd5 = meta['md5']
+            for future in concurrent.futures.as_completed(futures):
+                myargs = future.result()
+                rlpath = myargs[1]
+                status = myargs[7]
+                if verbose and status == "ADDED":
+                    print("INFO: ADDED ", rlpath)
+                all_args.append(myargs)
+
+
+            if len(all_args) > 0:
+                con = sqlite3.connect(databasename, check_same_thread=False)
+                cur = con.cursor()
+
+                try:
+                    cur.executemany("INSERT INTO manifest ( \
+                        PERSON_ID, \
+                        FILEPATH, \
+                        MODALITY, \
+                        SRC_MODTIME_us, \
+                        SIZE, \
+                        MD5, \
+                        TIME_VALID_us, \
+                        STATE, \
+                        MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+                except sqlite3.IntegrityError as e:
+                    print("ERROR: create ", e)
+                    print(all_args)
                         
-            myargs = (i_path, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, "ADDED", md5_time)
-            i_path += 1
-            if verbose:
-                print("INFO: ADDED ", relpath)
+                con.commit() 
+                con.close()
 
-            all_args.append(myargs)
+def _update_manifest_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict):
+    # get information about the current file
+    meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False)
+    # root.get_file_metadata(relpath)
+    
+    # first item is personid.
+    matched = PERSONID_REGEX.match(relpath)
+    personid = matched.group(1) if matched else None
+    # p = AnyPath(relpath)
+    # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
+    
+    filesize = meta['size']
+    modtimestamp = meta['modify_time_us']
+    # 
 
-    if len(all_args) > 0:
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
+    # get information about the old file
+    # query files by filename, modtime, and size
+    # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
+    # filecheckrow = cur.execute("Select file_id, size, src_modtime_us, md5, upload_dtstr from manifest where filepath=? and TIME_INVALID_us IS NULL", [(relpath)])
 
-        try:
-            cur.executemany("INSERT INTO manifest ( \
-                FILE_ID, \
-                PERSON_ID, \
-                FILEPATH, \
-                MODALITY, \
-                SRC_MODTIME_us, \
-                SIZE, \
-                MD5, \
-                TIME_VALID_us, \
-                STATE, \
-                MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
-        except sqlite3.IntegrityError as e:
-            print("ERROR: create ", e)
-            print(all_args)
+    # results = filecheckrow.fetchall()
+    if relpath in modality_files_to_inactivate.keys():
+        results = modality_files_to_inactivate[relpath]
+        # There should only be 1 active file according to the path in a well-formed 
+        if (len(results) > 1):
+            # print("ERROR: Multiple active files with that path - manifest is not consistent")
+            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR1", None)
+        if (len(results) == 0):
+            # print("ERROR: File found but no metadata.", relpath)
+            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR2", None)
+        
+        if len(results) == 1:
+            (oldfileid, oldsize, oldmtime, oldmd5, oldsync) = results[0]
+            
+            # if old size and new size, old mtime and new mtime are same (name is already matched)
+            # then same file, skip rest.
+            if (oldmtime == modtimestamp):
+                if (oldsize == filesize):
+                    # files are very likely the same because of size and modtime match
+                    keep_file = relpath
+                    # del modality_files_to_inactivate[relpath]  # do not mark file as inactive.
+                    # print("SAME ", relpath )
+                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "KEEP", None)
+                else:
+                    #time stamp same but file size is different?
+                    # print("ERROR: File size is different but modtime is the same.", relpath)
+                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "ERROR3", None)
                 
-        con.commit() 
-        con.close()
+            else:
+                # timestamp changed. we need to compute md5 to check, or to update.
+                start = time.time()
+                mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
+                md5_time = time.time() - start
+
+                keep_file = None
+                # files are extremely likely the same just moved.
+                # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
+                # choosing not to change SYNC_TIME
+                # cur.execute("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
+                if (oldsize == filesize) and (mymd5 == oldmd5):
+                    # essentially copy the old and update the modtime.
+                    myargs = (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "MOVED", md5_time)
+
+                    # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
+                else:
+                    # files are different.  set the old file as invalid and add a new file.
+                    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "UPDATED", md5_time)
+                    # if verbose:
+                    #     print("INFO: UPDATED ", relpath)
+                    # modified file. old one should be removed.
+    else:
+        # if DNE, add new file
+        start = time.time()
+        mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
+        md5_time = time.time() - start
+
+        myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time)
+
+            
+    return myargs
 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
@@ -316,95 +409,47 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
             else:
                 modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
-        for relpath in paths:            
-            # get information about the current file
-            meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False)
-            # root.get_file_metadata(relpath)
+        import concurrent.futures
+
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+            futures = []
+            for relpath in paths:
+                future = executor.submit(_update_manifest_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
+                futures.append(future)
             
-            # first item is personid.
-            matched = PERSONID_REGEX.match(relpath)
-            personid = matched.group(1) if matched else None
-            # p = AnyPath(relpath)
-            # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
-            
-            filesize = meta['size']
-            modtimestamp = meta['modify_time_us']
-            # 
-
-            # get information about the old file
-            # query files by filename, modtime, and size
-            # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
-            # filecheckrow = cur.execute("Select file_id, size, src_modtime_us, md5, upload_dtstr from manifest where filepath=? and TIME_INVALID_us IS NULL", [(relpath)])
-
-            # results = filecheckrow.fetchall()
-            if relpath in modality_files_to_inactivate.keys():
-                results = modality_files_to_inactivate[relpath]
-                # There should only be 1 active file according to the path in a well-formed 
-                if len(results) > 1:
-                    print("ERROR: Multiple active files with that path - manifest is not consistent")
-                    return
-                elif len(results) == 1:
-                    (oldfileid, oldsize, oldmtime, oldmd5, oldsync) = results[0]
-                    
-                    # if old size and new size, old mtime and new mtime are same (name is already matched)
-                    # then same file, skip rest.
-                    if (oldmtime == modtimestamp):
-                        if (oldsize == filesize):
-                            # files are very likely the same because of size and modtime match
-                            del modality_files_to_inactivate[relpath]  # do not mark file as inactive.
-                            # print("SAME ", relpath )
-                            continue
-                        else:
-                            #time stamp same but file size is different?
-                            print("ERROR: File size is different but modtime is the same.", relpath)
-                            continue
-                        
-                    else:
-                        # timestamp changed. we need to compute md5 to check, or to update.
-                        start = time.time()
-                        mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
-                        md5_time = time.time() - start
-
-                        # files are extremely likely the same just moved.
-                        # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
-                        # choosing not to change SYNC_TIME
-                        # cur.execute("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
-                        if (oldsize == filesize) and (mymd5 == oldmd5):
-                            # essentially copy the old and update the modtime.
-                            myargs = (i_file, personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "MOVED", md5_time)
-                            if verbose:
-                                print("INFO: COPIED/MOVED ", relpath)
-                            # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
-                        else:
-                            # files are different.  set the old file as invalid and add a new file.
-                            myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "UPDATED", md5_time)
-                            if verbose:
-                                print("INFO: UPDATED ", relpath)
-                            # modified file. old one should be removed.
-                        
-                        i_file += 1 # this is a uid.  so has to increment.
-                            
-                        all_insert_args.append(myargs)
+            for future in concurrent.futures.as_completed(futures):
+                myargs = future.result()
+                status = myargs[8]
+                rlpath = myargs[1]
+                if status == "ERROR1":
+                    print("ERROR: Multiple active files with that path - manifest is not consistent", relpath)
+                elif status == "ERROR2":
+                    print("ERROR: File found but no metadata.", rlpath)
+                elif status == "ERROR3":
+                    print("ERROR: File size is different but modtime is the same.", rlpath)
+                elif status == "KEEP":
+                    del modality_files_to_inactivate[myargs[1]]
                 else:
-                    print("ERROR: File found but no metadata.", relpath)
-                    continue
-            else:
-                # if DNE, add new file
-                start = time.time()
-                mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
-                md5_time = time.time() - start
-
-                myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time)
-                all_insert_args.append(myargs)
-                if verbose:
-                    print("INFO: ADDED  ", relpath)
-                i_file += 1
+                    if verbose:
+                        if status == "MOVED":
+                            print("INFO: COPIED/MOVED ", rlpath)
+                        elif status == "UPDATED":
+                            print("INFO: UPDATED ", rlpath)
+                        elif status == "ADDED":
+                            print("INFO: ADDED ", rlpath)
+                    all_insert_args.append(myargs)
+        
+        # update the modality_files_to_inactivate with the new files to inactivate.
         files_to_inactivate.update(modality_files_to_inactivate)
 
         # for all files that were active but aren't there anymore
         # invalidate in manifest
         
         for relpath, vals in modality_files_to_inactivate.items():
+            # check if there are non alphanumeric characters in the path
+            # if so, print out the path
+            if not (relpath.isalnum() or relpath.isascii()):
+                print("INFO: Path contains non-alphanumeric characters:", relpath)
             if verbose:
                 if (relpath in paths):
                     print("INFO: OUTDATED  ", relpath)
@@ -425,7 +470,6 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
         try:
             if len(all_insert_args) > 0:
                 cur.executemany("INSERT INTO manifest (\
-                    FILE_ID, \
                     PERSON_ID, \
                     FILEPATH, \
                     MODALITY, \
@@ -435,7 +479,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
                     TIME_VALID_us, \
                     UPLOAD_DTSTR, \
                     STATE, \
-                    MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+                    MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
         except sqlite3.IntegrityError as e:
             print("ERROR: update ", e)
             print(all_insert_args)
@@ -737,8 +781,7 @@ class sync_state(Enum):
 def _upload_and_verify(src_path : FileSystemHelper, 
                        fn : str,
                        dated_dest_path : FileSystemHelper,
-                       databasename="journal.db",
-                       verbose: bool = False):
+                       databasename="journal.db"):
     state = sync_state.UNKNOWN
     # fid_list = []
     file_id = None
@@ -748,9 +791,9 @@ def _upload_and_verify(src_path : FileSystemHelper,
     start = time.time()
     srcfile = src_path.root.joinpath(fn)
     if srcfile.exists():
-        src_path.copy_file_to(fn, dated_dest_path, verbose = verbose) 
+        src_path.copy_file_to(fn, dated_dest_path) 
     else:
-        print("ERROR:  file not found ", srcfile)
+        # print("ERROR:  file not found ", srcfile)
         state = sync_state.MISSING_SRC
     copy_time = time.time() - start
     verify_time = None
@@ -769,10 +812,10 @@ def _upload_and_verify(src_path : FileSystemHelper,
         # case 1 missing in db. this should not happen.;
         if (result is None) or (len(result) == 0):
             state = sync_state.MISSING_IN_DB
-            print("ERROR: uploaded file is not matched in manifest.  should not happen.")
+            # print("ERROR: uploaded file is not matched in manifest.  should not happen.")
         elif (len(result) > 1):
             state = sync_state.MULTIPLE_ACTIVES_IN_DB
-            print("ERROR: multiple entries in manifest for ", fn)
+            # print("ERROR: multiple entries in manifest for ", fn)
     
     # src metadata
     # print(result)
@@ -787,7 +830,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
         verify_time = time.time() - start
         if dest_meta is None:
             state = sync_state.MISSING_DEST
-            print("ERROR:  missing file at destination", fn)
+            # print("ERROR:  missing file at destination", fn)
     
     if (state == sync_state.UNKNOWN):
         
@@ -807,12 +850,12 @@ def _upload_and_verify(src_path : FileSystemHelper,
                 # case 4: mismatched.
                 state = sync_state.MISMATCHED
                 # entries are not updated because of mismatch.
-                print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)            
+                # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)            
         else:
             # case 4: mismatched.
             state = sync_state.MISMATCHED
             # entries are not updated because of mismatch.
-            print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size)
+            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size)
             verify_time = 0
 
     # if verified upload, then remove any old file
@@ -868,6 +911,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         cur = con.cursor()
     
         upload_ver_str = cur.execute("SELECT MAX(upload_dtstr) FROM manifest").fetchone()[0]
+        if upload_ver_str is None:
+            raise ValueError("ERROR: no previous upload found to amend.")
         con.close()
     else:
         # get the current datetime
@@ -901,18 +946,24 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
         futures = []
         for fn in files_to_upload:
-            future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename, verbose)
+            if verbose:
+                print("INFO:  copying ", fn, " from ", str(src_path.root), " to ", str(dated_dest_path.root))
+            future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
             futures.append(future)
         
         for future in concurrent.futures.as_completed(futures):
             (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
             if state == sync_state.MISSING_IN_DB:
+                print("ERROR: uploaded file is not matched in manifest.  should not happen.", fn2)
                 missing_in_db.add(fn2)
             elif state == sync_state.MISSING_DEST:
                 missing_dest.add(fn2)
+                print("ERROR:  missing file at destination", fn2)
             elif state == sync_state.MISSING_SRC:
+                print("ERROR:  file not found ", fn2)
                 missing_src.add(fn2)
             elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
+                print("ERROR: multiple entries in manifest for ", fn2)
                 multiple_actives.add(fn2)
             elif state == sync_state.MATCHED:
                 # merge the updates for matched.
@@ -923,6 +974,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                     replaced.add(fn2)
             elif state == sync_state.MISMATCHED:
                 mismatched.add(fn2)
+                print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
+
             # elif state == sync_state.DELETED:
             #     deleted.add(fn2)
             
