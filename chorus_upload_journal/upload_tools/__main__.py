@@ -6,7 +6,7 @@ import argparse
 from chorus_upload_journal.upload_tools.generate_manifest import update_manifest 
 # from chorus_upload_journal.upload_tools.generate_manifest import restore_manifest, list_uploads, list_manifests
 from chorus_upload_journal.upload_tools.generate_manifest import upload_files, verify_files, list_files
-from chorus_upload_journal.upload_tools.generate_manifest import save_command_history, show_command_history
+from chorus_upload_journal.upload_tools.generate_manifest import save_command_history, update_command_completion, show_command_history
 from chorus_upload_journal.upload_tools.generate_manifest import DEFAULT_MODALITIES
 from chorus_upload_journal.upload_tools.storage_pathlib import FileSystemHelper
 from pathlib import Path
@@ -25,7 +25,10 @@ import json
 
 # TODO: DONE config file to reduce command line parameters
 # TODO: DONE manifest track source path and dest container
-# TODO: pull and push journal files from central.
+# TODO: DONE pull and push journal files from central.
+# TODO: measure time
+# TODO: parallelize update
+# TODO: test large data and fix timeout if any.
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -45,7 +48,8 @@ def _checkout_journal(config):
     
     # if not cloud, then we are done.
     if not manifest_path.is_cloud:
-        return (manifest_path, None, manifest_path, manifest_path.get_file_md5())
+        md5 = FileSystemHelper.get_metadata(manifest_path.root, with_metadata = False, with_md5 = True)['md5']
+        return (manifest_path, None, manifest_path, md5)
     
     # since it's a cloud path, we want to lock as soon as possible.
     manifest_file = manifest_path.root
@@ -81,21 +85,21 @@ def _checkout_journal(config):
     
     if downloadable:  # only if there something to download.
         # download the file
-        remote_md5 = lock_path.get_file_md5()
+        remote_md5 = FileSystemHelper.get_metadata(lock_path.root, with_metadata = False, with_md5 = True)['md5']
         
         if (local_path.root.exists()):
             # compare md5
-            local_md5 = local_path.get_file_md5()
+            local_md5 = FileSystemHelper.get_metadata(local_path.root, with_metadata = False, with_md5 = True)['md5']
             if (local_md5 != remote_md5):
                 # remove localfile and then download.
                 local_path.root.unlink()
                 lock_path.copy_file_to(relpath = None, dest_path = local_path.root)
-                local_md5 = local_path.get_file_md5()
+                local_md5 = FileSystemHelper.get_metadata(local_path.root, with_metadata = False, with_md5 = True)['md5']
             # if md5 matches, don't need to copy.
         else:
             # local file does not exist, need to copy 
             lock_path.copy_file_to(relpath = None, dest_path = local_path.root)
-            local_md5 = local_path.get_file_md5()
+            local_md5 = FileSystemHelper.get_metadata(local_path.root, with_metadata = False, with_md5 = True)['md5']
     else:
         # nothing to download, using local file 
         remote_md5 = ""
@@ -579,15 +583,22 @@ if __name__ == "__main__":
         args_dict = _strip_account_info(args)
         if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
             args_dict["config"] = config_fn
-        save_command_history(*(_recreate_params(args_dict)), *(_get_paths_for_history(args, config)), manifest_fn)
+        command_id = save_command_history(*(_recreate_params(args_dict)), *(_get_paths_for_history(args, config)), manifest_fn)
 
         # call the subcommand function.
+        start = time.time()
         args.func(args, config, manifest_fn)
-    
+        end = time.time()
+        elapsed = end - start
+        print(f"Command Completed in {elapsed:.2f} seconds.")
+        update_command_completion(command_id, elapsed, manifest_fn)
+        
         # push journal up.
         _checkin_journal(manifest_path, locked_path, local_path, manifest_md5)
         
     else:
+        # if just printing usage or help, don't need to checkout the journal.
+        # if unlock, do it in the cloud only.
         manifest_fn = config_helper.get_journal_config(config)["path"]
     
         # call the subcommand function.

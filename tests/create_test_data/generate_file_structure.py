@@ -148,10 +148,10 @@ def generateUpdate():
                 # symbolic link
                 elif option == 3:
                     # if on windows, this will fail
-                    if os.name == 'nt':
-                        shutil.copy(origpath, dest_path)
-                    else:
-                        os.symlink(os.path.abspath(origpath), os.path.abspath(dest_path))
+                    # if os.name == 'nt':
+                    shutil.copy(origpath, dest_path)
+                    # else:
+                    # os.symlink(os.path.abspath(origpath), os.path.abspath(dest_path))
                     
                     
             option = random.randint(0,3)

@@ -44,7 +44,7 @@
 
 from cloudpathlib import AnyPath, CloudPath, S3Path, AzureBlobPath, GSPath
 from cloudpathlib.client import Client
-from pathlib import Path, WindowsPath, PureWindowsPath, PurePosixPath
+from pathlib import Path, WindowsPath, PureWindowsPath, PurePosixPath, PosixPath
 import hashlib
 import math
 from typing import Optional, Union
@@ -54,6 +54,7 @@ if sys.version_info >= (3, 11):
 else:
     from typing_extensions import Self
 
+import time
 import os
 
 import shutil
@@ -101,22 +102,25 @@ class FileSystemHelper:
         
         if isinstance(path, CloudPath) or isinstance(path, PureWindowsPath):
             # cloud path, does not need to do anything more
-            # windows path or subclass. don't need to do anything more.
+            # windows path or subclass WindowsPath. don't need to do anything more.
             return path
                 
         if isinstance(path, PurePosixPath):
-            # check to see if this is really a posix path
-            if path.is_absolute() and (":\\" in path.parts[0]) and ("/" not in path.parts[0]):
+            # check to see if this is really a pure posix path (or subclass PosixPath)
+            pstr = str(path)
+            # note this is not perfect, example:  a posix file with name that include ":\" or "\"
+            if (("\\" in pstr) or (":\\" in pstr)) and ("/" not in pstr):
                 # absolute path but has ":" and "\" in the first part, so it's a windows path
                 raise ValueError("path is a windows path, but passed in as a posix path " + str(path))
                 # if isinstance(path.PosixPath):
-                #     return WindowsPath(str(path))
+                #     return WindowsPath(pstr)
                 # else:
-                #     return PureWindowsPath(str(path))
-            return path
+                #     return PureWindowsPath(pstr)
+            else:
+                return path
         
         if isinstance(path, str):
-            if (":\\" in path) and ("/" not in path):
+            if (("\\" in path) or (":\\" in path)) and ("/" not in path):
                 # windows path
                 if os.name == 'nt':
                     return WindowsPath(path)
@@ -164,124 +168,201 @@ class FileSystemHelper:
         # If no client, then environment variable, or default profile (s3) is used.            
         self.is_cloud = isinstance(self.root, CloudPath)
         # self.is_dir = self.root.is_dir()  what is the path is mean to be a directory but does not exist yet?  can't tell if it's a directory.
-                        
-    def get_file_metadata(self, path: Union[str, Path, CloudPath] = None) -> dict:
+                       
+    @classmethod
+    def get_metadata(cls, root: Union[CloudPath, Path] = None, 
+                     path: Union[CloudPath, Path] = None,
+                     with_metadata: bool = True,
+                     with_md5: bool = False) -> dict:
         """
-        Retrieves the metadata of a file.
+        Get the metadata of a file or directory.
 
         Args:
-            path (Union[str, Path, CloudPath]): The path of the file.
+            path (Union[str, CloudPath, Path]): The path to the file or directory.
+            client (Optional[Client]): An optional client object for accessing the storage location. Defaults to None.
 
         Returns:
-            dict: A dictionary containing the file metadata.
-                - "path" (str): The relative path of the file.
-                - "size" (int): The size of the file in bytes.
-                - "create_time_us" (int): The creation time of the file in microseconds.
-                - "modify_time_us" (int): The modification time of the file in microseconds.
+            dict: A dictionary containing the metadata of the file or directory.
         """
+        if path is None and root is None:
+            return {}
         
-        # Initialize the dictionary to store the metadata
-        metadata = {}
         if path is None:
-            test = self.root
+            curr = root
+            rel = root
+        elif root is None:
+            curr = path
+            rel = path
         else:
-            test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
-        curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
+            curr = root.joinpath(path)
+            rel = path
         
-        if not curr.exists():
-            return None
-        info = curr.stat()
-        
-        metadata["path"] = FileSystemHelper._as_posix(curr.relative_to(self.root), client = self.client)
-        if ("\\" in metadata["path"]):
-            print("WARNING:  path contains backslashes: ", metadata["path"])
-        metadata["size"] = info.st_size
+        metadata = {}
+        if (with_metadata):
+            info = curr.stat()
+            metadata["path"] = FileSystemHelper._as_posix(rel)
+            if ("\\" in metadata["path"]):
+                print("WARNING:  path contains backslashes: ", metadata["path"])
+            metadata["size"] = info.st_size
 
-        # in cloudpathlib, only size and mtime are populated, mtime is the time of last upload, in second granularity, so not super useful
-        
-        metadata["create_time_us"] = int(math.floor(info.st_ctime * 1e6)) if info.st_ctime else None
-        metadata["modify_time_us"] = int(math.floor(info.st_mtime * 1e6)) if info.st_mtime else None
-        # metadata["create_time_ns"] = math.floor(info.st_ctime_ns / 1000) if info.st_ctime_ns else None
-        # metadata["modify_time_ns"] = math.floor(info.st_mtime_ns / 1000) if info.st_mtime_ns else None
+            # in cloudpathlib, only size and mtime are populated, mtime is the time of last upload, in second granularity, so not super useful
+            
+            metadata["create_time_us"] = int(math.floor(info.st_ctime * 1e6)) if info.st_ctime else None
+            metadata["modify_time_us"] = int(math.floor(info.st_mtime * 1e6)) if info.st_mtime else None
+            # metadata["create_time_ns"] = math.floor(info.st_ctime_ns / 1000) if info.st_ctime_ns else None
+            # metadata["modify_time_ns"] = math.floor(info.st_mtime_ns / 1000) if info.st_mtime_ns else None
 
-        # metadata["md5"] = self.get_file_md5(curr)
+        if (with_md5):
+            md5_str = None
+            
+            if isinstance(curr, S3Path):
+                # Get the MD5 hash from the ETag
+                md5_str = curr.etag.strip('"')
+            elif isinstance(curr, AzureBlobPath):          
+                md5_str = curr.md5.hex()
+            elif isinstance(curr, GSPath):
+                md5_str = curr.etag.strip('"')
 
+            if md5_str is None:
+                if isinstance(curr, CloudPath): 
+                    print("INFO: calculating md5 for ", curr)
+                
+                # Calculate the MD5 hash locally
+                
+                # Initialize the MD5 hash object
+                if (Path(curr).exists()):
+                    md5 = hashlib.md5()
+
+                    # Open the file in binary mode
+                    with curr.open("rb") as f:
+                        # Read the file in chunks
+                        for chunk in iter(lambda: f.read(1024*1024), b""):
+                            # Update the MD5 hash with the chunk
+                            md5.update(chunk)
+
+                    # Get the hexadecimal representation of the MD5 hash
+                    md5_str = md5.hexdigest()
+                
+            metadata["md5"] = md5_str
         return metadata
     
-    def _calc_file_md5(self, path: Union[Path, CloudPath] = None) -> str:
-        """
-        Calculate the MD5 hash of a file.
+                        
+    # def get_file_metadata(self, path: Union[str, Path, CloudPath] = None) -> dict:
+    #     """
+    #     Retrieves the metadata of a file.
 
-        Args:
-            path (Union[Path, CloudPath]): The path to the file, as Path or CloudPath, incorporating.
+    #     Args:
+    #         path (Union[str, Path, CloudPath]): The path of the file.
 
-        Returns:
-            str: The hexadecimal representation of the MD5 hash.
-        """
-        if path is None:
-            test = self.root
-        else:
-            test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
-        curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
-
-        if not curr.exists():
-            print("ERROR:  file does not exist: ", curr)
-            return None
+    #     Returns:
+    #         dict: A dictionary containing the file metadata.
+    #             - "path" (str): The relative path of the file.
+    #             - "size" (int): The size of the file in bytes.
+    #             - "create_time_us" (int): The creation time of the file in microseconds.
+    #             - "modify_time_us" (int): The modification time of the file in microseconds.
+    #     """
         
-        # Initialize the MD5 hash object
-        md5 = hashlib.md5()
+    #     # Initialize the dictionary to store the metadata
+    #     metadata = {}
+    #     if path is None:
+    #         test = self.root
+    #     else:
+    #         test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+    #     curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
+        
+    #     if not curr.exists():
+    #         return None
+    #     info = curr.stat()
+        
+    #     metadata["path"] = FileSystemHelper._as_posix(curr.relative_to(self.root), client = self.client)
+    #     if ("\\" in metadata["path"]):
+    #         print("WARNING:  path contains backslashes: ", metadata["path"])
+    #     metadata["size"] = info.st_size
 
-        # Open the file in binary mode
-        with curr.open("rb") as f:
-            # Read the file in chunks
-            for chunk in iter(lambda: f.read(1024*1024), b""):
-                # Update the MD5 hash with the chunk
-                md5.update(chunk)
+    #     # in cloudpathlib, only size and mtime are populated, mtime is the time of last upload, in second granularity, so not super useful
+        
+    #     metadata["create_time_us"] = int(math.floor(info.st_ctime * 1e6)) if info.st_ctime else None
+    #     metadata["modify_time_us"] = int(math.floor(info.st_mtime * 1e6)) if info.st_mtime else None
+    #     # metadata["create_time_ns"] = math.floor(info.st_ctime_ns / 1000) if info.st_ctime_ns else None
+    #     # metadata["modify_time_ns"] = math.floor(info.st_mtime_ns / 1000) if info.st_mtime_ns else None
 
-        # Get the hexadecimal representation of the MD5 hash
-        return md5.hexdigest()
+
+    #     return metadata
+    
+    # def _calc_file_md5(self, path: Union[Path, CloudPath] = None) -> str:
+    #     """
+    #     Calculate the MD5 hash of a file.
+
+    #     Args:
+    #         path (Union[Path, CloudPath]): The path to the file, as Path or CloudPath, incorporating.
+
+    #     Returns:
+    #         str: The hexadecimal representation of the MD5 hash.
+    #     """
+    #     if path is None:
+    #         test = self.root
+    #     else:
+    #         test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+    #     curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
+
+    #     if not curr.exists():
+    #         print("ERROR:  file does not exist: ", curr)
+    #         return None
+        
+    #     # Initialize the MD5 hash object
+    #     md5 = hashlib.md5()
+
+    #     # Open the file in binary mode
+    #     with curr.open("rb") as f:
+    #         # Read the file in chunks
+    #         for chunk in iter(lambda: f.read(1024*1024), b""):
+    #             # Update the MD5 hash with the chunk
+    #             md5.update(chunk)
+
+    #     # Get the hexadecimal representation of the MD5 hash
+    #     return md5.hexdigest()
 
     
-    # limited testing seems to show that the md5 aws etag and azure content-md5 are okay.
-    def get_file_md5(self, path: Union[str, Path, CloudPath] = None, verify:bool = False  ) -> str:
-        """
-        Get the MD5 hash of a file.
+    # # limited testing seems to show that the md5 aws etag and azure content-md5 are okay.
+    # def get_file_md5(self, path: Union[str, Path, CloudPath] = None, verify:bool = False  ) -> str:
+    #     """
+    #     Get the MD5 hash of a file.
 
-        Args:
-            path (Union[str, Path, CloudPath]): The path of the file, could be relative to the root.
-            verify (bool, optional): Whether to verify the MD5 hash. Defaults to False.
+    #     Args:
+    #         path (Union[str, Path, CloudPath]): The path of the file, could be relative to the root.
+    #         verify (bool, optional): Whether to verify the MD5 hash. Defaults to False.
 
-        Returns:
-            str: The MD5 hash of the file.
-        """
-        if path is None:
-            test = self.root
-        else:
-            test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
-        curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
+    #     Returns:
+    #         str: The MD5 hash of the file.
+    #     """
+    #     if path is None:
+    #         test = self.root
+    #     else:
+    #         test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
+    #     curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
         
-        md5_str = None
+    #     md5_str = None
         
-        if isinstance(self.root, S3Path):
-            # Get the MD5 hash from the ETag
-            md5_str = curr.etag.strip('"')
-        elif isinstance(self.root, AzureBlobPath):          
-            md5_str = curr.md5.hex()
-        elif isinstance(self.root, GSPath):
-            md5_str = curr.etag.strip('"')
+    #     if isinstance(self.root, S3Path):
+    #         # Get the MD5 hash from the ETag
+    #         md5_str = curr.etag.strip('"')
+    #     elif isinstance(self.root, AzureBlobPath):          
+    #         md5_str = curr.md5.hex()
+    #     elif isinstance(self.root, GSPath):
+    #         md5_str = curr.etag.strip('"')
 
-        if md5_str is None:
-            if (self.is_cloud): 
-                print("INFO: calculating md5 for ", curr)
-            # Calculate the MD5 hash locally
-            md5_str = self._calc_file_md5(curr)
+    #     if md5_str is None:
+    #         if (self.is_cloud): 
+    #             print("INFO: calculating md5 for ", curr)
+    #         # Calculate the MD5 hash locally
+    #         md5_str = self._calc_file_md5(curr)
             
-        else:
-            if (self.is_cloud) and verify: 
-                md5_calced = self._calc_file_md5(curr)
-                print("INFO: INTERNAL VERIFICIATION:  md5 for ", curr, ": cloud ", md5_str, ", calc", md5_calced)
+    #     else:
+    #         if (self.is_cloud) and verify: 
+    #             md5_calced = self._calc_file_md5(curr)
+    #             print("INFO: INTERNAL VERIFICIATION:  md5 for ", curr, ": cloud ", md5_str, ", calc", md5_calced)
             
-        return md5_str
+    #     return md5_str
     
     
     def get_files(self, subpath : str = None) -> list[str]:
@@ -359,7 +440,11 @@ class FileSystemHelper:
                     print("ERROR: permission issue copying file ", src_file, " to ", dest_file)
                 except Exception as e:
                     print("ERROR: issue copying file ", src_file, " to ", dest_file, " exception ", e)
-                        
+        # start = time.time()
+        # meta =  FileSystemHelper.get_metadata(path = dest_file, with_metadata = True, with_md5 = True)
+        # md5 = meta['md5']
+        # print("INFO:  info time: ", time.time() - start, " size =", meta['size'], " md5 = ", md5)   
+        
     
 
 

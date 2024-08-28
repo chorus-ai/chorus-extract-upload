@@ -99,12 +99,32 @@ def save_command_history(common_params:str, cmd:str, parameters:str,
                         COMMAND TEXT, \
                         PARAMS TEXT, \
                         SRC_PATHS TEXT, \
-                        DEST_PATH TEXT)")
+                        DEST_PATH TEXT, \
+                        Duration TEXT)")  # datetime string of the upload.
  
-    cur.execute("INSERT INTO command_history (DATETIME, COMMON_PARAMS, COMMAND, PARAMS, SRC_PATHS, DEST_PATH) VALUES(?, ?, ?, ?, ?, ?)", (curtimestamp, common_params, cmd, parameters, src_paths, dest_path))
+    cur.execute("INSERT INTO command_history ( \
+        DATETIME, COMMON_PARAMS, COMMAND, PARAMS, SRC_PATHS, DEST_PATH \
+        ) VALUES(?, ?, ?, ?, ?, ?)",
+        (curtimestamp, common_params, cmd, parameters, src_paths, dest_path))
     con.commit()
     
+    # get the inserted record id
+    command_id = cur.lastrowid
+    
     con.close()
+    
+    return command_id
+
+
+def update_command_completion(command_id:int, duration:float, databasename="journal.db"):
+    con = sqlite3.connect(databasename, check_same_thread=False)
+    cur = con.cursor()
+
+    cur.execute("UPDATE command_history SET DURATION=? WHERE COMMAND_ID=?", 
+                (duration, command_id))
+    con.commit()
+    
+    con.close()    
     
 def show_command_history(databasename="journal.db"):
     """
@@ -123,10 +143,10 @@ def show_command_history(databasename="journal.db"):
     commands = cur.execute("SELECT * FROM command_history").fetchall()
     con.close()
     
-    for (id, timestamp, common_params, cmd, params, src_paths, dest_path) in commands:
+    for (id, timestamp, common_params, cmd, params, src_paths, dest_path, duration) in commands:
         # convert microsecond timestamp to datetime
         # dt = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(int(timestamp/1e6)))
-        print(f"  {id}\t{timestamp}:\t{common_params} {cmd} {params}.  {src_paths}->{dest_path}")
+        print(f"  {id}\t{timestamp}:\t{common_params} {cmd} {params}.  {src_paths}->{dest_path}.  elapse {duration}s")
 
 
 
@@ -175,7 +195,11 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
                 MD5 TEXT, \
                 TIME_VALID_us INTEGER, \
                 TIME_INVALID_us INTEGER, \
-                UPLOAD_DTSTR TEXT)")  # datetime string of the upload.
+                UPLOAD_DTSTR TEXT, \
+                STATE TEXT, \
+                MD5_DURATION REAL, \
+                UPLOAD_DURATION REAL, \
+                VERIFY_DURATION REAL)")  # datetime string of the upload.
     con.commit()
     con.close()
     
@@ -192,8 +216,10 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
         
         for relpath in paths:
             # print(i_path, relpath)
-            meta = root.get_file_metadata(relpath)
+            start = time.time()
+            meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata=True, with_md5=True)
             # first item is personid.
+            md5_time = time.time() - start
             
             # extract personid using regex
             matched = PERSONID_REGEX.match(relpath)
@@ -203,9 +229,10 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
             
             filesize = meta['size']
             modtimestamp = meta['modify_time_us']
-            mymd5 = root.get_file_md5(relpath)
             
-            myargs = (i_path, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, None)
+            mymd5 = meta['md5']
+                        
+            myargs = (i_path, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, "ADDED", md5_time)
             i_path += 1
             if verbose:
                 print("INFO: ADDED ", relpath)
@@ -217,7 +244,17 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
         cur = con.cursor()
 
         try:
-            cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+            cur.executemany("INSERT INTO manifest ( \
+                FILE_ID, \
+                PERSON_ID, \
+                FILEPATH, \
+                MODALITY, \
+                SRC_MODTIME_us, \
+                SIZE, \
+                MD5, \
+                TIME_VALID_us, \
+                STATE, \
+                MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
         except sqlite3.IntegrityError as e:
             print("ERROR: create ", e)
             print(all_args)
@@ -281,7 +318,8 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
 
         for relpath in paths:            
             # get information about the current file
-            meta = root.get_file_metadata(relpath)
+            meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False)
+            # root.get_file_metadata(relpath)
             
             # first item is personid.
             matched = PERSONID_REGEX.match(relpath)
@@ -323,7 +361,9 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
                         
                     else:
                         # timestamp changed. we need to compute md5 to check, or to update.
-                        mymd5 = root.get_file_md5(relpath)
+                        start = time.time()
+                        mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
+                        md5_time = time.time() - start
 
                         # files are extremely likely the same just moved.
                         # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
@@ -331,13 +371,13 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
                         # cur.execute("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
                         if (oldsize == filesize) and (mymd5 == oldmd5):
                             # essentially copy the old and update the modtime.
-                            myargs = (i_file, personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, None, oldsync)
+                            myargs = (i_file, personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "MOVED", md5_time)
                             if verbose:
                                 print("INFO: COPIED/MOVED ", relpath)
                             # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
                         else:
                             # files are different.  set the old file as invalid and add a new file.
-                            myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, None)
+                            myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "UPDATED", md5_time)
                             if verbose:
                                 print("INFO: UPDATED ", relpath)
                             # modified file. old one should be removed.
@@ -350,9 +390,11 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
                     continue
             else:
                 # if DNE, add new file
-                mymd5 = root.get_file_md5(relpath)
+                start = time.time()
+                mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
+                md5_time = time.time() - start
 
-                myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, None)
+                myargs = (i_file, personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time)
                 all_insert_args.append(myargs)
                 if verbose:
                     print("INFO: ADDED  ", relpath)
@@ -368,9 +410,9 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
                     print("INFO: OUTDATED  ", relpath)
                 else:
                     print("INFO: DELETED  ", relpath)
-            
+            state = "OUTDATED" if (relpath in paths) else "DELETED"
             for v in vals:
-                all_del_args.append((curtimestamp, v[0]))
+                all_del_args.append((curtimestamp, state, v[0]))
         # print("SQLITE update arguments ", all_del_args)
 
     if (len(all_insert_args) > 0) or (len(all_del_args) > 0):
@@ -382,12 +424,24 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
 
         try:
             if len(all_insert_args) > 0:
-                cur.executemany("INSERT INTO manifest VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+                cur.executemany("INSERT INTO manifest (\
+                    FILE_ID, \
+                    PERSON_ID, \
+                    FILEPATH, \
+                    MODALITY, \
+                    SRC_MODTIME_us, \
+                    SIZE, \
+                    MD5, \
+                    TIME_VALID_us, \
+                    UPLOAD_DTSTR, \
+                    STATE, \
+                    MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
         except sqlite3.IntegrityError as e:
             print("ERROR: update ", e)
             print(all_insert_args)
+            
         if (len(all_del_args) > 0):
-            cur.executemany("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?",all_del_args)
+            cur.executemany("UPDATE manifest SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
             
         con.commit() 
         con.close()
@@ -674,9 +728,11 @@ class sync_state(Enum):
     UNKNOWN = 0
     MATCHED = 1
     MISMATCHED = 2
-    MISSING = 3
-    DELETED = 4
-    MISSING_IN_DB = 5
+    MISSING_SRC = 3
+    MISSING_DEST = 4
+    DELETED = 5
+    MISSING_IN_DB = 6
+    MULTIPLE_ACTIVES_IN_DB = 7
 
 def _upload_and_verify(src_path : FileSystemHelper, 
                        fn : str,
@@ -684,11 +740,21 @@ def _upload_and_verify(src_path : FileSystemHelper,
                        databasename="journal.db",
                        verbose: bool = False):
     state = sync_state.UNKNOWN
-    fid_list = []
+    # fid_list = []
+    file_id = None
+    del_list = []
     
     # ======= copy.  parallelizable
-    src_path.copy_file_to(fn, dated_dest_path, verbose = verbose) 
-
+    start = time.time()
+    srcfile = src_path.root.joinpath(fn)
+    if srcfile.exists():
+        src_path.copy_file_to(fn, dated_dest_path, verbose = verbose) 
+    else:
+        print("ERROR:  file not found ", srcfile)
+        state = sync_state.MISSING_SRC
+    copy_time = time.time() - start
+    verify_time = None
+    
     # ======= read metadata from db.  May be parallelizable        
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
@@ -697,41 +763,57 @@ def _upload_and_verify(src_path : FileSystemHelper,
     con.close()
 
     verified = False
-    
-    # ======= verify.  parallelizable.
-    # 4 cases:  
-    # case 1 missing in db. this should not happen.;
-    if (result is None) or (len(result) == 0):
-        state = sync_state.MISSING_IN_DB
-        print("ERROR: uploaded file is not matched in manifest.  should not happen.")
-        return
-    elif (len(result) > 1):
-        print("ERROR: multiple entries in manifest for ", fn)
-        return
+    if (state == sync_state.UNKNOWN):
+        # ======= verify.  parallelizable.
+        # 4 cases:  
+        # case 1 missing in db. this should not happen.;
+        if (result is None) or (len(result) == 0):
+            state = sync_state.MISSING_IN_DB
+            print("ERROR: uploaded file is not matched in manifest.  should not happen.")
+        elif (len(result) > 1):
+            state = sync_state.MULTIPLE_ACTIVES_IN_DB
+            print("ERROR: multiple entries in manifest for ", fn)
     
     # src metadata
     # print(result)
-    file_id, size, md5 = result[0]
+    if (state == sync_state.UNKNOWN):
 
-    # get the dest file info
-    dest_meta = dated_dest_path.get_file_metadata(fn)
-    # case 2 missing in cloud.  this is the missing case;
-    if dest_meta is None:
-        state = sync_state.MISSING
-        print("ERROR:  missing file at destination", fn)
-        return
+        file_id, size, md5 = result[0]
 
-    dest_md5 = dated_dest_path.get_file_md5(fn)    
-    if (size == dest_meta['size']) and (md5 == dest_md5):
-        # case 3: matched
-        state = sync_state.MATCHED
-        verified = True
-        fid_list.append(file_id)  # verified.  this may not be parallelizable.
-    else:
-        # case 4: mismatched.
-        state = sync_state.MISMATCHED
-        # entries are not updated because of mismatch.
-        print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
+        # get the dest file info
+        start = time.time()
+        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
+        # case 2 missing in cloud.  this is the missing case;
+        verify_time = time.time() - start
+        if dest_meta is None:
+            state = sync_state.MISSING_DEST
+            print("ERROR:  missing file at destination", fn)
+    
+    if (state == sync_state.UNKNOWN):
+        
+        if (size == dest_meta['size']):
+            
+            # start = time.time()
+            # dest_md5 = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = False, with_md5 = True)['md5']
+            # verify_time = time.time() - start
+            dest_md5 = dest_meta['md5']
+            
+            if (md5 == dest_md5):
+                # case 3: matched
+                state = sync_state.MATCHED
+                verified = True
+                # fid_list.append(file_id)  # verified.  this may not be parallelizable.
+            else:
+                # case 4: mismatched.
+                state = sync_state.MISMATCHED
+                # entries are not updated because of mismatch.
+                print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)            
+        else:
+            # case 4: mismatched.
+            state = sync_state.MISMATCHED
+            # entries are not updated because of mismatch.
+            print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size)
+            verify_time = 0
 
     # if verified upload, then remove any old file
     # ======= read metadata from db.  May be parallelizable
@@ -744,10 +826,10 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
         if (result is not None) and (len(result) > 0):
             for (file_id,) in result:
-                state = sync_state.DELETED
-                fid_list.append(file_id)  # this may not be paralleizable.
+                # state = sync_state.DELETED
+                del_list.append(file_id)  # this may not be paralleizable.
 
-    return (fn, state, fid_list)
+    return (fn, state, file_id, del_list, copy_time, verify_time)
 
 
 
@@ -797,15 +879,19 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     #---------- upload files.    
     # first get the list of files for the requested version
     files_to_upload = list_files(databasename, version=None, modalities=modalities, verbose = False)
-    if len(files_to_upload) == 0:
+    if (files_to_upload is None) or (len(files_to_upload) == 0):
         print("INFO: no files copied.  Done")
         return None
     
     # copy file, verify and update manifest
     update_args = []
-    missing = set()
+    del_args = []
+    missing_dest = set()
+    missing_src = set()
+    multiple_actives = set()
     matched = set()
     mismatched = set()
+    replaced = set()
     deleted = set()
     missing_in_db = set()
 
@@ -819,32 +905,42 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             futures.append(future)
         
         for future in concurrent.futures.as_completed(futures):
-            (fn2, state, fid_list) = future.result()
+            (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
             if state == sync_state.MISSING_IN_DB:
                 missing_in_db.add(fn2)
-            elif state == sync_state.MISSING:
-                missing.add(fn2)
+            elif state == sync_state.MISSING_DEST:
+                missing_dest.add(fn2)
+            elif state == sync_state.MISSING_SRC:
+                missing_src.add(fn2)
+            elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
+                multiple_actives.add(fn2)
             elif state == sync_state.MATCHED:
+                # merge the updates for matched.
                 matched.add(fn2)
+                update_args.append((upload_ver_str, copy_time, verify_time, fid))
+                del_args += [(upload_ver_str, fid) for fid in del_list]
+                if len(del_list) > 0:
+                    replaced.add(fn2)
             elif state == sync_state.MISMATCHED:
                 mismatched.add(fn2)
-            elif state == sync_state.DELETED:
-                deleted.add(fn2)
-            # merge the updates.
-            update_args += [(upload_ver_str, fid) for fid in fid_list]
+            # elif state == sync_state.DELETED:
+            #     deleted.add(fn2)
             
             # update the manifest - likely not parallelizable.
             if len(update_args) >= step:
                 con = sqlite3.connect(databasename, check_same_thread=False)
                 cur = con.cursor()
                 try:        
-                    cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+                    cur.executemany("UPDATE manifest SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
+                    cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", del_args)
                 except sqlite3.InterfaceError as e:
                     print("ERROR: update ", e)
                     print(update_args)
+                    
                 con.commit() 
                 con.close()
                 update_args = []
+                del_args = []
             # 
     
     #### --------------OLD begin
@@ -902,7 +998,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         try:        
-            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+            cur.executemany("UPDATE manifest SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
+            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", del_args)
         except sqlite3.InterfaceError as e:
             print("ERROR: update ", e)
             print(update_args)
@@ -910,6 +1007,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         con.commit() 
         con.close()
         update_args = []
+        del_args = []
 
     # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
     con = sqlite3.connect(databasename, check_same_thread=False)
@@ -925,13 +1023,13 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             continue
         
         deleted.add(fn)
-        update_args.append((upload_ver_str, file_id))  # deleted
+        del_args.append((upload_ver_str, file_id))  # deleted
         
-    if len(update_args) > 0:
+    if len(del_args) > 0:
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         try:        
-            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", update_args)
+            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", del_args)
         except sqlite3.InterfaceError as e:
             print("ERROR: update ", e)
             print(update_args)
@@ -957,9 +1055,9 @@ def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
     
     fid, fn, size, md5 = file_info
     
-    dest_meta = dated_dest_path.get_file_metadata(fn)            
-    dest_md5 = dated_dest_path.get_file_md5(fn)
-        
+    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
+    dest_md5 = dest_meta['md5'] if dest_meta is not None else None
+
     return (dest_meta, dest_md5, fid, fn, size, md5)
 
 # verify a set of files that have been uploaded.  version being None means using the last upload
