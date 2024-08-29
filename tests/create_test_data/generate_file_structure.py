@@ -17,7 +17,7 @@ def generateFirstFiles():
     initpushdir = os.path.join(rootfolder,firstupload_string)
     if not os.path.exists(initpushdir):
         os.mkdir(initpushdir)
-
+    
     # need: person_id folders in initial push
     # seed so that everything happens the same
     random.seed(0)
@@ -49,7 +49,7 @@ def generateFirstFiles():
                 interval_end = intervalpts[2*(filenum)+1]
                 interval_dur = interval_end - interval_st
                 datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
-                fileSizeInBytes = 1024
+                fileSizeInBytes = 2**random.randint(8, 28)
                 # outputfilename = str(id) +  "_" + str(random.randint(10000,20000)) + "_"
                 outputfilename = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm"))
                 outputfilepath = os.path.join(personwfdir, outputfilename)
@@ -61,7 +61,7 @@ def generateFirstFiles():
     os.makedirs(personwfdir, exist_ok=True)
     
     for filenum in range(14):
-        fileSizeInBytes = 1024
+        fileSizeInBytes = 2**random.randint(8, 28)
         outputfilename = str(filenum) + ".csv"
         outputfilepath = os.path.join(personwfdir, outputfilename)
         with open(outputfilepath, 'wb') as fout:
@@ -80,8 +80,6 @@ def generateUpdate():
     firstupload_string = "SiteFolder_FirstSnapshot"
 
     initpushdir = os.path.join(rootfolder,firstupload_string)
-
-    fileSizeInBytes = 1024
 
     secondupload_string = "SiteFolder_SecondSnapshot"
 
@@ -124,6 +122,7 @@ def generateUpdate():
                 dest_dir = os.path.dirname(dest_path)
                 os.makedirs(dest_dir, exist_ok=True)
                 
+                fileSizeInBytes = 2**random.randint(8, 28)
                 # copy as is
                 if option == 0:
                     shutil.copy(origpath, dest_path)
@@ -139,6 +138,7 @@ def generateUpdate():
                     interval_dur = interval_end - interval_st
                     datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
                     newpath = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm"))
+                    
                     with open(os.path.join(dest_dir, newpath), 'wb') as fout:
                         fout.write(os.urandom(fileSizeInBytes)) 
                 # modify contents
@@ -172,7 +172,7 @@ def generateUpdate():
                     interval_end = intervalpts[2*(filenum)+1]
                     interval_dur = interval_end - interval_st
                     datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
-                    fileSizeInBytes = 1024
+                    fileSizeInBytes = 2**random.randint(8, 28)
                     # outputfilename = str(id) +  "_" + str(random.randint(10000,20000)) + "_"
                     outputfilename = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm")) 
                     outputfilepath = os.path.join(personwfdir, outputfilename)
@@ -184,7 +184,7 @@ def generateUpdate():
     os.makedirs(personwfdir, exist_ok=True)
     print("Updating OMOP")
     for filenum in range(14):
-        fileSizeInBytes = 1024
+        fileSizeInBytes = 2**random.randint(8, 28)
         outputfilename = str(filenum) + ".csv"
         outputfilepath = os.path.join(personwfdir, outputfilename)
         with open(outputfilepath, 'wb') as fout:
