@@ -215,35 +215,40 @@ class FileSystemHelper:
         if (with_md5):
             md5_str = None
             
-            if isinstance(curr, S3Path):
-                # Get the MD5 hash from the ETag
-                md5_str = curr.etag.strip('"')
-            elif isinstance(curr, AzureBlobPath):  
-                # if (curr.md5 is None):
-                #     print("WARNING:  md5 is None for ", curr)        
-                md5_str = curr.md5.hex()
-            elif isinstance(curr, GSPath):
-                md5_str = curr.etag.strip('"')
-
-            if md5_str is None:
-                # if isinstance(curr, CloudPath): 
-                #     print("INFO: calculating md5 for ", curr)
+            # if isinstance(curr, S3Path):
+            #     # Get the MD5 hash from the ETag. multipart upload has ETAG that is not md5.  if object is encrypted with KMS also not md5.
+            #     # https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html
+            #     # can set content-md5 but we are already storing in db.
+            #     md5_str = curr.etag.strip('"')
+            # elif isinstance(curr, AzureBlobPath):
+            #     # md5 is not calculated for large data files (>100MB)
+            #     # https://learn.microsoft.com/en-us/answers/questions/282572/md5-hash-calculation-for-large-files
+            #     # can set content-md5 but we are already storing in db.
+            #     if (curr.md5 is not None):
+            #         md5_str = curr.md5.hex()
+            #     else:
+            #         md5_str = None  # not available
+            # elif isinstance(curr, GSPath):
+            #     # likely not reliable, like S3 or AzureBlob
+            #     md5_str = curr.etag.strip('"')
                 
+            # elif isinstance(curr, Path):                
                 # Calculate the MD5 hash locally
                 
-                # Initialize the MD5 hash object
-                if (Path(curr).exists()):
-                    md5 = hashlib.md5()
+            # calculate for any path.  involves downloading, effectively.    
+            # Initialize the MD5 hash object
+            if (curr.exists()):
+                md5 = hashlib.md5()
 
-                    # Open the file in binary mode
-                    with curr.open("rb") as f:
-                        # Read the file in chunks
-                        for chunk in iter(lambda: f.read(1024*1024), b""):
-                            # Update the MD5 hash with the chunk
-                            md5.update(chunk)
+                # Open the file in binary mode
+                with curr.open("rb") as f:
+                    # Read the file in chunks
+                    for chunk in iter(lambda: f.read(1024*1024), b""):
+                        # Update the MD5 hash with the chunk
+                        md5.update(chunk)
 
-                    # Get the hexadecimal representation of the MD5 hash
-                    md5_str = md5.hexdigest()
+                # Get the hexadecimal representation of the MD5 hash
+                md5_str = md5.hexdigest()
                 
             metadata["md5"] = md5_str
         return metadata
@@ -367,12 +372,12 @@ class FileSystemHelper:
     #     return md5_str
     
     
-    def get_files(self, subpath : str = None) -> list[str]:
+    def get_files(self, pattern : str = None ) -> list[str]:
         """
         Returns a list of file paths within the specified subpath.
 
         Args:
-            subpath (str, optional): The subpath within the root directory to search for files. Defaults to None.
+            pattern (str, optional): The subpath within the root directory to search for files. Defaults to None.  can prefix with "*/" or "**/" for more levels of recursion.
 
         Returns:
             list[str]: A list of file paths relative to the root directory.
@@ -380,7 +385,11 @@ class FileSystemHelper:
 
         paths = []
         # all pathlib and cloudpathlib paths can use "/"
-        for f in self.root.rglob(subpath + "/**/*"):  # this may be inconsistently implemented in different clouds.
+        
+        pattern = pattern if pattern is not None else "**/*"
+        
+        # not using rglob as it does too much matching.
+        for f in self.root.glob(pattern):  # this may be inconsistently implemented in different clouds.
             if not f.is_file():
                 continue
             

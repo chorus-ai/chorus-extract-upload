@@ -59,7 +59,9 @@ import concurrent.futures
 # TODO: DONE upload allows amending the LAST upload.
 # TODO: DONE upload and verify each file at a time
 # TODO: DONE support windows paths
-
+# TODO: DONE handle large files in azure that do not compute MD5 (recommendation is to set MD5 on cloud file using locally computed MD5 - not an integrity assurance)
+# TODO: explore other ways of computing MD5 on upload.
+# TODO: explore integration of azcli or az copy.
 
 # process:
 #   1. local manifest is created
@@ -184,7 +186,7 @@ def _gen_manifest_one_file(root : FileSystemHelper, relpath:str, modality:str, c
     filesize = meta['size']
     modtimestamp = meta['modify_time_us']
     
-    mymd5 = meta['md5']
+    mymd5 = meta['md5']  # if azure file, could be None.
                 
     myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, "ADDED", md5_time)
 
@@ -203,7 +205,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
         databasename (str, optional): The name of the database to store the manifest. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
-    print("INFO: Creating Manifest...", flush=True)
+    print("INFO: Creating Manifest. NOTE: this may take a while for md5 computation.", flush=True)
     
         
     con = sqlite3.connect(databasename, check_same_thread=False)
@@ -234,12 +236,18 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
     modalities = modalities if modalities else DEFAULT_MODALITIES
     
     for modality in modalities:
-        paths = root.get_files(modality)  # list of relative paths in posix format and in string form.
+        start = time.time()
+        pattern = f"{modality}/**/*" if modality == "OMOP" else f"*/{modality}/**/*"
+        paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
         # paths += paths1
-        
+        print("Get File List took ", time.time() - start)
+
+        nthreads = max(1, os.cpu_count() - 2)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = []
             for relpath in paths:
+                if verbose:
+                    print("INFO: scanning ", relpath)
                 future = executor.submit(_gen_manifest_one_file, root, relpath, modality, curtimestamp)
                 futures.append(future)
             
@@ -252,27 +260,29 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
                 all_args.append(myargs)
 
 
-            if len(all_args) > 0:
-                con = sqlite3.connect(databasename, check_same_thread=False)
-                cur = con.cursor()
+        start = time.time()
+        if len(all_args) > 0:
+            con = sqlite3.connect(databasename, check_same_thread=False)
+            cur = con.cursor()
 
-                try:
-                    cur.executemany("INSERT INTO manifest ( \
-                        PERSON_ID, \
-                        FILEPATH, \
-                        MODALITY, \
-                        SRC_MODTIME_us, \
-                        SIZE, \
-                        MD5, \
-                        TIME_VALID_us, \
-                        STATE, \
-                        MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
-                except sqlite3.IntegrityError as e:
-                    print("ERROR: create ", e)
-                    print(all_args)
-                        
-                con.commit() 
-                con.close()
+            try:
+                cur.executemany("INSERT INTO manifest ( \
+                    PERSON_ID, \
+                    FILEPATH, \
+                    MODALITY, \
+                    SRC_MODTIME_us, \
+                    SIZE, \
+                    MD5, \
+                    TIME_VALID_us, \
+                    STATE, \
+                    MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+            except sqlite3.IntegrityError as e:
+                print("ERROR: create ", e)
+                print(all_args)
+                    
+            con.commit() 
+            con.close()
+        print("SQLITE insert took ", time.time() - start)
 
 def _update_manifest_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict):
     # get information about the current file
@@ -392,8 +402,9 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
     all_del_args = []
     files_to_inactivate = {}
     for modality in modalities:
-        paths = root.get_files(modality)  # relative paths, posix format, string form.
-        
+        pattern = f"{modality}/**/*" if modality == "OMOP" else f"*/{modality}/**/*"
+        paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
+
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         # get all active files, these are active-pending-delete until the file is found in filesystem
@@ -410,10 +421,13 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
                 modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
 
         import concurrent.futures
-
+        
+        nthreads = max(1, os.cpu_count() - 2)
         with concurrent.futures.ThreadPoolExecutor() as executor:
             futures = []
             for relpath in paths:
+                if verbose:
+                    print("INFO: scanning ", relpath)
                 future = executor.submit(_update_manifest_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
                 futures.append(future)
             
@@ -823,9 +837,9 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
         file_id, size, md5 = result[0]
 
-        # get the dest file info
+        # get the dest file info.  Don't rely on cloud md5
         start = time.time()
-        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
+        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = False)
         # case 2 missing in cloud.  this is the missing case;
         verify_time = time.time() - start
         if dest_meta is None:
@@ -836,27 +850,28 @@ def _upload_and_verify(src_path : FileSystemHelper,
         
         if (size == dest_meta['size']):
             
+            # MD5 could be missing, set by uploader, or computed differently by cloud provider.  Can't rely on it.
             # start = time.time()
             # dest_md5 = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = False, with_md5 = True)['md5']
             # verify_time = time.time() - start
-            dest_md5 = dest_meta['md5']
+            # dest_md5 = dest_meta['md5']
             
-            if (md5 == dest_md5):
-                # case 3: matched
-                state = sync_state.MATCHED
-                verified = True
-                # fid_list.append(file_id)  # verified.  this may not be parallelizable.
-            else:
-                # case 4: mismatched.
-                state = sync_state.MISMATCHED
-                # entries are not updated because of mismatch.
-                # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)            
+            # if (md5 == dest_md5):
+            # case 3: matched
+            state = sync_state.MATCHED
+            verified = True
+            # fid_list.append(file_id)  # verified.  this may not be parallelizable.
+            # else:
+            #     # case 4: mismatched.
+            #     state = sync_state.MISMATCHED
+            # entries are not updated because of mismatch.
+            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)            
         else:
             # case 4: mismatched.
             state = sync_state.MISMATCHED
             # entries are not updated because of mismatch.
             # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size)
-            verify_time = 0
+            # verify_time = 0
 
     # if verified upload, then remove any old file
     # ======= read metadata from db.  May be parallelizable
@@ -942,8 +957,9 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     # NEW    
     step = 100
+    
     nthreads = max(1, os.cpu_count() - 2)
-    with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
         for fn in files_to_upload:
             if verbose:
@@ -1108,6 +1124,7 @@ def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
     
     fid, fn, size, md5 = file_info
     
+    # this would actually compute the md5
     dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
     dest_md5 = dest_meta['md5'] if dest_meta is not None else None
 
@@ -1163,11 +1180,14 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     # now compare the metadata and md5
     missing = set()
     matched = set()
+    large_matched = set()
     mismatched = set()
     threads = max(1, os.cpu_count() - 2)
-    with concurrent.futures.ThreadPoolExecutor(max_workers = threads) as executor:
+    with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
         for file_info in files_to_verify:
+            if verbose:
+                print("INFO: verifying ", file_info[1], " for upload ", dtstr)
             future = executor.submit(_get_file_info, dated_dest_path, file_info )
             futures.append(future)
             
@@ -1182,10 +1202,13 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
                 if verbose:
                     print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
                 matched.add(fn)
+            # elif (dest_md5 is None) and (dest_meta['size'] == size):
+            #     print("INFO: large file, matched by size only ", fn)
+            #     large_matched.add(fn)
             else:
                 print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
                 mismatched.add(fn)
                 
-    print("INFO:  verified ", len(matched), " files, ", len(mismatched), " mismatched, ", len(missing), " missing.")
+    print("INFO:  verified ", len(matched), " files (", len(large_matched), "large files w/o md5)", len(mismatched), " mismatched, ", len(missing), " missing.")
             
     return matched, mismatched, missing

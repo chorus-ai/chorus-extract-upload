@@ -487,6 +487,8 @@ def _upload_files(args, config, manifest_fn):
     
 # helper to report file verification
 def _verify_files(args, config, manifest_fn):
+    print("NOTE: This will download files to verify md5.  It will take a while and can take significant disk space.")
+    
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
     # get the config path for each modality.  if not matched, use default.
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
@@ -547,7 +549,7 @@ if __name__ == "__main__":
     # when upload, mark the manifest version as uploaded.
     parser_upload.set_defaults(func = _upload_files)
     
-    parser_verify = subparsers.add_parser("verify", help = "verify manifest with file system")
+    parser_verify = subparsers.add_parser("verify", help = "verify manifest with file system.  WARNING files will be downloaded for md5 computation")
     parser_verify.add_argument("--version", help="datetime of an upload (use list to get date times).  defaults to most recent uploaded files.", required=False)
     parser_verify.add_argument("--modalities", help="list of modalities to include in the manifest update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
     parser_verify.set_defaults(func = _verify_files)
