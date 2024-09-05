@@ -3,13 +3,13 @@ import os
 
 def list_uploads(databasename="journal.db"):
     """
-    Retrieve a list of unique upload dates from the manifest database.
+    Retrieve a list of unique upload dates from the journal database.
 
     Args:
-        databasename (str): The name of the manifest database file. Defaults to "journal.db".
+        databasename (str): The name of the journal database file. Defaults to "journal.db".
 
     Returns:
-        list: A list of unique upload dates from the manifest database.
+        list: A list of unique upload dates from the journal database.
 
     Raises:
         None
@@ -17,14 +17,14 @@ def list_uploads(databasename="journal.db"):
     """
     
     if not os.path.exists(databasename):
-        print(f"ERROR: No manifest exists for filename {databasename}")
+        print(f"ERROR: No journal exists for filename {databasename}")
         return None
     
     con = sqlite3.connect(databasename)
     cur = con.cursor()
     
-    # List unique values in upload_dtstr column in manifest table
-    uploads = [u[0] for u in cur.execute("SELECT DISTINCT upload_dtstr FROM manifest;").fetchall()]
+    # List unique values in upload_dtstr column in journal table
+    uploads = [u[0] for u in cur.execute("SELECT DISTINCT upload_dtstr FROM journal;").fetchall()]
     con.close()
     
     if (uploads is not None) and (len(uploads) > 0):
@@ -36,7 +36,7 @@ def list_uploads(databasename="journal.db"):
     
     return uploads
 
-def list_manifests(databasename="journal.db"):
+def list_journals(databasename="journal.db"):
     """
     Lists the tables in the SQLite database specified by the given database name.
 
@@ -52,7 +52,7 @@ def list_manifests(databasename="journal.db"):
     """
     
     if not os.path.exists(databasename):
-        print(f"ERROR: No manifest exists for filename {databasename}")
+        print(f"ERROR: No journal exists for filename {databasename}")
         return None
     
     con = sqlite3.connect(databasename)
@@ -72,9 +72,9 @@ def list_manifests(databasename="journal.db"):
 
     return tables
 
-def restore_manifest(databasename="journal.db", suffix:str = None):
+def restore_journal(databasename="journal.db", suffix:str = None):
     """
-    Restores the database manifest from a backup table.
+    Restores the database journal from a backup table.
 
     Args:
         databasename (str, optional): The name of the database file. Defaults to "journal.db".
@@ -93,27 +93,27 @@ def restore_manifest(databasename="journal.db", suffix:str = None):
     
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
-        print(f"ERROR: No manifest exists for filename {databasename}")
+        print(f"ERROR: No journal exists for filename {databasename}")
         return
 
     con = sqlite3.connect(databasename)
     cur = con.cursor()
 
     # check if the target table exists
-    manifestname = "manifest_" + suffix
-    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{manifestname}'").fetchone():
-        print(f"ERROR:  backup table {manifestname} does not exist.")
+    journalname = "journal_" + suffix
+    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{journalname}'").fetchone():
+        print(f"ERROR:  backup table {journalname} does not exist.")
         con.close()
         return
 
     # do not backup, similar to git checkout - current changes are lost if not committed.
-    # backup_name = backup_manifest(databasename)
+    # backup_name = backup_journal(databasename)
     
     # then restore
-    cur.execute(f"DROP TABLE IF EXISTS manifest")
-    cur.execute(f"CREATE TABLE manifest AS SELECT * FROM {manifestname}")
+    cur.execute(f"DROP TABLE IF EXISTS journal")
+    cur.execute(f"CREATE TABLE journal AS SELECT * FROM {journalname}")
 
-    print("INFO: restored database manifest from ", manifestname)
+    print("INFO: restored database journal from ", journalname)
 
     con.close()
-    return manifestname
+    return journalname

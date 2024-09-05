@@ -15,7 +15,7 @@ import re
 from enum import Enum
 import concurrent.futures
 from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
-from chorus_upload_journal.upload_tools.local_ops import list_files, backup_manifest
+from chorus_upload_journal.upload_tools.local_ops import list_files, backup_journal
 import chorus_upload_journal.upload_tools.config_helper as config_helper
 import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 
@@ -49,13 +49,13 @@ import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 # --------- Copy ops can change mtimes without changing contents or relative name
 # --------- If other 3 match, invalidate old row, add new row with new mtime and syncflag equal to old syncflag
 
-# TODO: DONE - generate manifest from cloud storage
+# TODO: DONE - generate journal from cloud storage
 # TODO: DONE - update logic on how modify time is used?  not compare source to destination by this, but compare source to source
 # TODO: DONE - changed sync_ready flag to upload_dtstr to track upload time.. 
 # TODO: NO - integrate with AZCLI.  Using cloudpathlib instead
-# TODO: DONE - verification of manifest
+# TODO: DONE - verification of journal
 # TODO: DONE - command processor
-# TODO: DONE - update manifest with cloud files.
+# TODO: DONE - update journal with cloud files.
 
 # TODO: DONE save command history
 # TODO: DONE upload only allow unuploaded files.
@@ -67,13 +67,13 @@ import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 # TODO: explore integration of azcli or az copy.
 
 # process:
-#   1. local manifest is created
-#   2. local manifest is used to generate update list
-#   3. local manifest is used to send data to cloud, local manifest is sent to cloud as well
-#   4. local manifest is verified with cloud files
+#   1. local journal is created
+#   2. local journal is used to generate update list
+#   3. local journal is used to send data to cloud, local journal is sent to cloud as well
+#   4. local journal is verified with cloud files
 
 # okay to have multiple updates between uploads
-# we always compare to the last manifest.
+# we always compare to the last journal.
 # all remote stores are dated, so override with partial uploads.
 
 
@@ -83,33 +83,33 @@ import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 # cloud file will be renamed to .locked_{timestamp}
 # which will be returned as a key for unlocking later.
 def checkout_journal(config):
-    #============= get the manifest file name and path obj  (download from cloud to local)
-    manifest_path_str = config_helper.get_journal_config(config)["path"]  # full file name
-    manifest_path = FileSystemHelper(manifest_path_str, client = storage_helper._make_client(config_helper.get_journal_config(config)))
+    #============= get the journal file name and path obj  (download from cloud to local)
+    journal_path_str = config_helper.get_journal_config(config)["path"]  # full file name
+    journal_path = FileSystemHelper(journal_path_str, client = storage_helper._make_client(config_helper.get_journal_config(config)))
     
     # if not cloud, then we are done.
-    if not manifest_path.is_cloud:
-        md5 = FileSystemHelper.get_metadata(manifest_path.root, with_metadata = False, with_md5 = True)['md5']
-        return (manifest_path, None, manifest_path, md5)
+    if not journal_path.is_cloud:
+        md5 = FileSystemHelper.get_metadata(journal_path.root, with_metadata = False, with_md5 = True)['md5']
+        return (journal_path, None, journal_path, md5)
     
     # since it's a cloud path, we want to lock as soon as possible.
-    manifest_file = manifest_path.root
-    manifest_fn = manifest_file.name
+    journal_file = journal_path.root
+    journal_fn = journal_file.name
     # see if any lock files exists.
-    manifest_dir = manifest_file.parent
-    lock_file = manifest_dir.joinpath(manifest_fn + ".locked_" + str(int(time.time())))
+    journal_dir = journal_file.parent
+    lock_file = journal_dir.joinpath(journal_fn + ".locked_" + str(int(time.time())))
     
     # so we try to lock by renaming. if it fails, then we handle if possible.
     downloadable = False
     already_locked = False
     try:
-        manifest_file.rename(lock_file)
+        journal_file.rename(lock_file)
         downloadable = True
-        # locks = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+        # locks = list(journal_dir.glob(journal_fn + ".locked_*"))
         # print(locks)
     except:
         # if journal file is not found, it's either that we don't have a file, or it's locked.
-        locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+        locked_files = list(journal_dir.glob(journal_fn + ".locked_*"))
 
         if (len(locked_files) == 0):
             # not locked, so journal does not exist.  create a lock.  this is to indicate to others that there is a lock
@@ -118,11 +118,11 @@ def checkout_journal(config):
             already_locked = True
             
     if already_locked:      
-        raise ValueError("Manifest is locked. Please try again later.")
+        raise ValueError("journal is locked. Please try again later.")
     # except FileExistsError as e:
        
-    local_path = FileSystemHelper(manifest_fn)
-    lock_path = FileSystemHelper(lock_file, client = manifest_path.client)
+    local_path = FileSystemHelper(journal_fn)
+    lock_path = FileSystemHelper(lock_file, client = journal_path.client)
     
     if downloadable:  # only if there something to download.
         # download the file
@@ -147,16 +147,16 @@ def checkout_journal(config):
         local_md5 = ""
 
     if remote_md5 != local_md5:
-        raise ValueError(f"Manifest file is not downloaded correctly - MD5 remote {remote_md5}, local {local_md5}.  Please check the file.")
+        raise ValueError(f"journal file is not downloaded correctly - MD5 remote {remote_md5}, local {local_md5}.  Please check the file.")
 
-    # return manifest_file (final in cloud), lock_file (locked in cloud), and local_file (local)
-    return (manifest_path, lock_path, local_path, remote_md5)
+    # return journal_file (final in cloud), lock_file (locked in cloud), and local_file (local)
+    return (journal_path, lock_path, local_path, remote_md5)
 
 
-def checkin_journal(manifest_path, lock_path, local_path, remote_md5):
+def checkin_journal(journal_path, lock_path, local_path, remote_md5):
     # check journal file in.
     
-    if not manifest_path.is_cloud:
+    if not journal_path.is_cloud:
         # not cloud, so nothing to do.
         return
 
@@ -167,49 +167,49 @@ def checkin_journal(manifest_path, lock_path, local_path, remote_md5):
     else:
         raise ValueError("Locked file lost, unable to unlock.")
     
-    # then rename lock back to manifest.
+    # then rename lock back to journal.
     unlock_failed = False
     try:
-        lock_path.root.rename(manifest_path.root)
+        lock_path.root.rename(journal_path.root)
     except:
         unlock_failed = True
         
     if unlock_failed:
-        raise ValueError("unable to unlock - lockfile lost, or manifest already unlocked.")
+        raise ValueError("unable to unlock - lockfile lost, or journal already unlocked.")
 
 # force unlocking.
-def unlock_journal(args, config, manifest_fn):
-    manifest_path_str = config_helper.get_journal_config(config)["path"]  # full file name
-    manifest_path = FileSystemHelper(manifest_path_str, client = storage_helper._make_client(config_helper.get_journal_config(config)))
+def unlock_journal(args, config, journal_fn):
+    journal_path_str = config_helper.get_journal_config(config)["path"]  # full file name
+    journal_path = FileSystemHelper(journal_path_str, client = storage_helper._make_client(config_helper.get_journal_config(config)))
     
-    manifest_file = manifest_path.root
-    manifest_fn = manifest_file.name
+    journal_file = journal_path.root
+    journal_fn = journal_file.name
     # see if any lock files exists.
-    manifest_dir = manifest_file.parent
+    journal_dir = journal_file.parent
     
-    locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+    locked_files = list(journal_dir.glob(journal_fn + ".locked_*"))
     if len(locked_files) == 0:
-        print("INFO: Manifest ", str(manifest_file), " is not locked.")
+        print("INFO: journal ", str(journal_file), " is not locked.")
         return
             
-    if not manifest_file.exists():
+    if not journal_file.exists():
         if (len(locked_files) > 1):
             # force unlock so use the most recent.
             # multiple locked files
             fns = [str(f.name) for f in locked_files].sort()
             last = fns[-1]
-            manifest_dir.joinpath(last).rename(manifest_file)
+            journal_dir.joinpath(last).rename(journal_file)
             
         elif (len(locked_files) == 1):
             # no need to sort.
-            locked_files[0].rename(manifest_file)
+            locked_files[0].rename(journal_file)
     
-    locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
+    locked_files = list(journal_dir.glob(journal_fn + ".locked_*"))
     # delete all lock files
     for lock_file in locked_files:
         lock_file.unlink()
     
-    print("INFO: force unlocked ", str(manifest_file))
+    print("INFO: force unlocked ", str(journal_file))
     
     
 
@@ -247,7 +247,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     # note that this is not the same list as the selected files since that one excludes deleted  
-    result = cur.execute(f"Select file_id, size, md5 from manifest where time_invalid_us is NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
+    result = cur.execute(f"Select file_id, size, md5 from journal where time_invalid_us is NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
     con.close()
 
     verified = False
@@ -257,10 +257,10 @@ def _upload_and_verify(src_path : FileSystemHelper,
         # case 1 missing in db. this should not happen.;
         if (result is None) or (len(result) == 0):
             state = sync_state.MISSING_IN_DB
-            # print("ERROR: uploaded file is not matched in manifest.  should not happen.")
+            # print("ERROR: uploaded file is not matched in journal.  should not happen.")
         elif (len(result) > 1):
             state = sync_state.MULTIPLE_ACTIVES_IN_DB
-            # print("ERROR: multiple entries in manifest for ", fn)
+            # print("ERROR: multiple entries in journal for ", fn)
     
     # src metadata
     # print(result)
@@ -296,12 +296,12 @@ def _upload_and_verify(src_path : FileSystemHelper,
             #     # case 4: mismatched.
             #     state = sync_state.MISMATCHED
             # entries are not updated because of mismatch.
-            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)            
+            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)            
         else:
             # case 4: mismatched.
             state = sync_state.MISMATCHED
             # entries are not updated because of mismatch.
-            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size)
+            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " journal size ", size)
             # verify_time = 0
 
     # if verified upload, then remove any old file
@@ -310,7 +310,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         # note that this is not the same list as the selected files since that one excludes deleted  
-        result = cur.execute(f"Select file_id from manifest where time_invalid_us is NOT NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
+        result = cur.execute(f"Select file_id from journal where time_invalid_us is NOT NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
         con.close()
 
         if (result is not None) and (len(result) > 0):
@@ -327,28 +327,28 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                  databasename="journal.db",
                  modalities: list[str] = DEFAULT_MODALITIES, amend:bool = False, verbose: bool = False):
     """
-    Uploads files from the source path to the destination path and updates the manifest.
+    Uploads files from the source path to the destination path and updates the journal.
     only allows uploaded new files and not reupload of previous upload.
-    note that manifest is updated only when verified. 
+    note that journal is updated only when verified. 
 
     Args:
         src_path (FileSystemHelper): The source path from where the files will be uploaded.
         dest_path (FileSystemHelper): The destination path where the files will be copied to.
-        databasename (str, optional): The name of the manifest database file. Defaults to "journal.db".
+        databasename (str, optional): The name of the journal database file. Defaults to "journal.db".
         upload_datetime_str (str, optional): The upload datetime string. Defaults to None.
 
     Returns:
         str: The upload version string.
 
     Raises:
-        FileNotFoundError: If the manifest database file does not exist.
-        AssertionError: If some uploaded files are not in the manifest or if there are mismatched files.
+        FileNotFoundError: If the journal database file does not exist.
+        AssertionError: If some uploaded files are not in the journal or if there are mismatched files.
 
     """
 
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
-        print(f"ERROR: No manifest exists for filename {databasename}")
+        print(f"ERROR: No journal exists for filename {databasename}")
         return
 
     # if amend then get the latest version from db
@@ -356,7 +356,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
     
-        upload_ver_str = cur.execute("SELECT MAX(upload_dtstr) FROM manifest").fetchone()[0]
+        upload_ver_str = cur.execute("SELECT MAX(upload_dtstr) FROM journal").fetchone()[0]
         if upload_ver_str is None:
             raise ValueError("ERROR: no previous upload found to amend.")
         con.close()
@@ -374,7 +374,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         print("INFO: no files copied.  Done")
         return None
     
-    # copy file, verify and update manifest
+    # copy file, verify and update journal
     update_args = []
     del_args = []
     missing_dest = set()
@@ -401,7 +401,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         for future in concurrent.futures.as_completed(futures):
             (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
             if state == sync_state.MISSING_IN_DB:
-                print("ERROR: uploaded file is not matched in manifest.  should not happen.", fn2)
+                print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
                 missing_in_db.add(fn2)
             elif state == sync_state.MISSING_DEST:
                 missing_dest.add(fn2)
@@ -410,7 +410,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 print("ERROR:  file not found ", fn2)
                 missing_src.add(fn2)
             elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
-                print("ERROR: multiple entries in manifest for ", fn2)
+                print("ERROR: multiple entries in journal for ", fn2)
                 multiple_actives.add(fn2)
             elif state == sync_state.MATCHED:
                 # merge the updates for matched.
@@ -426,13 +426,13 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             # elif state == sync_state.DELETED:
             #     deleted.add(fn2)
             
-            # update the manifest - likely not parallelizable.
+            # update the journal - likely not parallelizable.
             if len(update_args) >= step:
                 con = sqlite3.connect(databasename, check_same_thread=False)
                 cur = con.cursor()
                 try:        
-                    cur.executemany("UPDATE manifest SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
-                    cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", del_args)
+                    cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
+                    cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
                 except sqlite3.InterfaceError as e:
                     print("ERROR: update ", e)
                     print(update_args)
@@ -449,14 +449,14 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     
     # print("INFO: copied ", count, " files from ", src_path.root, " to ", dated_dest_path.root)
 
-    # #----------- verify upload and update manifest
+    # #----------- verify upload and update journal
     
     # # get list of files that have been uploaded and needs to be updated.
-    # # update the manifest with what's uploaded, verifying the size and md5 also.
+    # # update the journal with what's uploaded, verifying the size and md5 also.
     # con = sqlite3.connect(databasename, check_same_thread=False)
     # cur = con.cursor()
     # # note that this is not the same list as the selected files since that one excludes deleted  
-    # entries_in_version = cur.execute("Select file_id, filepath, modality, size, md5 from manifest where time_invalid_us is NULL AND upload_dtstr is NULL").fetchall()
+    # entries_in_version = cur.execute("Select file_id, filepath, modality, size, md5 from journal where time_invalid_us is NULL AND upload_dtstr is NULL").fetchall()
     # con.close()
 
     # # check for boundary cases
@@ -464,7 +464,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # files_to_update = set([f[1] for f in entries_in_version])
     # if len(uploaded_files - files_to_update) > 0:
     #     missing_in_db = uploaded_files - files_to_update
-    #     print("ERROR: some uploaded files are not in manifest.  ", uploaded_files - files_to_update)
+    #     print("ERROR: some uploaded files are not in journal.  ", uploaded_files - files_to_update)
         
     # # other cases are handled below.
     
@@ -489,7 +489,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     #         else:      
     #             mismatched.add(fn)
     #             # entries are not updated because of mismatch.
-    #             print("ERROR:  mismatched file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
+    #             print("ERROR:  mismatched file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
     #     else:
     #         print("ERROR:  unuploaded active file in upload set ", fn, " fileid ", file_id, " : size ", size, " md5 ", md5)
     #### --------------OLD end
@@ -498,8 +498,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         try:        
-            cur.executemany("UPDATE manifest SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
-            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", del_args)
+            cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
+            cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
         except sqlite3.InterfaceError as e:
             print("ERROR: update ", e)
             print(update_args)
@@ -513,7 +513,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     # note that this is not the same list as the selected files since that one excludes deleted  
-    entries_in_version = cur.execute("Select file_id, filepath, modality from manifest where time_invalid_us is not NULL AND upload_dtstr is NULL").fetchall()
+    entries_in_version = cur.execute("Select file_id, filepath, modality from journal where time_invalid_us is not NULL AND upload_dtstr is NULL").fetchall()
     con.close()
 
     modality_set = set(modalities) if modalities is not None else set(DEFAULT_MODALITIES)
@@ -529,25 +529,25 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         try:        
-            cur.executemany("UPDATE manifest SET upload_dtstr=? WHERE file_id=?", del_args)
+            cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
         except sqlite3.InterfaceError as e:
             print("ERROR: update ", e)
             print(update_args)
         con.commit() 
         con.close()
 
-    # create a versioned backup - AFTER updating the manifest.
-    backup_manifest(databasename, suffix=upload_ver_str)
+    # create a versioned backup - AFTER updating the journal.
+    backup_journal(databasename, suffix=upload_ver_str)
     
-    # finally, upload the manifest.
-    manifest_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
+    # finally, upload the journal.
+    journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
     
-    # Question - do we put manifest in the dated target subdirectory?  YES for now
-    # Question - do we leave the manifest update time as NULL?  
-    # Question - do we copy the manifest into the source directory? YES for now (in case of overwrite)
-    manifest_fn = os.path.basename(databasename)
-    manifest_path.copy_file_to(manifest_fn, dated_dest_path)
-    # manifest_path.copy_files_to([(manifest_fn, "_".join([manifest_fn, upload_ver_str]))], src_path)
+    # Question - do we put journal in the dated target subdirectory?  YES for now
+    # Question - do we leave the journal update time as NULL?  
+    # Question - do we copy the journal into the source directory? YES for now (in case of overwrite)
+    journal_fn = os.path.basename(databasename)
+    journal_path.copy_file_to(journal_fn, dated_dest_path)
+    # journal_path.copy_files_to([(journal_fn, "_".join([journal_fn, upload_ver_str]))], src_path)
 
     return upload_ver_str
 
@@ -579,14 +579,14 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
-        print(f"ERROR: No manifest exists for filename {databasename}")
+        print(f"ERROR: No journal exists for filename {databasename}")
         return
 
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
     # get the current datetime
-    dtstr = cur.execute("SELECT MAX(upload_dtstr) FROM manifest").fetchone()[0] if version is None else version
+    dtstr = cur.execute("SELECT MAX(upload_dtstr) FROM journal").fetchone()[0] if version is None else version
     
     if dtstr is None:
         print("INFO: no previous upload found.")
@@ -596,11 +596,11 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     
     # get the list of files, md5, size for upload_dtstr matching dtstr
     if modalities is None:
-        files_to_verify = cur.execute(f"Select file_id, filepath, size, md5 from manifest where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL").fetchall()
+        files_to_verify = cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL").fetchall()
     else:
         files_to_verify = []
         for modality in modalities:
-            files_to_verify += cur.execute(f"Select file_id, filepath, size, md5 from manifest where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL AND MODALITY = '{modality}'").fetchall()
+            files_to_verify += cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL AND MODALITY = '{modality}'").fetchall()
         
     con.close()
     
@@ -637,7 +637,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
             #     print("INFO: large file, matched by size only ", fn)
             #     large_matched.add(fn)
             else:
-                print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " manifest size ", size, "; cloud md5 ", dest_md5, " manifest md5 ", md5)
+                print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
                 mismatched.add(fn)
                 
     print("INFO:  verified ", len(matched), " files (", len(large_matched), "large files w/o md5)", len(mismatched), " mismatched, ", len(missing), " missing.")

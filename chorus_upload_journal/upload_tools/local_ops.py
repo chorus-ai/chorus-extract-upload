@@ -10,25 +10,25 @@ from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
 import concurrent.futures
 
 
-def update_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, databasename="journal.db", verbose: bool = False):
+def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, databasename="journal.db", verbose: bool = False):
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
-    # check if manifest table exists in sqlite
-    table_exists = cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='manifest'").fetchone()
+    # check if journal table exists in sqlite
+    table_exists = cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone()
     con.close()
 
-    # check if manifest table exists
-    if (table_exists is not None) and (table_exists[0] == "manifest"):
-        return _update_manifest(root, modalities, databasename, verbose= verbose)
+    # check if journal table exists
+    if (table_exists is not None) and (table_exists[0] == "journal"):
+        return _update_journal(root, modalities, databasename, verbose= verbose)
     else:
-        return _gen_manifest(root, modalities, databasename, verbose = verbose)
+        return _gen_journal(root, modalities, databasename, verbose = verbose)
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path
 PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images)/.*")
 
-def _gen_manifest_one_file(root : FileSystemHelper, relpath:str, modality:str, curtimestamp:int):
+def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, curtimestamp:int):
     # print(i_path, relpath)
     start = time.time()
     meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata=True, with_md5=True)
@@ -52,24 +52,24 @@ def _gen_manifest_one_file(root : FileSystemHelper, relpath:str, modality:str, c
 
 
 
-def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, 
+def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, 
                   databasename="journal.db", verbose: bool = False):
     """
-    Generate a manifest for the given root directory and subdirectories.
+    Generate a journal for the given root directory and subdirectories.
 
     Args:
-        root (FileSystemHelper): The root directory to generate the manifest for.
-        modalities (list[str], optional): The subdirectories to include in the manifest. Defaults to ['Waveforms', 'Images', 'OMOP'].
-        databasename (str, optional): The name of the database to store the manifest. Defaults to "journal.db".
+        root (FileSystemHelper): The root directory to generate the journal for.
+        modalities (list[str], optional): The subdirectories to include in the journal. Defaults to ['Waveforms', 'Images', 'OMOP'].
+        databasename (str, optional): The name of the database to store the journal. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
-    print("INFO: Creating Manifest. NOTE: this may take a while for md5 computation.", flush=True)
+    print("INFO: Creating journal. NOTE: this may take a while for md5 computation.", flush=True)
     
         
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
-    cur.execute("CREATE TABLE IF NOT EXISTS manifest(\
+    cur.execute("CREATE TABLE IF NOT EXISTS journal(\
                 FILE_ID INTEGER PRIMARY KEY AUTOINCREMENT, \
                 PERSON_ID INTEGER, \
                 FILEPATH TEXT, \
@@ -107,7 +107,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
             for relpath in paths:
                 if verbose:
                     print("INFO: scanning ", relpath)
-                future = executor.submit(_gen_manifest_one_file, root, relpath, modality, curtimestamp)
+                future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp)
                 futures.append(future)
             
             for future in concurrent.futures.as_completed(futures):
@@ -125,7 +125,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
             cur = con.cursor()
 
             try:
-                cur.executemany("INSERT INTO manifest ( \
+                cur.executemany("INSERT INTO journal ( \
                     PERSON_ID, \
                     FILEPATH, \
                     MODALITY, \
@@ -143,7 +143,7 @@ def _gen_manifest(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODAL
             con.close()
         print("SQLITE insert took ", time.time() - start)
 
-def _update_manifest_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict):
+def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict):
     # get information about the current file
     meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False)
     # root.get_file_metadata(relpath)
@@ -161,14 +161,14 @@ def _update_manifest_one_file(root: FileSystemHelper, relpath:str, modality:str,
     # get information about the old file
     # query files by filename, modtime, and size
     # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
-    # filecheckrow = cur.execute("Select file_id, size, src_modtime_us, md5, upload_dtstr from manifest where filepath=? and TIME_INVALID_us IS NULL", [(relpath)])
+    # filecheckrow = cur.execute("Select file_id, size, src_modtime_us, md5, upload_dtstr from journal where filepath=? and TIME_INVALID_us IS NULL", [(relpath)])
 
     # results = filecheckrow.fetchall()
     if relpath in modality_files_to_inactivate.keys():
         results = modality_files_to_inactivate[relpath]
         # There should only be 1 active file according to the path in a well-formed 
         if (len(results) > 1):
-            # print("ERROR: Multiple active files with that path - manifest is not consistent")
+            # print("ERROR: Multiple active files with that path - journal is not consistent")
             return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR1", None)
         if (len(results) == 0):
             # print("ERROR: File found but no metadata.", relpath)
@@ -201,7 +201,7 @@ def _update_manifest_one_file(root: FileSystemHelper, relpath:str, modality:str,
                 # files are extremely likely the same just moved.
                 # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
                 # choosing not to change SYNC_TIME
-                # cur.execute("UPDATE manifest SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
+                # cur.execute("UPDATE journal SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
                 if (oldsize == filesize) and (mymd5 == oldmd5):
                     # essentially copy the old and update the modtime.
                     myargs = (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "MOVED", md5_time)
@@ -226,26 +226,26 @@ def _update_manifest_one_file(root: FileSystemHelper, relpath:str, modality:str,
 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
-def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
+def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
                      databasename="journal.db", verbose: bool = False):
     """
-    Update the manifest database with the files found in the specified root directory.
+    Update the journal database with the files found in the specified root directory.
 
     Args:
         root (FileSystemHelper): The root directory to search for files.
         modalities (list[str], optional): The subdirectories to search for files. Defaults to ['Waveforms', 'Images', 'OMOP'].
-        databasename (str, optional): The name of the manifest database. Defaults to "journal.db".
+        databasename (str, optional): The name of the journal database. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
-    print("INFO: Updating Manifest...", databasename, flush=True)
+    print("INFO: Updating journal...", databasename, flush=True)
 
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
-    # check if manifest table exists.
+    # check if journal table exists.
     curtimestamp = int(math.floor(time.time() * 1e6))
 
-    i_file = cur.execute("SELECT MAX(file_id) from manifest").fetchone()[0]
+    i_file = cur.execute("SELECT MAX(file_id) from journal").fetchone()[0]
     if i_file is None:
         print("WARNING:  updating an empty database")
         i_file = 1
@@ -267,7 +267,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         # get all active files, these are active-pending-delete until the file is found in filesystem
-        activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr from manifest where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
+        activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr from journal where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
         con.close()
         
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
@@ -285,7 +285,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
             for relpath in paths:
                 if verbose:
                     print("INFO: scanning ", relpath)
-                future = executor.submit(_update_manifest_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
+                future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
                 futures.append(future)
             
             for future in concurrent.futures.as_completed(futures):
@@ -293,7 +293,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
                 status = myargs[8]
                 rlpath = myargs[1]
                 if status == "ERROR1":
-                    print("ERROR: Multiple active files with that path - manifest is not consistent", relpath)
+                    print("ERROR: Multiple active files with that path - journal is not consistent", relpath)
                 elif status == "ERROR2":
                     print("ERROR: File found but no metadata.", rlpath)
                 elif status == "ERROR3":
@@ -314,7 +314,7 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
         files_to_inactivate.update(modality_files_to_inactivate)
 
         # for all files that were active but aren't there anymore
-        # invalidate in manifest
+        # invalidate in journal
         
         for relpath, vals in modality_files_to_inactivate.items():
             # check if there are non alphanumeric characters in the path
@@ -333,14 +333,14 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
 
     if (len(all_insert_args) > 0) or (len(all_del_args) > 0):
         # back up only on upload
-        # backup_manifest(databasename)
+        # backup_journal(databasename)
         
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
 
         try:
             if len(all_insert_args) > 0:
-                cur.executemany("INSERT INTO manifest (\
+                cur.executemany("INSERT INTO journal (\
                     PERSON_ID, \
                     FILEPATH, \
                     MODALITY, \
@@ -356,12 +356,12 @@ def _update_manifest(root: FileSystemHelper, modalities: list[str] = DEFAULT_MOD
             print(all_insert_args)
             
         if (len(all_del_args) > 0):
-            cur.executemany("UPDATE manifest SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
+            cur.executemany("UPDATE journal SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
             
         con.commit() 
         con.close()
     else:
-        print("INFO: Nothing to change in manifest.")
+        print("INFO: Nothing to change in journal.")
         
 
 
@@ -370,10 +370,10 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
                          modalities: list[str] = None,
                          verbose:bool = False):
     """
-    Selects the files to upload from the manifest database.  Print to stdout if outfile is not specified, and return list.
+    Selects the files to upload from the journal database.  Print to stdout if outfile is not specified, and return list.
 
     Args:
-        databasename (str, optional): The name of the manifest database. Defaults to "journal.db".
+        databasename (str, optional): The name of the journal database. Defaults to "journal.db".
         version (str, optional): The version of the upload, which is the datetime of an upload.  If None (default) the un-uploaded files are returned
         outfilename (Optional[str], optional): The name of the output file to write the selected files. Defaults to None.
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
@@ -386,8 +386,8 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
-    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='manifest'").fetchone():
-        print(f"ERROR: table manifest does not exist.")
+    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone():
+        print(f"ERROR: table journal does not exist.")
         con.close()
         return None
 
@@ -395,19 +395,19 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     # deleted:  file with invalid time stamp.  No additional valid time stamp
     # added:  file with null invalid time stemp and no prior entry with non-null invalid time stamp
     # modified:  file with null invalid time, and a prior entry with non-null invalid time stamp
-    # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_us from manifest where upload_dtstr IS NULL").fetchall()
+    # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_us from journal where upload_dtstr IS NULL").fetchall()
     # to_remove = [ ]
     
     version_where = f"= '{version}'" if version is not None else "IS NULL"
     if (modalities is None) or (len(modalities) == 0):    
         # select where upload_dtstr is NULL or time_invalid_us is NULL
-        files_to_update = cur.execute(f"Select filepath, time_invalid_us from manifest where upload_dtstr {version_where}").fetchall()
+        files_to_update = cur.execute(f"Select filepath, time_invalid_us from journal where upload_dtstr {version_where}").fetchall()
     else:
         files_to_update = []
         for modality in modalities:
-            files_to_update += cur.execute(f"Select filepath, time_invalid_us from manifest where upload_dtstr {version_where} AND MODALITY = '{modality}'").fetchall()
+            files_to_update += cur.execute(f"Select filepath, time_invalid_us from journal where upload_dtstr {version_where} AND MODALITY = '{modality}'").fetchall()
     # print(files_to_update)
-    # only need to add, not delete.  rely on manifest to mark deletion.
+    # only need to add, not delete.  rely on journal to mark deletion.
     con.close()
     
     print("INFO: extracted files to upload for ", ("current" if version is None else version), " upload version and modalities =", 
@@ -447,20 +447,20 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     if (file_list is None) or (len(file_list) == 0):
         print("INFO: No active files found")
     
-    # do we need to delete files in central at all? NO.  manifest will be updated.
+    # do we need to delete files in central at all? NO.  journal will be updated.
     # we only need to add new files
                 
     return file_list
 
 # def list_uploads(databasename="journal.db"):
 #     """
-#     Retrieve a list of unique upload dates from the manifest database.
+#     Retrieve a list of unique upload dates from the journal database.
 
 #     Args:
-#         databasename (str): The name of the manifest database file. Defaults to "journal.db".
+#         databasename (str): The name of the journal database file. Defaults to "journal.db".
 
 #     Returns:
-#         list: A list of unique upload dates from the manifest database.
+#         list: A list of unique upload dates from the journal database.
 
 #     Raises:
 #         None
@@ -468,14 +468,14 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
 #     """
     
 #     if not Path(databasename).exists():
-#         print(f"ERROR: No manifest exists for filename {databasename}")
+#         print(f"ERROR: No journal exists for filename {databasename}")
 #         return None
     
 #     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
     
-#     # List unique values in upload_dtstr column in manifest table
-#     uploads = [u[0] for u in cur.execute("SELECT DISTINCT upload_dtstr FROM manifest;").fetchall()]
+#     # List unique values in upload_dtstr column in journal table
+#     uploads = [u[0] for u in cur.execute("SELECT DISTINCT upload_dtstr FROM journal;").fetchall()]
 #     con.close()
     
 #     if (uploads is not None) and (len(uploads) > 0):
@@ -487,7 +487,7 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     
 #     return uploads
 
-# def list_manifests(databasename="journal.db"):
+# def list_journals(databasename="journal.db"):
 #     """
 #     Lists the tables in the SQLite database specified by the given database name.
 
@@ -503,7 +503,7 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
 #     """
     
 #     if not Path(databasename).exists():
-#         print(f"ERROR: No manifest exists for filename {databasename}")
+#         print(f"ERROR: No journal exists for filename {databasename}")
 #         return None
     
 #     con = sqlite3.connect(databasename, check_same_thread=False)
@@ -524,36 +524,36 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
 #     return tables
 
 
-# def delete_manifest(databasename="journal.db", suffix:str = None):
+# def delete_journal(databasename="journal.db", suffix:str = None):
 #     if (suffix is None) or (suffix == "") :
-#         print("ERROR: you must specify a suffix for the 'manifest' table.")
+#         print("ERROR: you must specify a suffix for the 'journal' table.")
 #         return None
     
 #     if not Path(databasename).exists():
 #         # os.remove(pushdir_name + ".db")
-#         print(f"ERROR: No manifest exists for filename {databasename}")
+#         print(f"ERROR: No journal exists for filename {databasename}")
 #         return None
 
 #     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
 
 #     # check if the target table exists
-#     manifestname = "manifest_" + suffix
+#     journalname = "journal_" + suffix
 
-#     cur.execute(f"DROP TABLE IF EXISTS {manifestname}")
+#     cur.execute(f"DROP TABLE IF EXISTS {journalname}")
 
-#     print("NOTE: Dropped table ", manifestname)
+#     print("NOTE: Dropped table ", journalname)
 
 #     con.close()
     
-#     return manifestname
+#     return journalname
 
 
     
 # this should only be called when an upload is initiated.
-def backup_manifest(databasename="journal.db", suffix:str = None):
+def backup_journal(databasename="journal.db", suffix:str = None):
     """
-    Backs up the database manifest table to a new table with a given suffix.
+    Backs up the database journal table to a new table with a given suffix.
 
     Args:
         databasename (str): The name of the database file. Defaults to "journal.db".
@@ -568,24 +568,24 @@ def backup_manifest(databasename="journal.db", suffix:str = None):
     """
     if not Path(databasename).exists():
         # os.remove(pushdir_name + ".db")
-        print(f"ERROR: No manifest exists for filename {databasename}")
+        print(f"ERROR: No journal exists for filename {databasename}")
         return None
 
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
-    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='manifest'").fetchone():
-        print(f"ERROR: table manifest does not exist to backup.")
+    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone():
+        print(f"ERROR: table journal does not exist to backup.")
         con.close()
         return None
 
     suff = suffix if suffix is not None else strftime("%Y%m%d%H%M%S", gmtime())
 
-    filesbackup = "manifest_" + suff
+    filesbackup = "journal_" + suff
     cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
-    cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM manifest")
+    cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM journal")
 
-    print("INFO: backed up database manifest to ", filesbackup)
+    print("INFO: backed up database journal to ", filesbackup)
 
     con.close()
 
@@ -593,9 +593,9 @@ def backup_manifest(databasename="journal.db", suffix:str = None):
 
     
 # this should only be called when an upload is initiated.
-# def restore_manifest(databasename="journal.db", suffix:str = None):
+# def restore_journal(databasename="journal.db", suffix:str = None):
 #     """
-#     Restores the database manifest from a backup table.
+#     Restores the database journal from a backup table.
 
 #     Args:
 #         databasename (str, optional): The name of the database file. Defaults to "journal.db".
@@ -614,28 +614,28 @@ def backup_manifest(databasename="journal.db", suffix:str = None):
     
 #     if not Path(databasename).exists():
 #         # os.remove(pushdir_name + ".db")
-#         print(f"ERROR: No manifest exists for filename {databasename}")
+#         print(f"ERROR: No journal exists for filename {databasename}")
 #         return
 
 #     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
 
 #     # check if the target table exists
-#     manifestname = "manifest_" + suffix
-#     if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{manifestname}'").fetchone():
-#         print(f"ERROR:  backup table {manifestname} does not exist.")
+#     journalname = "journal_" + suffix
+#     if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{journalname}'").fetchone():
+#         print(f"ERROR:  backup table {journalname} does not exist.")
 #         con.close()
 #         return
 
 #     # do not backup, similar to git checkout - current changes are lost if not committed.
-#     # backup_name = backup_manifest(databasename)
+#     # backup_name = backup_journal(databasename)
     
 #     # then restore
-#     cur.execute(f"DROP TABLE IF EXISTS manifest")
-#     cur.execute(f"CREATE TABLE manifest AS SELECT * FROM {manifestname}")
+#     cur.execute(f"DROP TABLE IF EXISTS journal")
+#     cur.execute(f"CREATE TABLE journal AS SELECT * FROM {journalname}")
 
-#     print("INFO: restored database manifest from ", manifestname)
+#     print("INFO: restored database journal from ", journalname)
 
 #     con.close()
-#     return manifestname
+#     return journalname
 
