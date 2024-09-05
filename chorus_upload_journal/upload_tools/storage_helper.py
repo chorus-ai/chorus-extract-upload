@@ -60,6 +60,9 @@ import os
 import shutil
 from chorus_upload_journal.upload_tools import config_helper
 
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # to ensure consistent interface, we use default profile (S3) or require environment variables to be set
 # azure:  url:  az://{container}/
 #     credential:  {AZURE_STORAGE_CONNECTION_STRING} or {AZURE_ACCOUNT_NAME}+{AZURE_ACCOUNT_KEY} or {AZURE_ACCOUNT_NAME}+{AZURE_SAS_TOKEN}
@@ -136,22 +139,39 @@ def __make_az_client(auth_params: dict):
     if azure_storage_connection_string is None:
         azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" if azure_account_name and azure_account_key else None 
     
+    azure_storage_connection_string_env = os.environ.get("AZURE_STORAGE_CONNECTION_STRING") if "AZURE_STORAGE_CONNECTION_STRING" in os.environ.keys() else None
+    from azure.storage.blob import BlobServiceClient
+
+    # ms copilot code is not accurate. do not use _connection_verify, or set _connection_ssl_context (or create a ssl context.)
+    # it's also not needed to directly create a ConnectionConfiguration object.
+    # the kwargs contain keywords that are extracted as needed by ConnectionConfiguration and other objects.
+    # so just put their keywords as name value pairs.  specifically, just set on BlobServiceClient the following:
+    # connection_verify = False, connection_cert = None
+
     from cloudpathlib import AzureBlobClient
     if azure_account_url:
-        return AzureBlobClient(account_url=azure_account_url)
+        print(azure_account_url)
+        return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, credential = None, connection_verify = False, connection_cert = None))
     elif azure_storage_connection_string:
+        print(azure_storage_connection_string)
         # connection string specified, then use it
-        return AzureBlobClient(connection_string = azure_storage_connection_string)
-    
-    azure_storage_connection_string = azure_storage_connection_string if azure_storage_connection_string else os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-    
-    if azure_account_url:
-        return AzureBlobClient(account_url=azure_account_url)
-    elif azure_storage_connection_string:
-        # connection string specified, then use it
-        return AzureBlobClient(connection_string = azure_storage_connection_string)
+        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string, connection_verify = False, connection_cert = None))
+    elif azure_storage_connection_string_env:
+        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string_env, connection_verify = False, connection_cert = None))
     else:
         raise ValueError("No viable Azure account info available to open connection")
+        
+    # from cloudpathlib import AzureBlobClient
+    # if azure_account_url:
+    #     return AzureBlobClient(account_url=azure_account_url)
+    # elif azure_storage_connection_string:
+    #     # connection string specified, then use it
+    #     return AzureBlobClient(connection_string = azure_storage_connection_string)
+    # elif azure_storage_connection_string_env:
+    #     # connection string specified, then use it
+    #     return AzureBlobClient(connection_string = azure_storage_connection_string_env)
+    # else:
+    #     raise ValueError("No viable Azure account info available to open connection")
 
 # # internal helper to create the cloud client
 # def __make_gs_client(auth_params: dict):
