@@ -58,6 +58,7 @@ import time
 import os
 
 import shutil
+from chorus_upload_journal.upload_tools import config_helper
 
 # to ensure consistent interface, we use default profile (S3) or require environment variables to be set
 # azure:  url:  az://{container}/
@@ -74,13 +75,120 @@ import shutil
 # alternatively, a Path or CloudPath can be passed in.
 
 
+# internal helper to create the cloud client
+def __make_aws_client(auth_params: dict):
+    # Azure format for account_url
+    aws_session_token = config_helper.get_auth_param(auth_params, "aws_session_token")
+    aws_profile = config_helper.get_auth_param(auth_params, "aws_profile")
+    aws_access_key_id = config_helper.get_auth_param(auth_params, "aws_access_key_id")    
+    aws_secret_access_key = config_helper.get_auth_param(auth_params, "aws_secret_access_key")
+    
+    from cloudpathlib import S3Client
+    if aws_session_token:  # preferred.
+        # session token specified, then use it
+        return S3Client(aws_session_token = aws_session_token)
+    elif aws_access_key_id and aws_secret_access_key:
+        # access key and secret key specified, then use it
+        return S3Client(access_key_id = aws_access_key_id, 
+                        secret_access_key = aws_secret_access_key)
+    elif aws_profile:
+        # profile specified, then use it
+        return S3Client(profile_name = aws_profile)
+    
+    aws_session_token = aws_session_token if aws_session_token else os.environ.get("AWS_SESSION_TOKEN")
+    aws_profile = aws_profile if aws_profile else "default"
+    aws_access_key_id = aws_access_key_id if aws_access_key_id else os.environ.get("AWS_ACCESS_KEY_ID")
+    aws_secret_access_key = aws_secret_access_key if aws_secret_access_key else os.environ.get("AWS_SECRET_ACCESS_KEY")
+    
+    if aws_session_token:  # preferred.
+        # session token specified, then use it
+        return S3Client(aws_session_token = aws_session_token)
+    elif aws_access_key_id and aws_secret_access_key:
+        # access key and secret key specified, then use it
+        return S3Client(access_key_id = aws_access_key_id, 
+                        secret_access_key = aws_secret_access_key)
+    elif aws_profile:
+        # profile specified, then use it
+        return S3Client(profile_name = aws_profile)
+        
+    # default profile
+    return S3Client()
+
+# internal helper to create the cloud client
+def __make_az_client(auth_params: dict):
+    # Azure format for account_url
+        
+    # parse out all the relevant argument
+    azure_account_url = config_helper.get_auth_param(auth_params, "azure_account_url")
+    azure_sas_token = config_helper.get_auth_param(auth_params, "azure_sas_token")
+    azure_account_name = config_helper.get_auth_param(auth_params, "azure_account_name")
+    if azure_account_url is None:
+        azure_account_url = f"https://{azure_account_name}.blob.core.windows.net/?{azure_sas_token}" if azure_account_name and azure_sas_token else None
+
+    # format for account url for client.  container is not discarded unlike stated.  so must use format like below.
+    # example: 'https://{account_url}.blob.core.windows.net/?{sas_token}
+    # https://learn.microsoft.com/en-us/python/api/azure-storage-blob/azure.storage.blob.blobserviceclient?view=azure-python
+    # format for path:  az://{container}/...
+    # note if container is specified in account_url, we will get duplicates.
+    
+    azure_storage_connection_string = config_helper.get_auth_param(auth_params, "azure_storage_connection_string")
+    azure_account_key = config_helper.get_auth_param(auth_params, "azure_account_key")
+    if azure_storage_connection_string is None:
+        azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" if azure_account_name and azure_account_key else None 
+    
+    from cloudpathlib import AzureBlobClient
+    if azure_account_url:
+        return AzureBlobClient(account_url=azure_account_url)
+    elif azure_storage_connection_string:
+        # connection string specified, then use it
+        return AzureBlobClient(connection_string = azure_storage_connection_string)
+    
+    azure_storage_connection_string = azure_storage_connection_string if azure_storage_connection_string else os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
+    
+    if azure_account_url:
+        return AzureBlobClient(account_url=azure_account_url)
+    elif azure_storage_connection_string:
+        # connection string specified, then use it
+        return AzureBlobClient(connection_string = azure_storage_connection_string)
+    else:
+        raise ValueError("No viable Azure account info available to open connection")
+
+# # internal helper to create the cloud client
+# def __make_gs_client(auth_params: dict):
+#     from cloudpathlib import GoogleCloudClient
+#     if google_application_credentials:
+#         # application credentials specified, then use it
+#         return GoogleCloudClient(application_credentials = google_application_credentials)
+#     elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+#         # application credentials specified in environment variables, then use it
+#         return GoogleCloudClient(application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
+#     else:
+#         raise ValueError("No viable Google application credentials to open connection")
+
+# internal helper to create the cloud client
+def _make_client(cloud_params:dict):
+    path_str = cloud_params["path"]
+    
+    if (path_str.startswith("s3://")):
+        return __make_aws_client(cloud_params)
+    elif (path_str.startswith("az://")):
+        return __make_az_client(cloud_params)
+    # elif (path_str.startswith("gs://")):
+    #     return __make_gs_client(args, for_central = for_central)
+    elif ("://" in path_str):
+        raise ValueError("Unknown cloud storage provider.  Supports s3, az")
+    else:
+        return None
+    
+
+
 class FileSystemHelper:
     
     # Azure client ways to sign in:
     # account_url + credential, or account_url with embedded SAS token
     # connection_string, explicit or in environment variable.  With embedded SAS token or credential
     # existing blob_service_client
-    
+        
     
     # S3 client ways to sign in - create client using 
     #  access and secret keys (provided, or via env-var)
@@ -457,76 +565,76 @@ class FileSystemHelper:
     
 
 
-    # copy multiple files from one location to another.
-    def copy_files_to(self, relpaths: list, dest_path: Union[Self, Path, CloudPath], verbose: bool = False) -> int:
-        """
-        Copy files from the current storage path to the destination path.
+    # # copy multiple files from one location to another.
+    # def copy_files_to(self, relpaths: list, dest_path: Union[Self, Path, CloudPath], verbose: bool = False) -> int:
+    #     """
+    #     Copy files from the current storage path to the destination path.
 
-        Args:
-            paths (list): A list of file paths, relative to the src.root, to be copied.
-            dest_path (Union[Self, Path, CloudPath]): The destination path where the files will be copied to.
+    #     Args:
+    #         paths (list): A list of file paths, relative to the src.root, to be copied.
+    #         dest_path (Union[Self, Path, CloudPath]): The destination path where the files will be copied to.
 
-        Returns:
-            list of (name, file size, and md5) of the target
+    #     Returns:
+    #         list of (name, file size, and md5) of the target
 
-        Raises:
-            None
-        """
-        if len(relpaths) == 0:
-            return 0
+    #     Raises:
+    #         None
+    #     """
+    #     if len(relpaths) == 0:
+    #         return 0
         
-        files = relpaths if isinstance(relpaths[0], tuple) else [(f, f) for f in relpaths]
+    #     files = relpaths if isinstance(relpaths[0], tuple) else [(f, f) for f in relpaths]
         
-        src = self.root
-        src_is_cloud = self.is_cloud
-        dest = FileSystemHelper._make_path(dest_path) if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
-        dest_is_cloud = isinstance(dest, CloudPath)
-        count = 0
-        if src_is_cloud:
-            if dest_is_cloud:
-                for sf, df in files:
-                    src_file = src.joinpath(sf)
-                    dest_file = dest.joinpath(df)
-                    # if verbose:
-                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    src_file.copy(dest_file, force_overwrite_to_cloud=True)
-                    count += 1
-            else:
-                for sf, df in files:
-                    src_file = src.joinpath(sf)
-                    dest_file = dest.joinpath(df)
-                    # if verbose:
-                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    src_file.download_to(dest_file)
-                    count += 1
+    #     src = self.root
+    #     src_is_cloud = self.is_cloud
+    #     dest = FileSystemHelper._make_path(dest_path) if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
+    #     dest_is_cloud = isinstance(dest, CloudPath)
+    #     count = 0
+    #     if src_is_cloud:
+    #         if dest_is_cloud:
+    #             for sf, df in files:
+    #                 src_file = src.joinpath(sf)
+    #                 dest_file = dest.joinpath(df)
+    #                 # if verbose:
+    #                 #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+    #                 dest_file.parent.mkdir(parents=True, exist_ok=True)
+    #                 src_file.copy(dest_file, force_overwrite_to_cloud=True)
+    #                 count += 1
+    #         else:
+    #             for sf, df in files:
+    #                 src_file = src.joinpath(sf)
+    #                 dest_file = dest.joinpath(df)
+    #                 # if verbose:
+    #                 #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+    #                 dest_file.parent.mkdir(parents=True, exist_ok=True)
+    #                 src_file.download_to(dest_file)
+    #                 count += 1
 
-        else:
-            if dest_is_cloud:
-                for sf, df in files:
-                    src_file = src.joinpath(sf)
-                    dest_file = dest.joinpath(df)
-                    # if verbose:
-                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
-                    count += 1
-            else:
-                for sf, df in files:
-                    src_file = src.joinpath(sf)
-                    dest_file = dest.joinpath(df)
-                    # if verbose:
-                    #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
-                    dest_file.parent.mkdir(parents=True, exist_ok=True)
-                    try:
-                        shutil.copy2(str(src_file), str(dest_file))
-                        count += 1
-                    except shutil.SameFileError:
-                        pass
-                    except PermissionError:
-                        print("ERROR: permission issue copying file ", src_file, " to ", dest_file)
-                    except Exception as e:
-                        print("ERROR: issue copying file ", src_file, " to ", dest_file, " exception ", e)
+    #     else:
+    #         if dest_is_cloud:
+    #             for sf, df in files:
+    #                 src_file = src.joinpath(sf)
+    #                 dest_file = dest.joinpath(df)
+    #                 # if verbose:
+    #                 #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+    #                 dest_file.parent.mkdir(parents=True, exist_ok=True)
+    #                 dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
+    #                 count += 1
+    #         else:
+    #             for sf, df in files:
+    #                 src_file = src.joinpath(sf)
+    #                 dest_file = dest.joinpath(df)
+    #                 # if verbose:
+    #                 #     print("INFO:  copying ", str(src_file), " to ", str(dest_file))
+    #                 dest_file.parent.mkdir(parents=True, exist_ok=True)
+    #                 try:
+    #                     shutil.copy2(str(src_file), str(dest_file))
+    #                     count += 1
+    #                 except shutil.SameFileError:
+    #                     pass
+    #                 except PermissionError:
+    #                     print("ERROR: permission issue copying file ", src_file, " to ", dest_file)
+    #                 except Exception as e:
+    #                     print("ERROR: issue copying file ", src_file, " to ", dest_file, " exception ", e)
                         
-        return count
+    #     return count

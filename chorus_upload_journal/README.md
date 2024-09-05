@@ -29,7 +29,7 @@ python create_test_data
 # Generate Test Manifest with Update
 To generate the corresponding manifests for the first upload and the update in the test data, use the following command:
 ```
-python generate_manifest
+python chorus-upload-journal/upload-tools
 ```
 
 # Current assumptions, limitations, and working decisions:
@@ -58,7 +58,7 @@ python generate_manifest
 # usage
 
 4. run
-python upload_manifest/generate_manifest ... 
+python chorus-upload-journal/upload-tools ... 
 
 blob account name is the first part of the blob url, which can be retrieved from resource json for the storage account. account key will be provided  container should be provided as well.
 

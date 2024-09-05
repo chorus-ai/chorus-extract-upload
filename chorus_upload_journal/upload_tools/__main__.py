@@ -3,15 +3,17 @@ import shutil
 import time
 import argparse
 
-from chorus_upload_journal.upload_tools.generate_manifest import update_manifest 
+from chorus_upload_journal.upload_tools.local_ops import update_manifest, list_files
 # from chorus_upload_journal.upload_tools.generate_manifest import restore_manifest, list_uploads, list_manifests
-from chorus_upload_journal.upload_tools.generate_manifest import upload_files, verify_files, list_files
-from chorus_upload_journal.upload_tools.generate_manifest import save_command_history, update_command_completion, show_command_history
-from chorus_upload_journal.upload_tools.generate_manifest import DEFAULT_MODALITIES
-from chorus_upload_journal.upload_tools.storage_pathlib import FileSystemHelper
+# from chorus_upload_journal.upload_tools.upload_ops_builtin import upload_files, verify_files, list_files
+from chorus_upload_journal.upload_tools import history_ops 
+from chorus_upload_journal.upload_tools.storage_helper import FileSystemHelper, _make_client
 from pathlib import Path
 from chorus_upload_journal.upload_tools import config_helper
 import json
+from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
+from chorus_upload_journal.upload_tools import upload_ops
+
 
 # TODO: DONE need to support folder for different file types being located at different places.
 #       each location can be checked for specific set of file types.
@@ -26,9 +28,10 @@ import json
 # TODO: DONE config file to reduce command line parameters
 # TODO: DONE manifest track source path and dest container
 # TODO: DONE pull and push journal files from central.
-# TODO: measure time
-# TODO: parallelize update
-# TODO: test large data and fix timeout if any.
+# TODO: DONE measure time
+# TODO: DONE parallelize update
+# TODO: TESTED test large data and fix timeout if any.
+# TODO: use azcli or azcopy
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -37,208 +40,13 @@ IS_SITE = False
 IS_CENTRAL = True
 
 
-# check out a journal to work on
-# local name is what is in the config file
-# cloud file will be renamed to .locked_{timestamp}
-# which will be returned as a key for unlocking later.
-def _checkout_journal(config):
-    #============= get the manifest file name and path obj  (download from cloud to local)
-    manifest_path_str = config_helper.get_journal_config(config)["path"]  # full file name
-    manifest_path = FileSystemHelper(manifest_path_str, client = _make_client(config_helper.get_journal_config(config)))
-    
-    # if not cloud, then we are done.
-    if not manifest_path.is_cloud:
-        md5 = FileSystemHelper.get_metadata(manifest_path.root, with_metadata = False, with_md5 = True)['md5']
-        return (manifest_path, None, manifest_path, md5)
-    
-    # since it's a cloud path, we want to lock as soon as possible.
-    manifest_file = manifest_path.root
-    manifest_fn = manifest_file.name
-    # see if any lock files exists.
-    manifest_dir = manifest_file.parent
-    lock_file = manifest_dir.joinpath(manifest_fn + ".locked_" + str(int(time.time())))
-    
-    # so we try to lock by renaming. if it fails, then we handle if possible.
-    downloadable = False
-    already_locked = False
-    try:
-        manifest_file.rename(lock_file)
-        downloadable = True
-        # locks = list(manifest_dir.glob(manifest_fn + ".locked_*"))
-        # print(locks)
-    except:
-        # if journal file is not found, it's either that we don't have a file, or it's locked.
-        locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
-
-        if (len(locked_files) == 0):
-            # not locked, so journal does not exist.  create a lock.  this is to indicate to others that there is a lock
-            lock_file.touch()
-        else:
-            already_locked = True
-            
-    if already_locked:      
-        raise ValueError("Manifest is locked. Please try again later.")
-    # except FileExistsError as e:
-       
-    local_path = FileSystemHelper(manifest_fn)
-    lock_path = FileSystemHelper(lock_file, client = manifest_path.client)
-    
-    if downloadable:  # only if there something to download.
-        # download the file
-        remote_md5 = FileSystemHelper.get_metadata(lock_path.root, with_metadata = False, with_md5 = True)['md5']
-        
-        if (local_path.root.exists()):
-            # compare md5
-            local_md5 = FileSystemHelper.get_metadata(local_path.root, with_metadata = False, with_md5 = True)['md5']
-            if (local_md5 != remote_md5):
-                # remove localfile and then download.
-                local_path.root.unlink()
-                lock_path.copy_file_to(relpath = None, dest_path = local_path.root)
-                local_md5 = FileSystemHelper.get_metadata(local_path.root, with_metadata = False, with_md5 = True)['md5']
-            # if md5 matches, don't need to copy.
-        else:
-            # local file does not exist, need to copy 
-            lock_path.copy_file_to(relpath = None, dest_path = local_path.root)
-            local_md5 = FileSystemHelper.get_metadata(local_path.root, with_metadata = False, with_md5 = True)['md5']
-    else:
-        # nothing to download, using local file 
-        remote_md5 = ""
-        local_md5 = ""
-
-    if remote_md5 != local_md5:
-        raise ValueError(f"Manifest file is not downloaded correctly - MD5 remote {remote_md5}, local {local_md5}.  Please check the file.")
-
-    # return manifest_file (final in cloud), lock_file (locked in cloud), and local_file (local)
-    return (manifest_path, lock_path, local_path, remote_md5)
-
-
-def _checkin_journal(manifest_path, lock_path, local_path, remote_md5):
-    # check journal file in.
-    
-    if not manifest_path.is_cloud:
-        # not cloud, so nothing to do.
-        return
-
-    # first copy local to cloud as lockfile. (with overwrite)
-    # since each lock is dated, unlikely to have conflicts.
-    if lock_path.root.exists():
-        local_path.copy_file_to(relpath = None, dest_path = lock_path)
-    else:
-        raise ValueError("Locked file lost, unable to unlock.")
-    
-    # then rename lock back to manifest.
-    unlock_failed = False
-    try:
-        lock_path.root.rename(manifest_path.root)
-    except:
-        unlock_failed = True
-        
-    if unlock_failed:
-        raise ValueError("unable to unlock - lockfile lost, or manifest already unlocked.")
-
-# force unlocking.
-def _unlock_journal(args, config, manifest_fn):
-    manifest_path_str = config_helper.get_journal_config(config)["path"]  # full file name
-    manifest_path = FileSystemHelper(manifest_path_str, client = _make_client(config_helper.get_journal_config(config)))
-    
-    manifest_file = manifest_path.root
-    manifest_fn = manifest_file.name
-    # see if any lock files exists.
-    manifest_dir = manifest_file.parent
-    
-    locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
-    if len(locked_files) == 0:
-        print("INFO: Manifest ", str(manifest_file), " is not locked.")
-        return
-            
-    if not manifest_file.exists():
-        if (len(locked_files) > 1):
-            # force unlock so use the most recent.
-            # multiple locked files
-            fns = [str(f.name) for f in locked_files].sort()
-            last = fns[-1]
-            manifest_dir.joinpath(last).rename(manifest_file)
-            
-        elif (len(locked_files) == 1):
-            # no need to sort.
-            locked_files[0].rename(manifest_file)
-    
-    locked_files = list(manifest_dir.glob(manifest_fn + ".locked_*"))
-    # delete all lock files
-    for lock_file in locked_files:
-        lock_file.unlink()
-    
-    print("INFO: force unlocked ", str(manifest_file))
-
-def _strip_account_info(args):
-    filtered_args = {}
-    for arg in vars(args):
-        # if ("aws_" in arg) or ("azure_" in arg) or ("google_" in arg):
-        #     continue
-        if (arg == "func"):
-            continue
-        filtered_args[arg] = getattr(args, arg)
-        
-    return filtered_args
-
-def _recreate_params(filtered_args: dict):
-    params = ""
-    common_params = ""
-    command = ""
-    # catch verbose and config first
-    for arg, val in filtered_args.items():
-        if (arg in ["verbose", "config"]) and (val is not None):
-            arg_str = arg.replace("_", "-")
-            if (type(val) == bool):
-                if val == True:
-                    common_params += f" --{arg_str}"
-            else:
-                common_params += f" --{arg_str} {val}"
-    
-    if ("command" in filtered_args.keys()) and (filtered_args["command"] is not None):
-        command = filtered_args["command"]
-    
-    # cat the rest
-    for arg, val in filtered_args.items():
-        if (arg not in ["command", "verbose", "config"]) and (val is not None):
-            arg_str = arg.replace("_", "-")
-            if type(val) == bool:
-                if val == True:
-                    params += f" --{arg_str}"
-            else:
-                params += f" --{arg_str} {val}"
-    
-    params = params.strip()
-    common_params = common_params.strip()
-    print(common_params, command, params) 
-    return (common_params, command, params)
-
-def _get_paths_for_history(args, config):
-    command = args.command
-    
-    if (command in ["update", "verify", "upload"]):
-        dest_path = config_helper.get_central_config(config)["path"]
-    else:
-        dest_path = None
-    
-    src_paths_json = None    
-    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
-    mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
-    if (command in ["update", "upload", "select"]):
-        src_paths = { mod: mod_config["path"] for mod, mod_config in mod_configs.items() }
-        # convert dict to json string
-        if len(src_paths) > 0:
-            src_paths_json = json.dumps(src_paths)
-
-    return (src_paths_json, dest_path)
-
 # def _getattr(args, argname):
 #     out = getattr(args, argname)
 #     return out.strip("'").strip("\"") if out else None
 
 def _show_history(args, config, manifest_fn):    
     print("Command History: please note account information were not saved.")
-    show_command_history(manifest_fn)
+    history_ops.show_command_history(manifest_fn)
 
 def _print_usage(args, config, manifest_fn):
     # TODO: DONE update this
@@ -261,139 +69,6 @@ def _print_usage(args, config, manifest_fn):
     # print("working with manifests:")
     # print("  list:      python generate_manifest list-versions")
     # print("  revert:    python generate_manifest revert-version --version 20210901120000")
-    
-# print authentication help info
-def _print_config_usage(args, config, manifest_fn):
-    print("The script requires a configuration file (config.toml file in the script generate_manifest directory) to be populated.")
-    print("This file can be generated by filling in the config.toml.template file.")
-    print("")
-    print("The config.toml file contains 3 sections, each contains one or more paths, and each path can be local or cloud storage.")
-    print("[journal]:  contains the path to the journal file.  This file will typically be in the azure container.")
-    print("[central_path]:  contains the path to the default central storage location.  This is where the files will be uploaded to.")
-    print("[site_path]:  contains the path to the default DGS storage location.  This is where the files will be uploaded from.")
-    print("Site_path may contain subsections for each modality, for example [site_path.Waveforms].  This allows different modality files to be stored in different locations")
-    print("")    
-    print("For each section or subsection, if the path is a cloud path, e.g. s3:// or az://, then the following parameters are required for authentication.")
-    print("Authentication is only needed for update, upload, and verify commands Local file system is assumed to not require authentication.")
-    print("")
-    print("  AWS:   in order of precedence")
-    print("         aws-session-token  (temporary credential)")
-    print("         aws-access-key-id, aws-secre-access-key.  (may be set as env-vars AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY)")
-    print("         aws-profile.  see aws/credentials files in home directory")
-    print("         if none specified, profile `default` is used.")
-    print("  Azure: in order of precedence")
-    print("         account-url with embedded sas token")
-    print("         azure-account-name, azure-sas-token.  constructs an account-url")
-    print("         azure-storage_connection_string.")
-    print("         azure-account-name, azure-account-key. constructs a connection string")
-    print("         connection string can be set as a environment variable: AZURE_STORAGE_CONNECTION_STRING")
-    # print("  Google: (UNTESTED) requires google-application-credentials")
-    # print("         application credentials may be specified on the commandline, or as an environment variable (see subcommand help)")
-
-# internal helper to create the cloud client
-def __make_aws_client(auth_params: dict):
-    # Azure format for account_url
-    aws_session_token = config_helper.get_auth_param(auth_params, "aws_session_token")
-    aws_profile = config_helper.get_auth_param(auth_params, "aws_profile")
-    aws_access_key_id = config_helper.get_auth_param(auth_params, "aws_access_key_id")    
-    aws_secret_access_key = config_helper.get_auth_param(auth_params, "aws_secret_access_key")
-    
-    from cloudpathlib import S3Client
-    if aws_session_token:  # preferred.
-        # session token specified, then use it
-        return S3Client(aws_session_token = aws_session_token)
-    elif aws_access_key_id and aws_secret_access_key:
-        # access key and secret key specified, then use it
-        return S3Client(access_key_id = aws_access_key_id, 
-                        secret_access_key = aws_secret_access_key)
-    elif aws_profile:
-        # profile specified, then use it
-        return S3Client(profile_name = aws_profile)
-    
-    aws_session_token = aws_session_token if aws_session_token else os.environ.get("AWS_SESSION_TOKEN")
-    aws_profile = aws_profile if aws_profile else "default"
-    aws_access_key_id = aws_access_key_id if aws_access_key_id else os.environ.get("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = aws_secret_access_key if aws_secret_access_key else os.environ.get("AWS_SECRET_ACCESS_KEY")
-    
-    if aws_session_token:  # preferred.
-        # session token specified, then use it
-        return S3Client(aws_session_token = aws_session_token)
-    elif aws_access_key_id and aws_secret_access_key:
-        # access key and secret key specified, then use it
-        return S3Client(access_key_id = aws_access_key_id, 
-                        secret_access_key = aws_secret_access_key)
-    elif aws_profile:
-        # profile specified, then use it
-        return S3Client(profile_name = aws_profile)
-        
-    # default profile
-    return S3Client()
-
-# internal helper to create the cloud client
-def __make_az_client(auth_params: dict):
-    # Azure format for account_url
-        
-    # parse out all the relevant argument
-    azure_account_url = config_helper.get_auth_param(auth_params, "azure_account_url")
-    azure_sas_token = config_helper.get_auth_param(auth_params, "azure_sas_token")
-    azure_account_name = config_helper.get_auth_param(auth_params, "azure_account_name")
-    if azure_account_url is None:
-        azure_account_url = f"https://{azure_account_name}.blob.core.windows.net/?{azure_sas_token}" if azure_account_name and azure_sas_token else None
-
-    # format for account url for client.  container is not discarded unlike stated.  so must use format like below.
-    # example: 'https://{account_url}.blob.core.windows.net/?{sas_token}
-    # https://learn.microsoft.com/en-us/python/api/azure-storage-blob/azure.storage.blob.blobserviceclient?view=azure-python
-    # format for path:  az://{container}/...
-    # note if container is specified in account_url, we will get duplicates.
-    
-    azure_storage_connection_string = config_helper.get_auth_param(auth_params, "azure_storage_connection_string")
-    azure_account_key = config_helper.get_auth_param(auth_params, "azure_account_key")
-    if azure_storage_connection_string is None:
-        azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" if azure_account_name and azure_account_key else None 
-    
-    from cloudpathlib import AzureBlobClient
-    if azure_account_url:
-        return AzureBlobClient(account_url=azure_account_url)
-    elif azure_storage_connection_string:
-        # connection string specified, then use it
-        return AzureBlobClient(connection_string = azure_storage_connection_string)
-    
-    azure_storage_connection_string = azure_storage_connection_string if azure_storage_connection_string else os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
-    
-    if azure_account_url:
-        return AzureBlobClient(account_url=azure_account_url)
-    elif azure_storage_connection_string:
-        # connection string specified, then use it
-        return AzureBlobClient(connection_string = azure_storage_connection_string)
-    else:
-        raise ValueError("No viable Azure account info available to open connection")
-
-# # internal helper to create the cloud client
-# def __make_gs_client(auth_params: dict):
-#     from cloudpathlib import GoogleCloudClient
-#     if google_application_credentials:
-#         # application credentials specified, then use it
-#         return GoogleCloudClient(application_credentials = google_application_credentials)
-#     elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-#         # application credentials specified in environment variables, then use it
-#         return GoogleCloudClient(application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
-#     else:
-#         raise ValueError("No viable Google application credentials to open connection")
-
-# internal helper to create the cloud client
-def _make_client(cloud_params:dict):
-    path_str = cloud_params["path"]
-    
-    if (path_str.startswith("s3://")):
-        return __make_aws_client(cloud_params)
-    elif (path_str.startswith("az://")):
-        return __make_az_client(cloud_params)
-    # elif (path_str.startswith("gs://")):
-    #     return __make_gs_client(args, for_central = for_central)
-    elif ("://" in path_str):
-        raise ValueError("Unknown cloud storage provider.  Supports s3, az")
-    else:
-        return None
     
         
 # helper to call update manifest
@@ -482,7 +157,7 @@ def _upload_files(args, config, manifest_fn):
     # subsequent modalities in this call always amend.
     for mod, mod_config in mod_configs.items():
         sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-        upload_files(sitefs, centralfs, manifest_fn, modalities = [mod], amend = (args.amend if first else True), verbose = args.verbose)
+        upload_ops.upload_files(sitefs, centralfs, manifest_fn, modalities = [mod], amend = (args.amend if first else True), verbose = args.verbose)
         first = False
     
 # helper to report file verification
@@ -496,7 +171,7 @@ def _verify_files(args, config, manifest_fn):
     central_config = config_helper.get_central_config(config)
     centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
     
-    verify_files(centralfs, manifest_fn, version = args.version, modalities = mods, verbose = args.verbose)
+    upload_ops.verify_files(centralfs, manifest_fn, version = args.version, modalities = mods, verbose = args.verbose)
     
 
 if __name__ == "__main__":
@@ -513,7 +188,7 @@ if __name__ == "__main__":
     
     #------ authentication help
     parser_auth = subparsers.add_parser("config_help", help = "show help information about the configuration file")
-    parser_auth.set_defaults(func = _print_config_usage)
+    parser_auth.set_defaults(func = config_helper._print_config_usage)
     
     #------ create the parser for the "update" command
     parser_update = subparsers.add_parser("update", help = "create or update the current manifest")
@@ -555,7 +230,7 @@ if __name__ == "__main__":
     parser_verify.set_defaults(func = _verify_files)
         
     parser_unlock = subparsers.add_parser("unlock", help = "unlock a cloud manifest file")
-    parser_unlock.set_defaults(func = _unlock_journal)
+    parser_unlock.set_defaults(func = upload_ops.unlock_journal)
         
     parser_history = subparsers.add_parser("history", help = "show command history")
     parser_history.set_defaults(func = _show_history)
@@ -575,17 +250,18 @@ if __name__ == "__main__":
         
     print("Using config file: ", config_fn)
     config = config_helper.load_config(config_fn)
+    upload_method = config_helper.get_upload_methods(config)
     
     if (args.command not in ["config_help", "usage", "unlock"]):
-        manifest_path, locked_path, local_path, manifest_md5 = _checkout_journal(config)
+        manifest_path, locked_path, local_path, manifest_md5 = upload_ops.checkout_journal(config)
         
         #     # push up a lock file.
         manifest_fn = str(local_path.root)
         # === save command history
-        args_dict = _strip_account_info(args)
+        args_dict = history_ops._strip_account_info(args)
         if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
             args_dict["config"] = config_fn
-        command_id = save_command_history(*(_recreate_params(args_dict)), *(_get_paths_for_history(args, config)), manifest_fn)
+        command_id = history_ops.save_command_history(*(history_ops._recreate_params(args_dict)), *(history_ops._get_paths_for_history(args, config)), manifest_fn)
 
         # call the subcommand function.
         start = time.time()
@@ -593,10 +269,10 @@ if __name__ == "__main__":
         end = time.time()
         elapsed = end - start
         print(f"Command Completed in {elapsed:.2f} seconds.")
-        update_command_completion(command_id, elapsed, manifest_fn)
+        history_ops.update_command_completion(command_id, elapsed, manifest_fn)
         
         # push journal up.
-        _checkin_journal(manifest_path, locked_path, local_path, manifest_md5)
+        upload_ops.checkin_journal(manifest_path, locked_path, local_path, manifest_md5)
         
     else:
         # if just printing usage or help, don't need to checkout the journal.

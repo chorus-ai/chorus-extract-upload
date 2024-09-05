@@ -6,6 +6,13 @@
 # (aws_access_key_id, aws_secret_access_key), aws_session_token, aws_profile
 # fallbacks are environment variables for these.
 
+[configuration]
+# supported modalities are "OMOP,Images,Waveforms"
+# supported_modalities = "OMOP,Images,Waveforms"
+
+# upload method can be one of "azcli" or "builtin"
+upload_method = "builtin"
+
 [journal]
 path = "journal.db"   # specify the journal file name. defaults to cloud storage
 # example:  "az://container/path/to/journal.db"
@@ -19,6 +26,7 @@ path = "journal.db"   # specify the journal file name. defaults to cloud storage
 
 # example:  "az://container/path"
 path = "az://test/"
+azure_container = "test"
 # azure account credentials are specified as one or more of the following.
 azure_account_name = "account_name"
 azure_sas_token = "sastoken"
@@ -39,6 +47,7 @@ azure_sas_token = "sastoken"
   [site_path.Images]
   # optional:  specific root paths for images
   path = "s3://container/path"
+  s3_container = "container"
   aws_access_key_id = "access_key_id"
   aws_secret_access_key = "secret_access"
   # can also specify aws session token, or profile.
