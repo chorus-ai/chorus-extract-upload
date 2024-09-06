@@ -101,28 +101,57 @@ def _update_journal(args, config, journal_fn):
 #     restore_journal(journal_fn, revert_time)
     
 # only works with azure dest for now.
-def _write_files(file_list: list, dt: str, filename : str, **kwargs):
+def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
     dest_config = kwargs.get('dest_config', {})
+    
+    if (not dest_config['path'].startswith("az://")):
+        print("WARNING: Destination is not an azure path.  cannot generate azcli script, but can genearete a list of source files")
+        out_type = "list"
+    
     account_name = dest_config.get('azure_account_name', '')
-    sas_token = dest_config.get('azure_sas_token', '')
-    container = dest_config.get('azure_container', '')
-    config_fn = kwargs.get('config_fn', '')
         
     if account_name is None or account_name == "":
         print("ERROR: destination is not an azure path")
         raise ValueError("Destination is not an azure path")
+ 
+    sas_token = dest_config.get('azure_sas_token', '')
+    container = dest_config.get('azure_container', '')
+    
+    # track configuration file
+    config_fn = kwargs.get('config_fn', '')
+    
+    # check source paths.
+    source_paths = set(config['path'] for _, (config, _) in file_list.items())
+    source_is_cloud = any([(p.startswith("az://")) or (p.startswith("s3://")) or (p.startswith("gs://")) for p in source_paths])
+    if (out_type == "azcli") and source_is_cloud:
+        print("WARNING: source path is in the cloud, cannot generate azcli script.  using 'azcopy' instead")
+        out_type = "azcopy"
         
+    # get output file name.
     p = Path(filename)
     fn = "_".join([p.stem, dt]) + p.suffix
-    print("list written to ", fn)
+    print("list writing to ", fn)
+    
     with open(fn, 'w') as f:
         # if windows, use double backslash
-        if (out_type == "azcli"):
+        
+        
+        if (out_type != "azcli") and (out_type != "azcopy"):
+            for mod, (config, flist) in file_list.items():
+                root = config["path"]            
+                filenames = ["/".join([root, fn]) for fn in flist]
+                if (os.name == 'nt'):
+                    f.write("\n\r".join([fn.replace("/", "\\") for fn in filenames]))
+                else:
+                    f.write("\n".join(filenames))
+            
+        else:
             if dt != "NEW":
                 print("ERROR: cannot generate azcli script for existing file upload version", dt)
                 return
             
+            # this first part of the script is same for both azcli and azcopy.
             if (os.name == 'nt'):
                 # BATCH FILE FORMAT
                 f.write("@echo off\r\n")
@@ -132,7 +161,7 @@ def _write_files(file_list: list, dt: str, filename : str, **kwargs):
                 f.write("REM set environment variables\r\n")
                 f.write("set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\r\n")
                 f.write("\r\n")
-                f.write("REM login to azure\r\n")
+                f.write("REM Destination azure credentials\r\n")
                 f.write(f"set account={account_name}\r\n")
                 f.write(f"set sas_token=\"{sas_token}\"\r\n")
                 f.write(f"set container={container}\r\n")
@@ -140,17 +169,8 @@ def _write_files(file_list: list, dt: str, filename : str, **kwargs):
                 f.write("echo PLEASE add your virtual environment activation string if any.\r\n")
                 f.write("\r\n")
                 f.write("REM upload files\r\n")
-                f.write("if exist azcli.log del azcli.log\r\n")
-                f.write("type nul > azcli.log\r\n")
-                
-                for root, fn in file_list:
-                    local_file = "\\".join([root, fn])
-                    local_file = local_file.replace("/", "\\")
-                    f.write(f"az storage blob upload --account-name %account% --sas-token %sas_token% --container-name %container% --name %dt%/" + fn + " --file " + local_file + "\r\n")
-                    f.write("echo " + fn + " >> azcli.log\r\n")
-                                           
-                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list azcli.log --version ${dt}\r\n")            
-
+                f.write("if exist files_%dt%.txt del files_%dt%.txt\r\n")
+                f.write("type nul > files_%dt%.txt\r\n")
             else:
                 f.write("#!/bin/bash\n")
                 f.write("# script to upload files to azure for upload date " + dt + "\n")
@@ -160,7 +180,7 @@ def _write_files(file_list: list, dt: str, filename : str, **kwargs):
                 f.write("export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\n")
                 f.write("\n")
                 
-                f.write("# login to azure\n")
+                f.write("# Destination azure credentials \n")
                 f.write(f"account=\"{account_name}\"\n")
                 f.write(f"sas_token=\"{sas_token}\"\n")
                 f.write(f"container=\"{container}\"\n")
@@ -169,26 +189,95 @@ def _write_files(file_list: list, dt: str, filename : str, **kwargs):
                 f.write("echo PLEASE add your virtual environment activation string if any.\n")
                 f.write("\n")
                 f.write("# upload files\n")
-                f.write("if [ -e 'azcli.log' ]; then\n")
-                f.write("    rm azcli.log\n")
+                f.write("if [ -e 'files_${dt}.txt' ]; then\n")
+                f.write("    rm files_${dt}.txt\n")
                 f.write("fi\n")
-                f.write("touch azcli.log\n")
-            
-                for root, fn in file_list:
-                    local_file = "/".join([root, fn])
-                    f.write("az storage blob upload --account-name ${account} --sas-token \"${sas_token}\" --container-name ${container} --name ${dt}/" + fn + " --file " + local_file + "\n")     
-                    f.write("echo " + fn + " >> azcli.log\n")
-                                           
-                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list azcli.log --version ${dt}\n")
+                f.write("touch files_${dt}.txt\n")
+
                 
-        elif (out_type == "azcopy"):
-            print("ERROR: azcopy not implemented yet")
-        else:
-            filenames = ["/".join([root, fn]) for (root, fn) in file_list]
+            # then we iterate over the files, and decide based on out_type.
+            for mod, (config, flist) in file_list.items():
+                root = config['path']
+                
+                f.write("\n")
+                if (os.name == "nt"):
+                    f.write(f"REM Files upload for {mod} at root {root}\r\n")
+                else:
+                    f.write(f"# Files upload for {mod} at root {root}\n")
+                
+                if (root.startswith("az://")):
+                    mod_local_account = config.get('azure_account_name', '')
+                    mod_local_container = config.get('azure_container', '')
+                    mod_local_sas_token = config.get('azure_sas_token', '')
+                    
+                    if (os.name == "nt"):
+                        f.write(f"set mod_local_account=\"{mod_local_account}\"\r\n")
+                        f.write(f"set mod_local_sas_token=\"{mod_local_sas_token}\"\r\n")
+                        f.write(f"set mod_local_container=\"{mod_local_container}\"\r\n")
+                        f.write("\n")
+                    else:
+                        f.write(f"mod_local_account=\"{mod_local_account}\"\n")
+                        f.write(f"mod_local_sas_token=\"{mod_local_sas_token}\"\n")
+                        f.write(f"mod_local_container=\"{mod_local_container}\"\n")
+                        f.write("\n")
+                            
+                elif (root.startswith("s3://")):
+                    mod_local_container = config.get('s3_bucket', '')
+                    mod_local_ACCESS_KEY = config.get('s3_access_key', '')
+                    mod_local_SECRET_KEY = config.get('s3_secret_key', '')
+                    if (os.name == "nt"):
+                        f.write(f"set AWS_ACCESS_KEY_ID=\"{mod_local_ACCESS_KEY}\"\r\n")
+                        f.write(f"set AWS_SECRET_ACCESS_KEY=\"{mod_local_SECRET_KEY}\"\r\n")
+                        f.write("\n")
+                    else:
+                        f.write(f"export AWS_ACCESS_KEY_ID=\"{mod_local_ACCESS_KEY}\"\n")
+                        f.write(f"export AWS_SECRET_ACCESS_KEY=\"{mod_local_SECRET_KEY}\"\n")
+                        f.write("\n")
+
+
+                for fn in flist:
+                    if (os.name == 'nt'):
+                        local_file = "\\".join([root, fn])
+                        local_file = local_file.replace("/", "\\")
+                        
+                        if (out_type == "azcli"):
+                            f.write(f"az storage blob upload --account-name %account% --sas-token %sas_token% --container-name %container% --name %dt%/" + fn + " --file " + local_file + "\r\n")
+                        elif (out_type == "azcopy"):
+                            if (root.startswith("az://")):
+                                f.write(f"azcopy copy 'https://%mod_local_account%.blob.core.windows.net/%mod_local_container%/" + fn + "?%mod_local_sas_token%' 'https://%account%.blob.core.windows.net/%container%/%dt%/" + fn + "?%sas_token%'\n" )
+                            elif (root.startswith("s3://")):
+                                f.write(f"azcopy copy 'https://s3.amazonaws.com/%mod_local_container%/" + fn + "' 'https://%account%.blob.core.windows.net/%container%/%dt%/" + fn + "?%sas_token%'\n" )
+                            # elif (root.startswith("gs://")):
+                            #     ...
+                            else:
+                                f.write(f"azcopy copy '" + local_file + "' 'https://%account%.blob.core.windows.net/%container%/%dt%/" + fn + "?%sas_token%'\n" )                            
+                            
+                        f.write("echo " + fn + " >> files_%dt%.txt\r\n")
+
+                    else:
+                        local_file = "/".join([root, fn])
+                        
+                        if (out_type == "azcli"):
+                            f.write("az storage blob upload --account-name ${account} --sas-token \"${sas_token}\" --container-name ${container} --name ${dt}/" + fn + " --file " + local_file + "\n")     
+                        elif (out_type == "azcopy"):
+                            if (root.startswith("az://")):
+                                f.write(f"azcopy copy 'https://${mod_local_account}.blob.core.windows.net/${mod_local_container}/" + fn + "?${mod_local_sas_token}' 'https://${account}.blob.core.windows.net/${container}/${dt}/" + fn + "?${sas_token}'\n" )
+                            elif (root.startswith("s3://")):
+                                f.write(f"azcopy copy 'https://s3.amazonaws.com/${mod_local_container}/" + fn + "' 'https://${account}.blob.core.windows.net/${container}/${dt}/" + fn + "?${sas_token}'\n" )
+                            # elif (root.startswith("gs://")):
+                            #     ...
+                            else:
+                                f.write(f"azcopy copy '" + local_file + "' 'https://${account}.blob.core.windows.net/${container}/${dt}/" + fn + "?${sas_token}'\n" )
+                                
+                        f.write("echo " + fn + " >> files_${dt}.txt\n")
+                                        
+                    
+            # last part is again the same.
             if (os.name == 'nt'):
-                f.write("\n\r".join([fn.replace("/", "\\") for fn in filenames]))
+                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list files_%dt%.txt --version ${dt}\r\n")            
             else:
-                f.write("\n".join(filenames))
+                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list files_${dt}.txt --version ${dt}\n")
+                
                 
             
 # helper to display/save files to upload
@@ -203,18 +292,18 @@ def _select_files(args, config, journal_fn):
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
             mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
-            mod_path = config_helper.get_site_config(config, mod)['path']
+            mod_config = config_helper.get_site_config(config, mod)
 
-            print("files for version: ", dt, " root at ", mod_path )
+            print("files for version: ", dt, " root at ", mod_config["path"], " for ", mod)
             print("\n".join(mod_files))    
     else:
         central = config_helper.get_central_config(config)
-        file_list = []
+        file_list = {}
         for mod in mods:
             mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
-            mod_path = config_helper.get_site_config(config, mod)['path']
+            mod_config = config_helper.get_site_config(config, mod)
 
-            file_list += [(mod_path, f) for f in mod_files]
+            file_list[mod] = (mod_config, mod_files)
     
         _write_files(file_list, dt, filename = args.output_file, out_type = args.output_type, dest_config = central, config_fn = args.config)
     

@@ -393,15 +393,15 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
         for fn in files_to_upload:
-            if verbose:
-                print("INFO:  copying ", fn, " from ", str(src_path.root), " to ", str(dated_dest_path.root))
-            else:
-                print(".", end="", flush=True)
             future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
             futures.append(future)
         
         for future in concurrent.futures.as_completed(futures):
             (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
+            if verbose:
+                print("INFO:  copying ", fn, " from ", str(src_path.root), " to ", str(dated_dest_path.root))
+            else:
+                print(".", end="", flush=True)
             if state == sync_state.MISSING_IN_DB:
                 print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
                 missing_in_db.add(fn2)
