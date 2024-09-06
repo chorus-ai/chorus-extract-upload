@@ -41,6 +41,8 @@
 # md5 appears working.
 
 # TODO:  check file existence and metadata before copying.
+# TODO:  admin method to delete files remotely.
+# TODO:  az cli method to upload, rename, and download files.
 
 from cloudpathlib import AnyPath, CloudPath, S3Path, AzureBlobPath, GSPath
 from cloudpathlib.client import Client
@@ -150,10 +152,8 @@ def __make_az_client(auth_params: dict):
 
     from cloudpathlib import AzureBlobClient
     if azure_account_url:
-        print(azure_account_url)
         return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, credential = None, connection_verify = False, connection_cert = None))
     elif azure_storage_connection_string:
-        print(azure_storage_connection_string)
         # connection string specified, then use it
         return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string, connection_verify = False, connection_cert = None))
     elif azure_storage_connection_string_env:
@@ -298,6 +298,37 @@ class FileSystemHelper:
         # self.is_dir = self.root.is_dir()  what is the path is mean to be a directory but does not exist yet?  can't tell if it's a directory.
                        
     @classmethod
+    def _calc_file_md5(cls, curr: Union[CloudPath, Path] ):
+        """
+        Calculate the MD5 hash of a file.
+
+        Args:
+            path (Union[Path, CloudPath]): The path to the file, as Path or CloudPath, incorporating.
+
+        Returns:
+            str: The hexadecimal representation of the MD5 hash.
+        """
+        md5 = None
+        
+        # calculate for any path.  involves downloading, effectively.    
+        # Initialize the MD5 hash object
+        if (curr.exists()):
+            md5 = hashlib.md5()
+
+            # Open the file in binary mode
+            with curr.open("rb") as f:
+                # Read the file in chunks
+                for chunk in iter(lambda: f.read(1024*1024), b""):
+                    # Update the MD5 hash with the chunk
+                    md5.update(chunk)
+
+            # Get the hexadecimal representation of the MD5 hash
+            # md5_str = md5.hexdigest()
+            
+        return md5
+
+                       
+    @classmethod
     def get_metadata(cls, root: Union[CloudPath, Path] = None, 
                      path: Union[CloudPath, Path] = None,
                      with_metadata: bool = True,
@@ -341,43 +372,40 @@ class FileSystemHelper:
             # metadata["modify_time_ns"] = math.floor(info.st_mtime_ns / 1000) if info.st_mtime_ns else None
 
         if (with_md5):
-            md5_str = None
-            
-            # if isinstance(curr, S3Path):
-            #     # Get the MD5 hash from the ETag. multipart upload has ETAG that is not md5.  if object is encrypted with KMS also not md5.
-            #     # https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html
-            #     # can set content-md5 but we are already storing in db.
-            #     md5_str = curr.etag.strip('"')
-            # elif isinstance(curr, AzureBlobPath):
-            #     # md5 is not calculated for large data files (>100MB)
-            #     # https://learn.microsoft.com/en-us/answers/questions/282572/md5-hash-calculation-for-large-files
-            #     # can set content-md5 but we are already storing in db.
-            #     if (curr.md5 is not None):
-            #         md5_str = curr.md5.hex()
-            #     else:
-            #         md5_str = None  # not available
-            # elif isinstance(curr, GSPath):
-            #     # likely not reliable, like S3 or AzureBlob
-            #     md5_str = curr.etag.strip('"')
-                
-            # elif isinstance(curr, Path):                
-                # Calculate the MD5 hash locally
-                
-            # calculate for any path.  involves downloading, effectively.    
-            # Initialize the MD5 hash object
-            if (curr.exists()):
-                md5 = hashlib.md5()
+                            
+            if isinstance(curr, S3Path):
+                # Get the MD5 hash from the ETag. multipart upload has ETAG that is not md5.  if object is encrypted with KMS also not md5.
+                # https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html
+                # can set content-md5 but we are already storing in db.
+                md5_str = curr.etag.strip('"')
+            elif isinstance(curr, AzureBlobPath):
+                # md5 is not calculated for large data files (>100MB)
+                # https://learn.microsoft.com/en-us/answers/questions/282572/md5-hash-calculation-for-large-files
+                # can set content-md5 but we are already storing in db.
+                if (curr.md5 is not None):
+                    md5_str = curr.md5.hex()
+                else:
+                    md5 = FileSystemHelper._calc_file_md5(curr)  # not available, so calculate.
+                    # then set the content md5 to whatever we calculated
+                    if (md5 is not None):
+                        blob_serv_client = curr.client.service_client
+                        blob_client = blob_serv_client.get_blob_client(container = curr.container, blob = curr.blob)
+                        content_settings = blob_client.get_blob_properties().content_settings
+                        content_settings.content_md5 = md5.digest()
+                        blob_client.set_http_headers(content_settings = content_settings)
+                        md5_str = md5.hexdigest()
+                        print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5, " hex ", content_settings.content_md5.hex(), " hex digtest ", md5_str)
 
-                # Open the file in binary mode
-                with curr.open("rb") as f:
-                    # Read the file in chunks
-                    for chunk in iter(lambda: f.read(1024*1024), b""):
-                        # Update the MD5 hash with the chunk
-                        md5.update(chunk)
+                    else:
+                        md5_str = None
+                        
+            elif isinstance(curr, GSPath):
+                # likely not reliable, like S3 or AzureBlob
+                md5_str = curr.etag.strip('"')
+            else:
+                md5 = FileSystemHelper._calc_file_md5(curr)
+                md5_str = md5.hexdigest() if md5 else None                
 
-                # Get the hexadecimal representation of the MD5 hash
-                md5_str = md5.hexdigest()
-                
             metadata["md5"] = md5_str
         return metadata
     
@@ -424,39 +452,6 @@ class FileSystemHelper:
 
     #     return metadata
     
-    # def _calc_file_md5(self, path: Union[Path, CloudPath] = None) -> str:
-    #     """
-    #     Calculate the MD5 hash of a file.
-
-    #     Args:
-    #         path (Union[Path, CloudPath]): The path to the file, as Path or CloudPath, incorporating.
-
-    #     Returns:
-    #         str: The hexadecimal representation of the MD5 hash.
-    #     """
-    #     if path is None:
-    #         test = self.root
-    #     else:
-    #         test = FileSystemHelper._make_path(path, client = self.client)   # could be relative or absolute
-    #     curr = test if test.is_relative_to(self.root) else self.root.joinpath(test)  # if test is not relative to root, then root is not a prefix and assume test is a subdir.
-
-    #     if not curr.exists():
-    #         print("ERROR:  file does not exist: ", curr)
-    #         return None
-        
-    #     # Initialize the MD5 hash object
-    #     md5 = hashlib.md5()
-
-    #     # Open the file in binary mode
-    #     with curr.open("rb") as f:
-    #         # Read the file in chunks
-    #         for chunk in iter(lambda: f.read(1024*1024), b""):
-    #             # Update the MD5 hash with the chunk
-    #             md5.update(chunk)
-
-    #     # Get the hexadecimal representation of the MD5 hash
-    #     return md5.hexdigest()
-
     
     # # limited testing seems to show that the md5 aws etag and azure content-md5 are okay.
     # def get_file_md5(self, path: Union[str, Path, CloudPath] = None, verify:bool = False  ) -> str:

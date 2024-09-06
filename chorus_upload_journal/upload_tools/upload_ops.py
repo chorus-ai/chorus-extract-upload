@@ -270,7 +270,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
         # get the dest file info.  Don't rely on cloud md5
         start = time.time()
-        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = False)
+        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
         # case 2 missing in cloud.  this is the missing case;
         verify_time = time.time() - start
         if dest_meta is None:
@@ -279,7 +279,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
     
     if (state == sync_state.UNKNOWN):
         
-        if (size == dest_meta['size']):
+        if (size == dest_meta['size']) and (md5 == dest_meta['md5']):
             
             # MD5 could be missing, set by uploader, or computed differently by cloud provider.  Can't rely on it.
             # start = time.time()
@@ -293,8 +293,8 @@ def _upload_and_verify(src_path : FileSystemHelper,
             verified = True
             # fid_list.append(file_id)  # verified.  this may not be parallelizable.
             # else:
-            #     # case 4: mismatched.
-            #     state = sync_state.MISMATCHED
+            # case 4: mismatched.
+            # state = sync_state.MISMATCHED
             # entries are not updated because of mismatch.
             # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)            
         else:
@@ -395,6 +395,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         for fn in files_to_upload:
             if verbose:
                 print("INFO:  copying ", fn, " from ", str(src_path.root), " to ", str(dated_dest_path.root))
+            else:
+                print(".", end="", flush=True)
             future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
             futures.append(future)
         
@@ -561,6 +563,18 @@ def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
 
     return (dest_meta, dest_md5, fid, fn, size, md5)
 
+def _get_file_info2(dated_dest_path: FileSystemHelper, file_info: tuple):
+    
+    fid, fn, size, md5 = file_info
+    
+    # this would actually compute the md5
+    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
+    dest_md5 = dest_meta['md5'] if dest_meta is not None else None
+    
+    print(fn, " md5s ", dest_md5, md5)
+
+    return (dest_meta, dest_md5, fid, fn, size, md5)
+
 # verify a set of files that have been uploaded.  version being None means using the last upload
 def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", 
                  version: Optional[str] = None, 
@@ -617,8 +631,6 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     with concurrent.futures.ThreadPoolExecutor() as executor:
         futures = []
         for file_info in files_to_verify:
-            if verbose:
-                print("INFO: verifying ", file_info[1], " for upload ", dtstr)
             future = executor.submit(_get_file_info, dated_dest_path, file_info )
             futures.append(future)
             
@@ -632,6 +644,8 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
             if (size == dest_meta['size']) and (md5 == dest_md5):
                 if verbose:
                     print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
+                else:
+                    print(".", end="", flush=True)
                 matched.add(fn)
             # elif (dest_md5 is None) and (dest_meta['size'] == size):
             #     print("INFO: large file, matched by size only ", fn)
@@ -643,3 +657,66 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     print("INFO:  verified ", len(matched), " files (", len(large_matched), "large files w/o md5)", len(mismatched), " mismatched, ", len(missing), " missing.")
             
     return matched, mismatched, missing
+
+
+# verify a set of files that have been uploaded.  version being None means using the last upload
+def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db", 
+                 version: Optional[str] = None,
+                 files: list[str] = None, 
+                 verbose: bool = False):
+    
+    # version is what will be set.
+    
+    if not os.path.exists(databasename):
+        # os.remove(pushdir_name + ".db")
+        print(f"ERROR: No journal exists for filename {databasename}")
+        return
+
+    con = sqlite3.connect(databasename, check_same_thread=False)
+    cur = con.cursor()
+
+    if len(files) > 1:
+        # more than 1 file to check. 
+        # get the list of files, md5, size for unuploaded, active files
+        db_files = cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr is NULL AND time_invalid_us is NULL").fetchall()
+    else:
+        db_files = cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '{files[0]}'").fetchall()
+        
+    con.close()
+    
+    # make a hashtable
+    db_files = {f[1]: f for f in db_files}
+    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(version))
+    
+    matched = []
+    threads = max(1, os.cpu_count() - 2)
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = []
+        for f in files:
+            if f not in db_files:
+                print("ERROR: file ", f, " not found in journal.")
+                continue
+        
+            future = executor.submit(_get_file_info2, dated_dest_path, db_files[f] )
+            futures.append(future)
+            
+        for future in concurrent.futures.as_completed(futures):
+            (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
+            if dest_meta is None:
+                print("ERROR:  missing file ", fn, " in destination ", dated_dest_path.root)
+                continue
+
+            if (size == dest_meta['size']) and (md5 == dest_md5):
+                if verbose:
+                    print("INFO: marking as uploaded", version, " ", fn, " ", fid)
+                else:
+                    print(".", end="", flush=True)
+                matched.append((fid,))
+            else:
+                print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
+                
+        con = sqlite3.connect(databasename, check_same_thread=False)
+        cur = con.cursor()
+        cur.executemany(f"UPDATE journal SET upload_dtstr = '{version}' WHERE file_id = ?", matched)
+        con.commit()
+        con.close()

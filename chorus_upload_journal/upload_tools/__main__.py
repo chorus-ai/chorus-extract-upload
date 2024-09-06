@@ -15,6 +15,8 @@ from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
 from chorus_upload_journal.upload_tools import upload_ops
 
 
+
+
 # TODO: DONE need to support folder for different file types being located at different places.
 #       each location can be checked for specific set of file types.
 # TODO: DONE group authentication parameters
@@ -57,18 +59,18 @@ def _print_usage(args, config, journal_fn):
     print("  -v or --verbose:  verbose output")
     print("  -c or --config:   config file (defaults to config.toml in the script directory) with storage path locations")
     print("generating journal")
-    print("  update-journal:    python chorus_upload_journal/uplaod_tools --config ./config.toml update")
-    print("             python chorus_upload_journal/uplaod_tools update --modalities Waveforms,Images,OMOP")
+    print("  update-journal:    python chorus_upload_journal/upload_tools --config ./config.toml update")
+    print("             python chorus_upload_journal/upload_tools update --modalities Waveforms,Images,OMOP")
     print("generating upload file list")
-    print("  list-files:    python chorus_upload_journal/uplaod_tools select")
-    print("             python chorus_upload_journal/uplaod_tools select --version 20210901120000 -f filelist.txt")
+    print("  list-files:    python chorus_upload_journal/upload_tools select")
+    print("             python chorus_upload_journal/upload_tools select --version 20210901120000 -f filelist.txt")
     print("uploading to and verifying with central")
-    print("  upload-files:    python chorus_upload_journal/uplaod_tools upload ")
-    print("             python chorus_upload_journal/uplaod_tools upload --modalities Images")
-    print("  verify-files:    python chorus_upload_journal/uplaod_tools verify --modalities Images --version 20210901120000")
+    print("  upload-files:    python chorus_upload_journal/upload_tools upload ")
+    print("             python chorus_upload_journal/upload_tools upload --modalities Images")
+    print("  verify-files:    python chorus_upload_journal/upload_tools verify --modalities Images --version 20210901120000")
     # print("working with journals:")
-    # print("  list:      python chorus_upload_journal/uplaod_tools list-versions")
-    # print("  revert:    python chorus_upload_journal/uplaod_tools revert-version --version 20210901120000")
+    # print("  list:      python chorus_upload_journal/upload_tools list-versions")
+    # print("  revert:    python chorus_upload_journal/upload_tools revert-version --version 20210901120000")
     
         
 # helper to call update journal
@@ -98,45 +100,138 @@ def _update_journal(args, config, journal_fn):
 #     print("Revert to: ", revert_time)
 #     restore_journal(journal_fn, revert_time)
     
-def _write_files(file_list, dt, outfilename, outtype : str = "list"):
-    if args.output_file is None:
-        return
-    fn = outfilename + "_" + dt
-    with open(fn, 'w') as f:
+# only works with azure dest for now.
+def _write_files(file_list: list, dt: str, filename : str, **kwargs):
+    out_type = kwargs.get('out_type', '').lower()
+    dest_config = kwargs.get('dest_config', {})
+    account_name = dest_config.get('azure_account_name', '')
+    sas_token = dest_config.get('azure_sas_token', '')
+    container = dest_config.get('azure_container', '')
+    config_fn = kwargs.get('config_fn', '')
         
-#         if (outtype == "azcli"):
-#             f.write("#!/bin/sh\n\n")
-#             f.write("script to upload files to azure for upload date " + dt + "\n")
+    if account_name is None or account_name == "":
+        print("ERROR: destination is not an azure path")
+        raise ValueError("Destination is not an azure path")
+        
+    p = Path(filename)
+    fn = "_".join([p.stem, dt]) + p.suffix
+    print("list written to ", fn)
+    with open(fn, 'w') as f:
+        # if windows, use double backslash
+        if (out_type == "azcli"):
+            if dt != "NEW":
+                print("ERROR: cannot generate azcli script for existing file upload version", dt)
+                return
+            
+            if (os.name == 'nt'):
+                # BATCH FILE FORMAT
+                f.write("@echo off\r\n")
+                f.write("setlocal\r\n")
+                f.write("set dt=%date:~10,4%%date:~4,2%%date:~7,2%%time:~0,2%%time:~3,2%%time:~6,2%\r\n")
+                f.write("\r\n")
+                f.write("REM set environment variables\r\n")
+                f.write("set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\r\n")
+                f.write("\r\n")
+                f.write("REM login to azure\r\n")
+                f.write(f"set account={account_name}\r\n")
+                f.write(f"set sas_token=\"{sas_token}\"\r\n")
+                f.write(f"set container={container}\r\n")
+                f.write("\r\n")
+                f.write("echo PLEASE add your virtual environment activation string if any.\r\n")
+                f.write("\r\n")
+                f.write("REM upload files\r\n")
+                f.write("if exist azcli.log del azcli.log\r\n")
+                f.write("type nul > azcli.log\r\n")
+                
+                for root, fn in file_list:
+                    local_file = "\\".join([root, fn])
+                    local_file = local_file.replace("/", "\\")
+                    f.write(f"az storage blob upload --account-name %account% --sas-token %sas_token% --container-name %container% --name %dt%/" + fn + " --file " + local_file + "\r\n")
+                    f.write("echo " + fn + " >> azcli.log\r\n")
+                                           
+                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list azcli.log --version ${dt}\r\n")            
 
-#             f.write("# set environment variables\n")
-#             f.write("AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\n")
+            else:
+                f.write("#!/bin/bash\n")
+                f.write("# script to upload files to azure for upload date " + dt + "\n")
+                f.write("dt=`date '+%Y%m%d%H%M%S'`\n")
+                f.write("\n")
+                f.write("# set environment variables\n")
+                f.write("export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\n")
+                f.write("\n")
+                
+                f.write("# login to azure\n")
+                f.write(f"account=\"{account_name}\"\n")
+                f.write(f"sas_token=\"{sas_token}\"\n")
+                f.write(f"container=\"{container}\"\n")
+                f.write("\n")
+                
+                f.write("echo PLEASE add your virtual environment activation string if any.\n")
+                f.write("\n")
+                f.write("# upload files\n")
+                f.write("if [ -e 'azcli.log' ]; then\n")
+                f.write("    rm azcli.log\n")
+                f.write("fi\n")
+                f.write("touch azcli.log\n")
             
-#             f.write("# login to azure\n")
-#             f.write("az login\n")
-            
-#             f.write("# upload files for \n")
-#             f.write("CHORUS_URL = {PLEASE FILL IN}")
-            
-#             for f in file_list:
-#                 f.write("az storage blob upload --account-name {account} --sas-token {sas_token} --container-name {container} --name {fn} --file {root}{fn}\n")            
-            
-#             f.write("# update journal with upload date-time " + dt + "\n")
-#             account_url = something
-#             az_path = something
-#             f.write("python chorus_upload_journal/uplaod_tools verify --central-path " + central_url + " --central-azure-account-url " + account_url + " --journal ./journal.db --set-time " + dt + "\n")
-#         elif (outtype == "azcopy"):
-#             ...
-#         else:
-        f.write("\n".join(file_list))
+                for root, fn in file_list:
+                    local_file = "/".join([root, fn])
+                    f.write("az storage blob upload --account-name ${account} --sas-token \"${sas_token}\" --container-name ${container} --name ${dt}/" + fn + " --file " + local_file + "\n")     
+                    f.write("echo " + fn + " >> azcli.log\n")
+                                           
+                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list azcli.log --version ${dt}\n")
+                
+        elif (out_type == "azcopy"):
+            print("ERROR: azcopy not implemented yet")
+        else:
+            filenames = ["/".join([root, fn]) for (root, fn) in file_list]
+            if (os.name == 'nt'):
+                f.write("\n\r".join([fn.replace("/", "\\") for fn in filenames]))
+            else:
+                f.write("\n".join(filenames))
+                
             
 # helper to display/save files to upload
 def _select_files(args, config, journal_fn):
     
-    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
-    file_list = list_files(journal_fn, version = args.version, modalities = mods, verbose=args.verbose)
-    dt = args.version if args.version else "un-uploaded"
-    _write_files(file_list, dt, args.output_file)
+    # get the local path and central path and credentials
     
+    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
+    # do one modality at a time
+    dt = args.version if args.version else "NEW"
+
+    if (args.output_file is None) or (args.output_file == ""):
+        for mod in mods:
+            mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
+            mod_path = config_helper.get_site_config(config, mod)['path']
+
+            print("files for version: ", dt, " root at ", mod_path )
+            print("\n".join(mod_files))    
+    else:
+        central = config_helper.get_central_config(config)
+        file_list = []
+        for mod in mods:
+            mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
+            mod_path = config_helper.get_site_config(config, mod)['path']
+
+            file_list += [(mod_path, f) for f in mod_files]
+    
+        _write_files(file_list, dt, filename = args.output_file, out_type = args.output_type, dest_config = central, config_fn = args.config)
+    
+    
+def _mark_as_uploaded(args, config, journal_fn):
+    version = args.version
+    file = args.file
+    filelist = args.file_list
+    central_config = config_helper.get_central_config(config)
+    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))    
+    
+    if (filelist is not None):
+        with open(filelist, 'r') as f:
+            files = [fn.strip() for fn in f.readlines()]
+            upload_ops.mark_as_uploaded(centralfs, journal_fn, version, files, verbose = args.verbose)
+    else:
+        upload_ops.mark_as_uploaded(centralfs, journal_fn, version, [file], verbose = args.verbose)
 
 # helper to upload files
 def _upload_files(args, config, journal_fn):
@@ -187,7 +282,7 @@ if __name__ == "__main__":
     parser_help.set_defaults(func = _print_usage)
     
     #------ authentication help
-    parser_auth = subparsers.add_parser("config_help", help = "show help information about the configuration file")
+    parser_auth = subparsers.add_parser("config-help", help = "show help information about the configuration file")
     parser_auth.set_defaults(func = config_helper._print_config_usage)
     
     #------ create the parser for the "update" command
@@ -213,7 +308,7 @@ if __name__ == "__main__":
     parser_select.add_argument("--version", help="datetime of an upload (use list to get date times).  defaults to all un-uploaded files.", required=False)
     parser_select.add_argument("--modalities", help="list of modalities to include in the journal update. defaults to all.  case sensitive.", required=False)
     parser_select.add_argument("--output-file", help="output file", required=False)
-    # parser_select.add_argument("--output-type", help="the output file type: [list | azcli | azcopy].  azcli and azcopy are executable scripts.", required=False)
+    parser_select.add_argument("--output-type", help="the output file type: [list | azcli | azcopy].  azcli and azcopy are executable scripts.", required=False)
     parser_select.set_defaults(func = _select_files)
     
     parser_upload = subparsers.add_parser("upload-files", help = "upload files to server")
@@ -223,6 +318,12 @@ if __name__ == "__main__":
     # optional list of files. if not present, use current journal
     # when upload, mark the journal version as uploaded.
     parser_upload.set_defaults(func = _upload_files)
+
+    parser_mark = subparsers.add_parser("mark-as-uploaded", help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
+    parser_mark.add_argument("--version", help="datetime of an upload (use list to get date times).", required=True)
+    parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
+    parser_mark.add_argument("--file-list", help="file list to check.  version/file is the path in the central azure environment", required=False)
+    parser_mark.set_defaults(func = _mark_as_uploaded)
     
     parser_verify = subparsers.add_parser("verify-files", help = "verify journal with file system.  WARNING files will be downloaded for md5 computation")
     parser_verify.add_argument("--version", help="datetime of an upload (use list to get date times).  defaults to most recent uploaded files.", required=False)
@@ -252,7 +353,7 @@ if __name__ == "__main__":
     config = config_helper.load_config(config_fn)
     upload_method = config_helper.get_upload_methods(config)
     
-    if (args.command not in ["config_help", "usage", "unlock"]):
+    if (args.command not in ["config-help", "usage", "unlock-journal"]):
         journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config)
         
         #     # push up a lock file.
