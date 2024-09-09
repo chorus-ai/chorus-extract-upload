@@ -16,13 +16,13 @@ requires-python = ">=3.10"
 dependencies = [
     "numpy",
     "pandas",
-    "cloudpathlib",
-    "cloudpathlib[azure]",
+    "cloudpathlib == 0.18.1",
+    "cloudpathlib[azure] == 0.18.1",
     "tomli"
 ]
 
 [project.optional-dependencies]
-s3 = ["cloudpathlib[s3]",
+s3 = ["cloudpathlib[s3] == 0.18.1",
 ]
-gs = ["cloudpathlib[gs]",
+gs = ["cloudpathlib[gs] == 0.18.1",
 ]

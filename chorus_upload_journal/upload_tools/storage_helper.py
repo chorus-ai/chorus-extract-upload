@@ -152,7 +152,8 @@ def __make_az_client(auth_params: dict):
 
     from cloudpathlib import AzureBlobClient
     if azure_account_url:
-        return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, credential = None, connection_verify = False, connection_cert = None))
+        print("azure_account_url", azure_account_url)
+        return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, connection_verify = False, connection_cert = None))
     elif azure_storage_connection_string:
         # connection string specified, then use it
         return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string, connection_verify = False, connection_cert = None))
@@ -426,17 +427,59 @@ class FileSystemHelper:
         # all pathlib and cloudpathlib paths can use "/"
         
         pattern = pattern if pattern is not None else "**/*"
-        
+        # convert pattern to be case insensitive
+        print("INFO: getting list of files for ", pattern)
         # not using rglob as it does too much matching.
+        # case_sensitive is a pathlib 3.12+ feature.
+        count = 0
         for f in self.root.glob(pattern):  # this may be inconsistently implemented in different clouds.
             if not f.is_file():
                 continue
             
             paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client = self.client))
+            count += 1
+            if (count % 1000) == 0:
+                print("Found ", count, " files", flush=True)
             
+        print(".", flush=True)
+        print("INFO: completed retrieveing files.")
         # return relative path
         return paths
     
+
+
+    def get_files_iter(self, pattern: str = None, page_size: int = 1000):
+        """
+        Yields file paths within the specified subpath.
+
+        Args:
+            pattern (str, optional): The subpath within the root directory to search for files. Defaults to None. Can prefix with "*/" or "**/" for more levels of recursion.
+
+        Yields:
+            str: A file path relative to the root directory.
+        """
+
+        pattern = pattern if pattern is not None else "**/*"
+        print("INFO: getting list of files for ", pattern)
+        paths = []
+        count = 0
+        for f in self.root.glob(pattern):
+            if not f.is_file():
+                continue
+            
+            paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client))
+            count += 1
+            if count >= page_size:
+                # print("Found ", count, " files", flush=True)
+                yield paths
+                paths = []
+                count = 0
+        
+        if (count > 0):
+            yield paths
+        print("INFO: completed retrieving files.")
+        
+
 
     # copy 1 file from one location to another.
     def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False):

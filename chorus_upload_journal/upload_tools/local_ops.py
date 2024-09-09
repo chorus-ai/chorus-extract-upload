@@ -95,53 +95,142 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
     
     for modality in modalities:
         start = time.time()
-        pattern = f"{modality}/**/*" if modality == "OMOP" else f"*/{modality}/**/*"
-        paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
-        # paths += paths1
-        print("Get File List took ", time.time() - start)
-
-
-        nthreads = max(1, os.cpu_count() - 2)
-        with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = []
-            for relpath in paths:
-                if verbose:
-                    print("INFO: scanning ", relpath)
-                future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp)
-                futures.append(future)
+        # pattern = f"{modality}/**/*" if modality == "OMOP" else f"*/{modality}/**/*"
+        if (modality.lower() == "waveforms"):
+            pattern = "*/[wW][aA][vV][eE][fF][oO][rR][mM][sS]/**/*"
+        elif (modality.lower() == "images"):
+            pattern = "*/[iI][mM][aA][gG][eE][sS]/**/*"
+        elif (modality.lower() == "omop"):
+            pattern = "[oO][mM][oO][pP]/**/*"
+        else:
+            pattern = f"*/{modality}/**/*"
             
-            for future in concurrent.futures.as_completed(futures):
-                myargs = future.result()
-                rlpath = myargs[1]
-                status = myargs[7]
-                if verbose and status == "ADDED":
-                    print("INFO: ADDED ", rlpath)
-                all_args.append(myargs)
+        
+        nthreads = max(1, os.cpu_count() - 2)
+        page_size = 1000
+        total_count = 0
+        with concurrent.futures.ThreadPoolExecutor() as executor:
+
+            for paths in root.get_files_iter(pattern, page_size = page_size):
+                # list of relative paths in posix format and in string form.
+                futures = []
+
+                for relpath in paths:
+                    if verbose:
+                        print("INFO: scanning ", relpath)
+                    future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp)
+                    futures.append(future)
+                
+                for future in concurrent.futures.as_completed(futures):
+                    myargs = future.result()
+                    rlpath = myargs[1]
+                    status = myargs[7]
+                    if verbose and status == "ADDED":
+                        print("INFO: ADDED ", rlpath)
+                    else:
+                        print(".", end="", flush=True)
+                        
+                    all_args.append(myargs)
+
+                con = sqlite3.connect(databasename, check_same_thread=False)
+                cur = con.cursor()
+
+                try:
+                    cur.executemany("INSERT INTO journal ( \
+                        PERSON_ID, \
+                        FILEPATH, \
+                        MODALITY, \
+                        SRC_MODTIME_us, \
+                        SIZE, \
+                        MD5, \
+                        TIME_VALID_us, \
+                        STATE, \
+                        MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+                except sqlite3.IntegrityError as e:
+                    print("ERROR: create ", e)
+                    print(all_args)
+                        
+                con.commit() 
+                con.close()
+                total_count += len(all_args)
+                print("INFO: Added ", total_count, " files to journal.db" )
+                all_args = []
+        
+        print("INFO: Journal Update took ", time.time() - start, "s")
+        
+        # paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
+        # # paths += paths1
+        # print("Get File List took ", time.time() - start)
 
 
-        start = time.time()
-        if len(all_args) > 0:
-            con = sqlite3.connect(databasename, check_same_thread=False)
-            cur = con.cursor()
-
-            try:
-                cur.executemany("INSERT INTO journal ( \
-                    PERSON_ID, \
-                    FILEPATH, \
-                    MODALITY, \
-                    SRC_MODTIME_us, \
-                    SIZE, \
-                    MD5, \
-                    TIME_VALID_us, \
-                    STATE, \
-                    MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
-            except sqlite3.IntegrityError as e:
-                print("ERROR: create ", e)
-                print(all_args)
+        # nthreads = max(1, os.cpu_count() - 2)
+        # with concurrent.futures.ThreadPoolExecutor() as executor:
+        #     futures = []
+        #     for relpath in paths:
+        #         if verbose:
+        #             print("INFO: scanning ", relpath)
+        #         future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp)
+        #         futures.append(future)
+            
+        #     for future in concurrent.futures.as_completed(futures):
+        #         myargs = future.result()
+        #         rlpath = myargs[1]
+        #         status = myargs[7]
+        #         if verbose and status == "ADDED":
+        #             print("INFO: ADDED ", rlpath)
+        #         else:
+        #             print(".", end="", flush=True)
                     
-            con.commit() 
-            con.close()
-        print("SQLITE insert took ", time.time() - start)
+        #         all_args.append(myargs)
+
+        #         if len(all_args) >= 1000:
+        #             con = sqlite3.connect(databasename, check_same_thread=False)
+        #             cur = con.cursor()
+
+        #             try:
+        #                 cur.executemany("INSERT INTO journal ( \
+        #                     PERSON_ID, \
+        #                     FILEPATH, \
+        #                     MODALITY, \
+        #                     SRC_MODTIME_us, \
+        #                     SIZE, \
+        #                     MD5, \
+        #                     TIME_VALID_us, \
+        #                     STATE, \
+        #                     MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+        #             except sqlite3.IntegrityError as e:
+        #                 print("ERROR: create ", e)
+        #                 print(all_args)
+                            
+        #             con.commit() 
+        #             con.close()
+        #             print("INFO: Added ", len(all_args), " files to journal.db" )
+        #             all_args = []
+
+
+        # start = time.time()
+        # if len(all_args) > 0:
+        #     con = sqlite3.connect(databasename, check_same_thread=False)
+        #     cur = con.cursor()
+
+        #     try:
+        #         cur.executemany("INSERT INTO journal ( \
+        #             PERSON_ID, \
+        #             FILEPATH, \
+        #             MODALITY, \
+        #             SRC_MODTIME_us, \
+        #             SIZE, \
+        #             MD5, \
+        #             TIME_VALID_us, \
+        #             STATE, \
+        #             MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+        #     except sqlite3.IntegrityError as e:
+        #         print("ERROR: create ", e)
+        #         print(all_args)
+                    
+        #     con.commit() 
+        #     con.close()
+        # print("SQLITE insert took ", time.time() - start)
 
 def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict):
     # get information about the current file
@@ -255,21 +344,30 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
 
     modalities = modalities if modalities else DEFAULT_MODALITIES
     
-
+    page_size = 1000
     paths = []
     all_insert_args = []
     all_del_args = []
-    files_to_inactivate = {}
+    total_count = 0
     for modality in modalities:
-        pattern = f"{modality}/**/*" if modality == "OMOP" else f"*/{modality}/**/*"
-        paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
+        start = time.time()
+        
+        if (modality.lower() == "waveforms"):
+            pattern = "*/[wW][aA][vV][eE][fF][oO][rR][mM][sS]/**/*"
+        elif (modality.lower() == "images"):
+            pattern = "*/[iI][mM][aA][gG][eE][sS]/**/*"
+        elif (modality.lower() == "omop"):
+            pattern = "[oO][mM][oO][pP]/**/*"
+        else:
+            pattern = f"*/{modality}/**/*"
+            
 
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         # get all active files, these are active-pending-delete until the file is found in filesystem
         activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr from journal where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
         con.close()
-        
+
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
         modality_files_to_inactivate = {}
         for i in activefiletuples:
@@ -281,87 +379,222 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
 
         nthreads = max(1, os.cpu_count() - 2)
         with concurrent.futures.ThreadPoolExecutor() as executor:
-            futures = []
-            for relpath in paths:
-                if verbose:
-                    print("INFO: scanning ", relpath)
-                future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
-                futures.append(future)
             
-            for future in concurrent.futures.as_completed(futures):
-                myargs = future.result()
-                status = myargs[8]
-                rlpath = myargs[1]
-                if status == "ERROR1":
-                    print("ERROR: Multiple active files with that path - journal is not consistent", relpath)
-                elif status == "ERROR2":
-                    print("ERROR: File found but no metadata.", rlpath)
-                elif status == "ERROR3":
-                    print("ERROR: File size is different but modtime is the same.", rlpath)
-                elif status == "KEEP":
-                    del modality_files_to_inactivate[myargs[1]]
-                else:
+            for paths in root.get_files_iter(pattern, page_size = page_size ):  # list of relative paths in posix format and in string form.
+                futures = []
+
+                for relpath in paths:
                     if verbose:
-                        if status == "MOVED":
-                            print("INFO: COPIED/MOVED ", rlpath)
-                        elif status == "UPDATED":
-                            print("INFO: UPDATED ", rlpath)
-                        elif status == "ADDED":
-                            print("INFO: ADDED ", rlpath)
-                    all_insert_args.append(myargs)
-        
-        # update the modality_files_to_inactivate with the new files to inactivate.
-        files_to_inactivate.update(modality_files_to_inactivate)
-
-        # for all files that were active but aren't there anymore
-        # invalidate in journal
-        
-        for relpath, vals in modality_files_to_inactivate.items():
-            # check if there are non alphanumeric characters in the path
-            # if so, print out the path
-            if not (relpath.isalnum() or relpath.isascii()):
-                print("INFO: Path contains non-alphanumeric characters:", relpath)
-            if verbose:
-                if (relpath in paths):
-                    print("INFO: OUTDATED  ", relpath)
-                else:
-                    print("INFO: DELETED  ", relpath)
-            state = "OUTDATED" if (relpath in paths) else "DELETED"
-            for v in vals:
-                all_del_args.append((curtimestamp, state, v[0]))
-        # print("SQLITE update arguments ", all_del_args)
-
-    if (len(all_insert_args) > 0) or (len(all_del_args) > 0):
-        # back up only on upload
-        # backup_journal(databasename)
-        
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
-
-        try:
-            if len(all_insert_args) > 0:
-                cur.executemany("INSERT INTO journal (\
-                    PERSON_ID, \
-                    FILEPATH, \
-                    MODALITY, \
-                    SRC_MODTIME_us, \
-                    SIZE, \
-                    MD5, \
-                    TIME_VALID_us, \
-                    UPLOAD_DTSTR, \
-                    STATE, \
-                    MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
-        except sqlite3.IntegrityError as e:
-            print("ERROR: update ", e)
-            print(all_insert_args)
+                        print("INFO: scanning ", relpath)
+                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
+                    futures.append(future)
+                
+                for future in concurrent.futures.as_completed(futures):
+                    myargs = future.result()
+                    status = myargs[8]
+                    rlpath = myargs[1]
+                    if status == "ERROR1":
+                        print("ERROR: Multiple active files with that path - journal is not consistent", relpath)
+                    elif status == "ERROR2":
+                        print("ERROR: File found but no metadata.", rlpath)
+                    elif status == "ERROR3":
+                        print("ERROR: File size is different but modtime is the same.", rlpath)
+                    elif status == "KEEP":
+                        del modality_files_to_inactivate[myargs[1]]
+                    else:
+                        if verbose:
+                            if status == "MOVED":
+                                print("INFO: COPIED/MOVED ", rlpath)
+                            elif status == "UPDATED":
+                                print("INFO: UPDATED ", rlpath)
+                            elif status == "ADDED":
+                                print("INFO: ADDED ", rlpath)
+                        all_insert_args.append(myargs)
             
-        if (len(all_del_args) > 0):
-            cur.executemany("UPDATE journal SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
+                    # back up only on upload
+                    # backup_journal(databasename)
+                    
+                # save to database
+                con = sqlite3.connect(databasename, check_same_thread=False)
+                cur = con.cursor()
+
+                try:
+                    cur.executemany("INSERT INTO journal (\
+                        PERSON_ID, \
+                        FILEPATH, \
+                        MODALITY, \
+                        SRC_MODTIME_us, \
+                        SIZE, \
+                        MD5, \
+                        TIME_VALID_us, \
+                        UPLOAD_DTSTR, \
+                        STATE, \
+                        MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+                except sqlite3.IntegrityError as e:
+                    print("ERROR: update ", e)
+                    print(all_insert_args)
+                    
+                con.commit() 
+                con.close()
+                total_count += len(all_insert_args)
+                print("INFO: Added ", total_count, " files to journal.db" )
+                all_insert_args = []
+
+            # for all files that were active but aren't there anymore
+            # invalidate in journal
             
-        con.commit() 
-        con.close()
-    else:
-        print("INFO: Nothing to change in journal.")
+            for relpath, vals in modality_files_to_inactivate.items():
+                # check if there are non alphanumeric characters in the path
+                # if so, print out the path
+                if not (relpath.isalnum() or relpath.isascii()):
+                    print("INFO: Path contains non-alphanumeric characters:", relpath)
+                if verbose:
+                    if (relpath in paths):
+                        print("INFO: OUTDATED  ", relpath)
+                    else:
+                        print("INFO: DELETED  ", relpath)
+                state = "OUTDATED" if (relpath in paths) else "DELETED"
+                for v in vals:
+                    all_del_args.append((curtimestamp, state, v[0]))
+            # print("SQLITE update arguments ", all_del_args)
+
+            if (len(all_del_args) > 0):
+                # back up only on upload
+                # backup_journal(databasename)
+                
+                con = sqlite3.connect(databasename, check_same_thread=False)
+                cur = con.cursor()
+
+                try:
+                    if (len(all_del_args) > 0):
+                        cur.executemany("UPDATE journal SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
+                        
+                        print("Inactivated ", len(all_del_args), " from Journal")
+                except sqlite3.IntegrityError as e:
+                    print("ERROR: delete ", e)
+                    print(all_del_args)
+                        
+                con.commit() 
+                con.close()
+            else:
+                print("INFO: Nothing to change in journal for modality ", modality)
+            
+        print("INFO: Journal Update Elapsed time ", time.time() - start, "s")
+
+
+        #     paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
+            
+        #     for relpath in paths:
+        #         if verbose:
+        #             print("INFO: scanning ", relpath)
+        #         future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
+        #         futures.append(future)
+            
+        #     for future in concurrent.futures.as_completed(futures):
+        #         myargs = future.result()
+        #         status = myargs[8]
+        #         rlpath = myargs[1]
+        #         if status == "ERROR1":
+        #             print("ERROR: Multiple active files with that path - journal is not consistent", relpath)
+        #         elif status == "ERROR2":
+        #             print("ERROR: File found but no metadata.", rlpath)
+        #         elif status == "ERROR3":
+        #             print("ERROR: File size is different but modtime is the same.", rlpath)
+        #         elif status == "KEEP":
+        #             del modality_files_to_inactivate[myargs[1]]
+        #         else:
+        #             if verbose:
+        #                 if status == "MOVED":
+        #                     print("INFO: COPIED/MOVED ", rlpath)
+        #                 elif status == "UPDATED":
+        #                     print("INFO: UPDATED ", rlpath)
+        #                 elif status == "ADDED":
+        #                     print("INFO: ADDED ", rlpath)
+        #             all_insert_args.append(myargs)
+        
+
+        #         if (len(all_insert_args) > 1000):
+        #             # back up only on upload
+        #             # backup_journal(databasename)
+                    
+        #             con = sqlite3.connect(databasename, check_same_thread=False)
+        #             cur = con.cursor()
+
+        #             try:
+        #                 cur.executemany("INSERT INTO journal (\
+        #                     PERSON_ID, \
+        #                     FILEPATH, \
+        #                     MODALITY, \
+        #                     SRC_MODTIME_us, \
+        #                     SIZE, \
+        #                     MD5, \
+        #                     TIME_VALID_us, \
+        #                     UPLOAD_DTSTR, \
+        #                     STATE, \
+        #                     MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+        #             except sqlite3.IntegrityError as e:
+        #                 print("ERROR: update ", e)
+        #                 print(all_insert_args)
+                        
+        #             con.commit() 
+        #             con.close()
+        #             print("INFO: Added ", len(all_insert_args), " files to journal.db" )
+        #             all_insert_args = []
+
+        # # for all files that were active but aren't there anymore
+        # # invalidate in journal
+        
+        # for relpath, vals in modality_files_to_inactivate.items():
+        #     # check if there are non alphanumeric characters in the path
+        #     # if so, print out the path
+        #     if not (relpath.isalnum() or relpath.isascii()):
+        #         print("INFO: Path contains non-alphanumeric characters:", relpath)
+        #     if verbose:
+        #         if (relpath in paths):
+        #             print("INFO: OUTDATED  ", relpath)
+        #         else:
+        #             print("INFO: DELETED  ", relpath)
+        #     state = "OUTDATED" if (relpath in paths) else "DELETED"
+        #     for v in vals:
+        #         all_del_args.append((curtimestamp, state, v[0]))
+        # # print("SQLITE update arguments ", all_del_args)
+
+        # if (len(all_insert_args) > 0) or (len(all_del_args) > 0):
+        #     # back up only on upload
+        #     # backup_journal(databasename)
+            
+        #     con = sqlite3.connect(databasename, check_same_thread=False)
+        #     cur = con.cursor()
+
+        #     try:
+        #         if len(all_insert_args) > 0:
+        #             cur.executemany("INSERT INTO journal (\
+        #                 PERSON_ID, \
+        #                 FILEPATH, \
+        #                 MODALITY, \
+        #                 SRC_MODTIME_us, \
+        #                 SIZE, \
+        #                 MD5, \
+        #                 TIME_VALID_us, \
+        #                 UPLOAD_DTSTR, \
+        #                 STATE, \
+        #                 MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+                    
+        #     except sqlite3.IntegrityError as e:
+        #         print("ERROR: update ", e)
+        #         print(all_insert_args)
+
+        #     try:
+        #         if (len(all_del_args) > 0):
+        #             cur.executemany("UPDATE journal SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
+        #     except sqlite3.IntegrityError as e:
+        #         print("ERROR: delete ", e)
+        #         print(all_del_args)
+                    
+        #     con.commit() 
+        #     con.close()
+        # else:
+        #     print("INFO: Nothing to change in journal for modality ", modality)
         
 
 

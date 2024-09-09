@@ -85,6 +85,7 @@ import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 def checkout_journal(config):
     #============= get the journal file name and path obj  (download from cloud to local)
     journal_path_str = config_helper.get_journal_config(config)["path"]  # full file name
+    print(config_helper.get_journal_config(config))
     journal_path = FileSystemHelper(journal_path_str, client = storage_helper._make_client(config_helper.get_journal_config(config)))
     
     # if not cloud, then we are done.
