@@ -152,7 +152,6 @@ def __make_az_client(auth_params: dict):
 
     from cloudpathlib import AzureBlobClient
     if azure_account_url:
-        print("azure_account_url", azure_account_url)
         return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, connection_verify = False, connection_cert = None))
     elif azure_storage_connection_string:
         # connection string specified, then use it
@@ -395,7 +394,8 @@ class FileSystemHelper:
                         content_settings.content_md5 = md5.digest()
                         blob_client.set_http_headers(content_settings = content_settings)
                         md5_str = md5.hexdigest()
-                        print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5, " hex ", content_settings.content_md5.hex(), " hex digtest ", md5_str)
+                        # print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5, " hex ", content_settings.content_md5.hex(), " hex digtest ", md5_str)
+                        print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5.hex())
 
                     else:
                         md5_str = None
