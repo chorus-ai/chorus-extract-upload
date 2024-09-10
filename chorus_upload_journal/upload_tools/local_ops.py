@@ -26,7 +26,7 @@ def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODA
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path
-PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images)/.*")
+PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images)/.*", re.IGNORECASE)
 
 def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, curtimestamp:int):
     # print(i_path, relpath)
