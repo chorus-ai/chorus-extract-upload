@@ -46,6 +46,7 @@
 
 from cloudpathlib import AnyPath, CloudPath, S3Path, AzureBlobPath, GSPath
 from cloudpathlib.client import Client
+from cloudpathlib.enums import FileCacheMode
 from pathlib import Path, WindowsPath, PureWindowsPath, PurePosixPath, PosixPath
 import hashlib
 import math
@@ -91,14 +92,14 @@ def __make_aws_client(auth_params: dict):
     from cloudpathlib import S3Client
     if aws_session_token:  # preferred.
         # session token specified, then use it
-        return S3Client(aws_session_token = aws_session_token)
+        return S3Client(aws_session_token = aws_session_token, file_cache_mode = FileCacheMode.cloudpath_object)
     elif aws_access_key_id and aws_secret_access_key:
         # access key and secret key specified, then use it
         return S3Client(access_key_id = aws_access_key_id, 
-                        secret_access_key = aws_secret_access_key)
+                        secret_access_key = aws_secret_access_key, file_cache_mode = FileCacheMode.cloudpath_object)
     elif aws_profile:
         # profile specified, then use it
-        return S3Client(profile_name = aws_profile)
+        return S3Client(profile_name = aws_profile, file_cache_mode = FileCacheMode.cloudpath_object)
     
     aws_session_token = aws_session_token if aws_session_token else os.environ.get("AWS_SESSION_TOKEN")
     aws_profile = aws_profile if aws_profile else "default"
@@ -107,17 +108,17 @@ def __make_aws_client(auth_params: dict):
     
     if aws_session_token:  # preferred.
         # session token specified, then use it
-        return S3Client(aws_session_token = aws_session_token)
+        return S3Client(aws_session_token = aws_session_token, file_cache_mode = FileCacheMode.cloudpath_object)
     elif aws_access_key_id and aws_secret_access_key:
         # access key and secret key specified, then use it
         return S3Client(access_key_id = aws_access_key_id, 
-                        secret_access_key = aws_secret_access_key)
+                        secret_access_key = aws_secret_access_key, file_cache_mode = FileCacheMode.cloudpath_object)
     elif aws_profile:
         # profile specified, then use it
-        return S3Client(profile_name = aws_profile)
+        return S3Client(profile_name = aws_profile, file_cache_mode = FileCacheMode.cloudpath_object)
         
     # default profile
-    return S3Client()
+    return S3Client(file_cache_mode = FileCacheMode.cloudpath_object)
 
 # internal helper to create the cloud client
 def __make_az_client(auth_params: dict):
@@ -152,24 +153,24 @@ def __make_az_client(auth_params: dict):
 
     from cloudpathlib import AzureBlobClient
     if azure_account_url:
-        return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, connection_verify = False, connection_cert = None))
+        return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, connection_verify = False, connection_cert = None), file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
         # connection string specified, then use it
-        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string, connection_verify = False, connection_cert = None))
+        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string, connection_verify = False, connection_cert = None), file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string_env:
-        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string_env, connection_verify = False, connection_cert = None))
+        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string_env, connection_verify = False, connection_cert = None), file_cache_mode = FileCacheMode.cloudpath_object)
     else:
         raise ValueError("No viable Azure account info available to open connection")
         
     # from cloudpathlib import AzureBlobClient
     # if azure_account_url:
-    #     return AzureBlobClient(account_url=azure_account_url)
+    #     return AzureBlobClient(account_url=azure_account_url, file_cache_mode = FileCacheMode.cloudpath_object)
     # elif azure_storage_connection_string:
     #     # connection string specified, then use it
-    #     return AzureBlobClient(connection_string = azure_storage_connection_string)
+    #     return AzureBlobClient(connection_string = azure_storage_connection_string, file_cache_mode = FileCacheMode.cloudpath_object)
     # elif azure_storage_connection_string_env:
     #     # connection string specified, then use it
-    #     return AzureBlobClient(connection_string = azure_storage_connection_string_env)
+    #     return AzureBlobClient(connection_string = azure_storage_connection_string_env, file_cache_mode = FileCacheMode.cloudpath_object)
     # else:
     #     raise ValueError("No viable Azure account info available to open connection")
 

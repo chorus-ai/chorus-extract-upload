@@ -380,61 +380,109 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     step = 100
     
     # nthreads = max(1, os.cpu_count() - 2)
-    nthreads = 2
-    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-        futures = []
-        for fn in files_to_upload:
-            future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
-            futures.append(future)
+    # nthreads = 2
+    # with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
+    #     futures = []
+    #     for fn in files_to_upload:
+    #         future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
+    #         futures.append(future)
         
-        for future in concurrent.futures.as_completed(futures):
-            (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
-            if verbose:
-                print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
-            else:
-                print(".", end="", flush=True)
-            if state == sync_state.MISSING_IN_DB:
-                print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
-                missing_in_db.add(fn2)
-            elif state == sync_state.MISSING_DEST:
-                missing_dest.add(fn2)
-                print("ERROR:  missing file at destination", fn2)
-            elif state == sync_state.MISSING_SRC:
-                print("ERROR:  file not found ", fn2)
-                missing_src.add(fn2)
-            elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
-                print("ERROR: multiple entries in journal for ", fn2)
-                multiple_actives.add(fn2)
-            elif state == sync_state.MATCHED:
-                # merge the updates for matched.
-                matched.add(fn2)
-                update_args.append((upload_ver_str, copy_time, verify_time, fid))
-                del_args += [(upload_ver_str, fid) for fid in del_list]
-                if len(del_list) > 0:
-                    replaced.add(fn2)
-            elif state == sync_state.MISMATCHED:
-                mismatched.add(fn2)
-                print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
+    #     for future in concurrent.futures.as_completed(futures):
+    #         (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
+    #         if verbose:
+    #             print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
+    #         else:
+    #             print(".", end="", flush=True)
+    #         if state == sync_state.MISSING_IN_DB:
+    #             print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
+    #             missing_in_db.add(fn2)
+    #         elif state == sync_state.MISSING_DEST:
+    #             missing_dest.add(fn2)
+    #             print("ERROR:  missing file at destination", fn2)
+    #         elif state == sync_state.MISSING_SRC:
+    #             print("ERROR:  file not found ", fn2)
+    #             missing_src.add(fn2)
+    #         elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
+    #             print("ERROR: multiple entries in journal for ", fn2)
+    #             multiple_actives.add(fn2)
+    #         elif state == sync_state.MATCHED:
+    #             # merge the updates for matched.
+    #             matched.add(fn2)
+    #             update_args.append((upload_ver_str, copy_time, verify_time, fid))
+    #             del_args += [(upload_ver_str, fid) for fid in del_list]
+    #             if len(del_list) > 0:
+    #                 replaced.add(fn2)
+    #         elif state == sync_state.MISMATCHED:
+    #             mismatched.add(fn2)
+    #             print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
 
-            # elif state == sync_state.DELETED:
-            #     deleted.add(fn2)
+    #         # elif state == sync_state.DELETED:
+    #         #     deleted.add(fn2)
             
-            # update the journal - likely not parallelizable.
-            if len(update_args) >= step:
-                con = sqlite3.connect(databasename, check_same_thread=False)
-                cur = con.cursor()
-                try:        
-                    cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
-                    cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
-                except sqlite3.InterfaceError as e:
-                    print("ERROR: update ", e)
-                    print(update_args)
+    #         # update the journal - likely not parallelizable.
+    #         if len(update_args) >= step:
+    #             con = sqlite3.connect(databasename, check_same_thread=False)
+    #             cur = con.cursor()
+    #             try:        
+    #                 cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
+    #                 cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
+    #             except sqlite3.InterfaceError as e:
+    #                 print("ERROR: update ", e)
+    #                 print(update_args)
                     
-                con.commit() 
-                con.close()
-                update_args = []
-                del_args = []
-            # 
+    #             con.commit() 
+    #             con.close()
+    #             update_args = []
+    #             del_args = []
+
+    for fn in files_to_upload:
+        (fn2, state, fid, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, dated_dest_path, databasename)
+
+        if verbose:
+            print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
+        else:
+            print(".", end="", flush=True)
+        if state == sync_state.MISSING_IN_DB:
+            print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
+            missing_in_db.add(fn2)
+        elif state == sync_state.MISSING_DEST:
+            missing_dest.add(fn2)
+            print("ERROR:  missing file at destination", fn2)
+        elif state == sync_state.MISSING_SRC:
+            print("ERROR:  file not found ", fn2)
+            missing_src.add(fn2)
+        elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
+            print("ERROR: multiple entries in journal for ", fn2)
+            multiple_actives.add(fn2)
+        elif state == sync_state.MATCHED:
+            # merge the updates for matched.
+            matched.add(fn2)
+            update_args.append((upload_ver_str, copy_time, verify_time, fid))
+            del_args += [(upload_ver_str, fid) for fid in del_list]
+            if len(del_list) > 0:
+                replaced.add(fn2)
+        elif state == sync_state.MISMATCHED:
+            mismatched.add(fn2)
+            print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
+
+        # elif state == sync_state.DELETED:
+        #     deleted.add(fn2)
+        
+        # update the journal - likely not parallelizable.
+        if len(update_args) >= step:
+            con = sqlite3.connect(databasename, check_same_thread=False)
+            cur = con.cursor()
+            try:        
+                cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
+                cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
+            except sqlite3.InterfaceError as e:
+                print("ERROR: update ", e)
+                print(update_args)
+                
+            con.commit() 
+            con.close()
+            update_args = []
+            del_args = []
     
     #### --------------OLD begin
     # # then copy the files over
@@ -619,33 +667,53 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     large_matched = set()
     mismatched = set()
     # nthreads = max(1, os.cpu_count() - 2)
-    nthreads = 2
-    with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
-        futures = []
-        for file_info in files_to_verify:
-            future = executor.submit(_get_file_info, dated_dest_path, file_info )
-            futures.append(future)
+    # nthreads = 2
+    # with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
+    #     futures = []
+        # for file_info in files_to_verify:
+        #     future = executor.submit(_get_file_info, dated_dest_path, file_info )
+        #     futures.append(future)
             
-        for future in concurrent.futures.as_completed(futures):
-            (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
-            if dest_meta is None:
-                missing.add(fn)
-                print("ERROR:  missing file ", fn)
-                continue
+        # for future in concurrent.futures.as_completed(futures):
+        #     (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
+        #     if dest_meta is None:
+        #         missing.add(fn)
+        #         print("ERROR:  missing file ", fn)
+        #         continue
 
-            if (size == dest_meta['size']) and (md5 == dest_md5):
-                if verbose:
-                    print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
-                else:
-                    print(".", end="", flush=True)
-                matched.add(fn)
-            # elif (dest_md5 is None) and (dest_meta['size'] == size):
-            #     print("INFO: large file, matched by size only ", fn)
-            #     large_matched.add(fn)
+        #     if (size == dest_meta['size']) and (md5 == dest_md5):
+        #         if verbose:
+        #             print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
+        #         else:
+        #             print(".", end="", flush=True)
+        #         matched.add(fn)
+        #     # elif (dest_md5 is None) and (dest_meta['size'] == size):
+        #     #     print("INFO: large file, matched by size only ", fn)
+        #     #     large_matched.add(fn)
+        #     else:
+        #         print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
+        #         mismatched.add(fn)
+        
+    for file_info in files_to_verify:
+        (dest_meta, dest_md5, fid, fn, size, md5) = _get_file_info(dated_dest_path, file_info )
+        if dest_meta is None:
+            missing.add(fn)
+            print("ERROR:  missing file ", fn)
+            continue
+
+        if (size == dest_meta['size']) and (md5 == dest_md5):
+            if verbose:
+                print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
             else:
-                print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
-                mismatched.add(fn)
-                
+                print(".", end="", flush=True)
+            matched.add(fn)
+        # elif (dest_md5 is None) and (dest_meta['size'] == size):
+        #     print("INFO: large file, matched by size only ", fn)
+        #     large_matched.add(fn)
+        else:
+            print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
+            mismatched.add(fn)
+            
     print("INFO:  verified ", len(matched), " files (", len(large_matched), "large files w/o md5)", len(mismatched), " mismatched, ", len(missing), " missing.")
             
     return matched, mismatched, missing
@@ -682,32 +750,52 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
     
     matched = []
     # nthreads = max(1, os.cpu_count() - 2)
-    nthreads = 2
-    with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
-        futures = []
-        for f in files:
-            if f not in db_files:
-                print("ERROR: file ", f, " not found in journal.")
-                continue
+    # nthreads = 2
+    # with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
+    #     futures = []
+    #     for f in files:
+    #         if f not in db_files:
+    #             print("ERROR: file ", f, " not found in journal.")
+    #             continue
         
-            future = executor.submit(_get_file_info2, dated_dest_path, db_files[f] )
-            futures.append(future)
+    #         future = executor.submit(_get_file_info2, dated_dest_path, db_files[f] )
+    #         futures.append(future)
             
-        for future in concurrent.futures.as_completed(futures):
-            (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
-            if dest_meta is None:
-                print("ERROR:  missing file ", fn, " in destination ", dated_dest_path.root)
-                continue
+    #     for future in concurrent.futures.as_completed(futures):
+    #         (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
+    #         if dest_meta is None:
+    #             print("ERROR:  missing file ", fn, " in destination ", dated_dest_path.root)
+    #             continue
 
-            if (size == dest_meta['size']) and (md5 == dest_md5):
-                if verbose:
-                    print("INFO: marking as uploaded", version, " ", fn, " ", fid)
-                else:
-                    print(".", end="", flush=True)
-                matched.append((fid,))
-            else:
-                print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
+    #         if (size == dest_meta['size']) and (md5 == dest_md5):
+    #             if verbose:
+    #                 print("INFO: marking as uploaded", version, " ", fn, " ", fid)
+    #             else:
+    #                 print(".", end="", flush=True)
+    #             matched.append((fid,))
+    #         else:
+    #             print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
                 
+    for f in files:
+        if f not in db_files:
+            print("ERROR: file ", f, " not found in journal.")
+            continue
+    
+        (dest_meta, dest_md5, fid, fn, size, md5) = _get_file_info2( dated_dest_path, db_files[f] )
+        
+        if dest_meta is None:
+            print("ERROR:  missing file ", fn, " in destination ", dated_dest_path.root)
+            continue
+
+        if (size == dest_meta['size']) and (md5 == dest_md5):
+            if verbose:
+                print("INFO: marking as uploaded", version, " ", fn, " ", fid)
+            else:
+                print(".", end="", flush=True)
+            matched.append((fid,))
+        else:
+            print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
+
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         cur.executemany(f"UPDATE journal SET upload_dtstr = '{version}' WHERE file_id = ?", matched)
