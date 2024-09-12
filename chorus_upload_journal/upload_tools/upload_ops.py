@@ -80,7 +80,7 @@ import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 
 # check out a journal to work on
 # local name is what is in the config file
-# cloud file will be renamed to .locked_{timestamp}
+# cloud file will be renamed to .locked
 # which will be returned as a key for unlocking later.
 def checkout_journal(config):
     #============= get the journal file name and path obj  (download from cloud to local)
@@ -98,7 +98,7 @@ def checkout_journal(config):
     journal_fn = journal_file.name
     # see if any lock files exists.
     journal_dir = journal_file.parent
-    lock_file = journal_dir.joinpath(journal_fn + ".locked_" + str(int(time.time())))
+    lock_file = journal_dir.joinpath(journal_fn + ".locked")
     
     # so we try to lock by renaming. if it fails, then we handle if possible.
     downloadable = False
@@ -106,13 +106,10 @@ def checkout_journal(config):
     try:
         journal_file.rename(lock_file)
         downloadable = True
-        # locks = list(journal_dir.glob(journal_fn + ".locked_*"))
-        # print(locks)
     except:
         # if journal file is not found, it's either that we don't have a file, or it's locked.
-        locked_files = list(journal_dir.glob(journal_fn + ".locked_*"))
 
-        if (len(locked_files) == 0):
+        if (not lock_file.exists()):
             # not locked, so journal does not exist.  create a lock.  this is to indicate to others that there is a lock
             lock_file.touch()
         else:
@@ -188,29 +185,21 @@ def unlock_journal(args, config, journal_fn):
     # see if any lock files exists.
     journal_dir = journal_file.parent
     
-    locked_files = list(journal_dir.glob(journal_fn + ".locked_*"))
-    if len(locked_files) == 0:
+    locked_file = journal_dir.joinpath(journal_fn + ".locked")
+    has_journal = journal_file.exists()
+    has_lock = locked_file.exists()
+    if has_journal:
         print("INFO: journal ", str(journal_file), " is not locked.")
+        if (has_lock):
+            print("INFO: lock file exists too.  deleting.")
+            locked_file.unlink()
         return
-            
-    if not journal_file.exists():
-        if (len(locked_files) > 1):
-            # force unlock so use the most recent.
-            # multiple locked files
-            fns = [str(f.name) for f in locked_files].sort()
-            last = fns[-1]
-            journal_dir.joinpath(last).rename(journal_file)
-            
-        elif (len(locked_files) == 1):
-            # no need to sort.
-            locked_files[0].rename(journal_file)
-    
-    locked_files = list(journal_dir.glob(journal_fn + ".locked_*"))
-    # delete all lock files
-    for lock_file in locked_files:
-        lock_file.unlink()
-    
-    print("INFO: force unlocked ", str(journal_file))
+    else:
+        if (has_lock):
+            locked_file.rename(journal_file)
+            print("INFO: force unlocked ", str(journal_file))
+        else:
+            print("INFO: no journal file.  okay to create")
     
     
 
@@ -390,8 +379,9 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # NEW    
     step = 100
     
-    nthreads = max(1, os.cpu_count() - 2)
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    # nthreads = max(1, os.cpu_count() - 2)
+    nthreads = 2
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
         futures = []
         for fn in files_to_upload:
             future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
@@ -400,7 +390,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         for future in concurrent.futures.as_completed(futures):
             (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
             if verbose:
-                print("INFO:  copying ", fn, " from ", str(src_path.root), " to ", str(dated_dest_path.root))
+                print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
             else:
                 print(".", end="", flush=True)
             if state == sync_state.MISSING_IN_DB:
@@ -628,8 +618,9 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     matched = set()
     large_matched = set()
     mismatched = set()
-    threads = max(1, os.cpu_count() - 2)
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    # nthreads = max(1, os.cpu_count() - 2)
+    nthreads = 2
+    with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
         futures = []
         for file_info in files_to_verify:
             future = executor.submit(_get_file_info, dated_dest_path, file_info )
@@ -690,8 +681,9 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(version))
     
     matched = []
-    threads = max(1, os.cpu_count() - 2)
-    with concurrent.futures.ThreadPoolExecutor() as executor:
+    # nthreads = max(1, os.cpu_count() - 2)
+    nthreads = 2
+    with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
         futures = []
         for f in files:
             if f not in db_files:
