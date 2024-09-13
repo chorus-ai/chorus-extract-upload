@@ -34,6 +34,7 @@ from chorus_upload_journal.upload_tools import upload_ops
 # TODO: DONE parallelize update
 # TODO: TESTED test large data and fix timeout if any.
 # TODO: use azcli or azcopy
+# TODO: add method to set the target version.
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -75,17 +76,21 @@ def _print_usage(args, config, journal_fn):
         
 # helper to call update journal
 def _update_journal(args, config, journal_fn):
+    version = args.version
+    amend = args.amend
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
     # get the config path for each modality.  if not matched, use default.
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
 
     # for each modality, create the file system help and process
+    first = True
     for mod, mod_config in mod_configs.items():        
         # create the file system helper    
         datafs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
 
         print("Update journal ", journal_fn, " for ", mod)
-        update_journal(datafs, modalities = [mod], databasename = journal_fn, verbose = args.verbose)
+        update_journal(datafs, modalities = [mod], databasename = journal_fn, version = version, amend = (args.amend if first else True), verbose = args.verbose)
+        first = False
     
 # helper to list known update journals
 # def _list_journals(args, config, journal_fn):
@@ -101,6 +106,7 @@ def _update_journal(args, config, journal_fn):
 #     restore_journal(journal_fn, revert_time)
     
 # only works with azure dest for now.
+# file_list is a dictionary of structure {modality: (config, {version: [files]})}
 def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
     dest_config = kwargs.get('dest_config', {})
@@ -138,14 +144,16 @@ def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
         
         
         if (out_type != "azcli") and (out_type != "azcopy"):
-            for mod, (config, flist) in file_list.items():
-                root = config["path"]            
-                filenames = ["/".join([root, fn]) for fn in flist]
-                if (os.name == 'nt'):
-                    f.write("\n\r".join([fn.replace("/", "\\") for fn in filenames]))
-                else:
-                    f.write("\n".join(filenames))
-            
+            for mod, (config, flists) in file_list.items():
+                for version, flist in flists.items():
+                    root = config["path"]            
+                    filenames = ["/".join([root, fn]) for fn in flist]
+                    if (os.name == 'nt'):
+                        f.write("\n\r".join([fn.replace("/", "\\") for fn in filenames]))
+                        f,write("\r\n")
+                    else:
+                        f.write("\n".join(filenames))
+                        f.write("\n")
         else:
             if dt != "NEW":
                 print("ERROR: cannot generate azcli script for existing file upload version", dt)
@@ -156,7 +164,7 @@ def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
                 # BATCH FILE FORMAT
                 f.write("@echo off\r\n")
                 f.write("setlocal\r\n")
-                f.write("set dt=%date:~10,4%%date:~4,2%%date:~7,2%%time:~0,2%%time:~3,2%%time:~6,2%\r\n")
+                f.write(f"set dt={dt}\r\n")
                 f.write("\r\n")
                 f.write("REM set environment variables\r\n")
                 f.write("set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\r\n")
@@ -174,7 +182,7 @@ def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
             else:
                 f.write("#!/bin/bash\n")
                 f.write("# script to upload files to azure for upload date " + dt + "\n")
-                f.write("dt=`date '+%Y%m%d%H%M%S'`\n")
+                f.write(f"dt=\"{dt}\"\n")
                 f.write("\n")
                 f.write("# set environment variables\n")
                 f.write("export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\n")
@@ -189,20 +197,21 @@ def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
                 f.write("echo PLEASE add your virtual environment activation string if any.\n")
                 f.write("\n")
                 f.write("# upload files\n")
-                f.write("if [ -e 'files_${dt}.txt' ]; then\n")
+                f.write("if [ -e files_${dt}.txt ]; then\n")
                 f.write("    rm files_${dt}.txt\n")
                 f.write("fi\n")
                 f.write("touch files_${dt}.txt\n")
 
                 
             # then we iterate over the files, and decide based on out_type.
-            for mod, (config, flist) in file_list.items():
+            for mod, (config, flists) in file_list.items():
                 root = config['path']
                 
-                f.write("\n")
                 if (os.name == "nt"):
+                    f.write("\r\n")
                     f.write(f"REM Files upload for {mod} at root {root}\r\n")
                 else:
+                    f.write("\n")
                     f.write(f"# Files upload for {mod} at root {root}\n")
                 
                 if (root.startswith("az://")):
@@ -214,7 +223,7 @@ def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
                         f.write(f"set mod_local_account=\"{mod_local_account}\"\r\n")
                         f.write(f"set mod_local_sas_token=\"{mod_local_sas_token}\"\r\n")
                         f.write(f"set mod_local_container=\"{mod_local_container}\"\r\n")
-                        f.write("\n")
+                        f.write("\r\n")
                     else:
                         f.write(f"mod_local_account=\"{mod_local_account}\"\n")
                         f.write(f"mod_local_sas_token=\"{mod_local_sas_token}\"\n")
@@ -228,54 +237,63 @@ def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
                     if (os.name == "nt"):
                         f.write(f"set AWS_ACCESS_KEY_ID=\"{mod_local_ACCESS_KEY}\"\r\n")
                         f.write(f"set AWS_SECRET_ACCESS_KEY=\"{mod_local_SECRET_KEY}\"\r\n")
-                        f.write("\n")
+                        f.write("\r\n")
                     else:
                         f.write(f"export AWS_ACCESS_KEY_ID=\"{mod_local_ACCESS_KEY}\"\n")
                         f.write(f"export AWS_SECRET_ACCESS_KEY=\"{mod_local_SECRET_KEY}\"\n")
                         f.write("\n")
 
-
-                for fn in flist:
-                    if (os.name == 'nt'):
-                        local_file = "\\".join([root, fn])
-                        local_file = local_file.replace("/", "\\")
-                        
-                        if (out_type == "azcli"):
-                            f.write(f"az storage blob upload --account-name %account% --sas-token %sas_token% --container-name %container% --name %dt%/" + fn + " --file " + local_file + "\r\n")
-                        elif (out_type == "azcopy"):
-                            if (root.startswith("az://")):
-                                f.write(f"azcopy copy 'https://%mod_local_account%.blob.core.windows.net/%mod_local_container%/" + fn + "?%mod_local_sas_token%' 'https://%account%.blob.core.windows.net/%container%/%dt%/" + fn + "?%sas_token%'\n" )
-                            elif (root.startswith("s3://")):
-                                f.write(f"azcopy copy 'https://s3.amazonaws.com/%mod_local_container%/" + fn + "' 'https://%account%.blob.core.windows.net/%container%/%dt%/" + fn + "?%sas_token%'\n" )
-                            # elif (root.startswith("gs://")):
-                            #     ...
-                            else:
-                                f.write(f"azcopy copy '" + local_file + "' 'https://%account%.blob.core.windows.net/%container%/%dt%/" + fn + "?%sas_token%'\n" )                            
-                            
-                        f.write("echo " + fn + " >> files_%dt%.txt\r\n")
-
+                for version, flist in flists.items():
+                    if (os.name == "nt"):
+                        f.write("\r\n")
+                        f.write(f"set ver=\"{version}\"\r\n")
                     else:
-                        local_file = "/".join([root, fn])
-                        
-                        if (out_type == "azcli"):
-                            f.write("az storage blob upload --account-name ${account} --sas-token \"${sas_token}\" --container-name ${container} --name ${dt}/" + fn + " --file " + local_file + "\n")     
-                        elif (out_type == "azcopy"):
-                            if (root.startswith("az://")):
-                                f.write(f"azcopy copy 'https://${mod_local_account}.blob.core.windows.net/${mod_local_container}/" + fn + "?${mod_local_sas_token}' 'https://${account}.blob.core.windows.net/${container}/${dt}/" + fn + "?${sas_token}'\n" )
-                            elif (root.startswith("s3://")):
-                                f.write(f"azcopy copy 'https://s3.amazonaws.com/${mod_local_container}/" + fn + "' 'https://${account}.blob.core.windows.net/${container}/${dt}/" + fn + "?${sas_token}'\n" )
-                            # elif (root.startswith("gs://")):
-                            #     ...
-                            else:
-                                f.write(f"azcopy copy '" + local_file + "' 'https://${account}.blob.core.windows.net/${container}/${dt}/" + fn + "?${sas_token}'\n" )
+                        f.write("\n")
+                        f.write(f"export ver=\"{version}\"\n")
+
+                    for fn in flist:
+                        if (os.name == 'nt'):
+                            local_file = "\\".join([root, fn])
+                            local_file = local_file.replace("/", "\\")
+                            
+                            if (out_type == "azcli"):
+                                f.write(f"az storage blob upload --account-name %account% --sas-token %sas_token% --container-name %container% --name %ver%/" + fn + " --file " + local_file + "\r\n")
+                            elif (out_type == "azcopy"):
+                                if (root.startswith("az://")):
+                                    f.write(f"azcopy copy \"https://%mod_local_account%.blob.core.windows.net/%mod_local_container%/" + fn + "?%mod_local_sas_token%\" \"https://%account%.blob.core.windows.net/%container%/%ver%/" + fn + "?%sas_token%\"\n" )
+                                elif (root.startswith("s3://")):
+                                    f.write(f"azcopy copy \"https://s3.amazonaws.com/%mod_local_container%/" + fn + "\" \"https://%account%.blob.core.windows.net/%container%/%ver%/" + fn + "?%sas_token%\"\n" )
+                                # elif (root.startswith("gs://")):
+                                #     ...
+                                else:
+                                    f.write(f"azcopy copy \"" + local_file + "\" \"https://%account%.blob.core.windows.net/%container%/%ver%/" + fn + "?%sas_token%\"\n" )                            
                                 
-                        f.write("echo " + fn + " >> files_${dt}.txt\n")
-                                        
+                            f.write("echo " + fn + " >> files_%dt%.txt\r\n")
+
+                        else:
+                            local_file = "/".join([root, fn])
+                            
+                            if (out_type == "azcli"):
+                                f.write("az storage blob upload --account-name ${account} --sas-token \"${sas_token}\" --container-name ${container} --name ${ver}/" + fn + " --file " + local_file + "\n")     
+                            elif (out_type == "azcopy"):
+                                if (root.startswith("az://")):
+                                    f.write(f"azcopy copy \"https://${mod_local_account}.blob.core.windows.net/${mod_local_container}/" + fn + "?${mod_local_sas_token}\" \"https://${account}.blob.core.windows.net/${container}/${ver}/" + fn + "?${sas_token}\"\n" )
+                                elif (root.startswith("s3://")):
+                                    f.write(f"azcopy copy \"https://s3.amazonaws.com/${mod_local_container}/" + fn + "\" \"https://${account}.blob.core.windows.net/${container}/${ver}/" + fn + "?${sas_token}\"\n" )
+                                # elif (root.startswith("gs://")):
+                                #     ...
+                                else:
+                                    f.write(f"azcopy copy \"" + local_file + "\" \"https://${account}.blob.core.windows.net/${container}/${ver}/" + fn + "?${sas_token}\"\n" )
+                                    
+                            f.write("echo " + fn + " >> files_${dt}.txt\n")
+                                            
                     
             # last part is again the same.
             if (os.name == 'nt'):
-                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list files_%dt%.txt --version ${dt}\r\n")            
+                f.write("\r\n")
+                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list files_%dt%.txt --version %dt%\r\n")            
             else:
+                f.write("\n")
                 f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list files_${dt}.txt --version ${dt}\n")
                 
                 
@@ -294,8 +312,9 @@ def _select_files(args, config, journal_fn):
             mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
             mod_config = config_helper.get_site_config(config, mod)
 
-            print("files for version: ", dt, " root at ", mod_config["path"], " for ", mod)
-            print("\n".join(mod_files))    
+            for (version, files) in mod_files:
+                print("files for version: ", version, " root at ", mod_config["path"], " for ", mod)
+                print("\n".join(files))
     else:
         central = config_helper.get_central_config(config)
         file_list = {}
@@ -377,6 +396,8 @@ if __name__ == "__main__":
     #------ create the parser for the "update" command
     parser_update = subparsers.add_parser("update-journal", help = "create or update the current journal")
     parser_update.add_argument("--modalities", help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
+    parser_update.add_argument("--version", help="version string for the upcoming upload.  If not specified, the current datetime in YYYYMMDDHHMMSS format is used.", required=False)
+    parser_update.add_argument("--amend", help="amend the last journal update.  If this flag is set but the version is not provided, then the last version is used.", action="store_true")
     parser_update.set_defaults(func = _update_journal)
     
     # create the parser for the "list" command
@@ -408,7 +429,7 @@ if __name__ == "__main__":
     # when upload, mark the journal version as uploaded.
     parser_upload.set_defaults(func = _upload_files)
 
-    parser_mark = subparsers.add_parser("mark-as-uploaded", help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
+    parser_mark = subparsers.add_parser("mark-uploaded", help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
     parser_mark.add_argument("--version", help="datetime of an upload (use list to get date times).", required=True)
     parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.add_argument("--file-list", help="file list to check.  version/file is the path in the central azure environment", required=False)

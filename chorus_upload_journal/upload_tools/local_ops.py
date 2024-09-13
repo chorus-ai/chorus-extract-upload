@@ -10,7 +10,11 @@ from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
 import concurrent.futures
 
 
-def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, databasename="journal.db", verbose: bool = False):
+def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
+                   databasename="journal.db", 
+                   version: str = None,
+                   amend: bool = False,
+                   verbose: bool = False):
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
     
@@ -20,15 +24,15 @@ def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODA
 
     # check if journal table exists
     if (table_exists is not None) and (table_exists[0] == "journal"):
-        return _update_journal(root, modalities, databasename, verbose= verbose)
-    else:
-        return _gen_journal(root, modalities, databasename, verbose = verbose)
+        return _update_journal(root, modalities, databasename, version = version, amend = amend, verbose= verbose)
+    else:  # no amend possible since the file did not exist.
+        return _gen_journal(root, modalities, databasename, version = version, verbose = verbose)
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path
 PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images)/.*", re.IGNORECASE)
 
-def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, curtimestamp:int):
+def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, curtimestamp:int, version:str):
     # print(i_path, relpath)
     start = time.time()
     meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata=True, with_md5=True)
@@ -46,14 +50,16 @@ def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, cu
     
     mymd5 = meta['md5']  # if azure file, could be None.
                 
-    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, "ADDED", md5_time)
+    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, "ADDED", md5_time, version)
 
     return myargs
 
 
 
 def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, 
-                  databasename="journal.db", verbose: bool = False):
+                  databasename="journal.db", 
+                  version:str = None, 
+                  verbose: bool = False):
     """
     Generate a journal for the given root directory and subdirectories.
 
@@ -65,6 +71,8 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
     """
     print("INFO: Creating journal. NOTE: this may take a while for md5 computation.", flush=True)
     
+    # TODO: set the version to either the supplied version name, or with current time.
+    new_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
         
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
@@ -80,6 +88,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
                 TIME_VALID_us INTEGER, \
                 TIME_INVALID_us INTEGER, \
                 UPLOAD_DTSTR TEXT, \
+                VERSION TEXT, \
                 STATE TEXT, \
                 MD5_DURATION REAL, \
                 UPLOAD_DURATION REAL, \
@@ -118,7 +127,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
                 for relpath in paths:
                     if verbose:
                         print("INFO: scanning ", relpath)
-                    future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp)
+                    future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp, new_version)
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -145,7 +154,8 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
                         MD5, \
                         TIME_VALID_us, \
                         STATE, \
-                        MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
+                        MD5_DURATION, \
+                        VERSION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
                 except sqlite3.IntegrityError as e:
                     print("ERROR: create ", e)
                     print(all_args)
@@ -232,10 +242,12 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
         #     con.close()
         # print("SQLITE insert took ", time.time() - start)
 
-def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict):
+def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict, version:str):
     # get information about the current file
     meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False)
     # root.get_file_metadata(relpath)
+    
+    # TODO need to handle version vs old version.
     
     # first item is personid.
     matched = PERSONID_REGEX.match(relpath)
@@ -258,13 +270,13 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
         # There should only be 1 active file according to the path in a well-formed 
         if (len(results) > 1):
             # print("ERROR: Multiple active files with that path - journal is not consistent")
-            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR1", None)
+            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR1", None, None)
         if (len(results) == 0):
             # print("ERROR: File found but no metadata.", relpath)
-            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR2", None)
+            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR2", None, None)
         
         if len(results) == 1:
-            (oldfileid, oldsize, oldmtime, oldmd5, oldsync) = results[0]
+            (oldfileid, oldsize, oldmtime, oldmd5, oldsync, oldversion) = results[0]
             
             # if old size and new size, old mtime and new mtime are same (name is already matched)
             # then same file, skip rest.
@@ -274,11 +286,11 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
                     keep_file = relpath
                     # del modality_files_to_inactivate[relpath]  # do not mark file as inactive.
                     # print("SAME ", relpath )
-                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "KEEP", None)
+                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "KEEP", None, oldversion)
                 else:
                     #time stamp same but file size is different?
                     # print("ERROR: File size is different but modtime is the same.", relpath)
-                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "ERROR3", None)
+                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "ERROR3", None, oldversion)
                 
             else:
                 # timestamp changed. we need to compute md5 to check, or to update.
@@ -293,12 +305,12 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
                 # cur.execute("UPDATE journal SET TIME_INVALID_us=? WHERE file_id=?", (curtimestamp, oldfileid))
                 if (oldsize == filesize) and (mymd5 == oldmd5):
                     # essentially copy the old and update the modtime.
-                    myargs = (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "MOVED", md5_time)
+                    myargs = (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "MOVED", md5_time, oldversion)
 
                     # files_to_inactivate.remove(oldfileid)  # we should mark old as inactive 
                 else:
                     # files are different.  set the old file as invalid and add a new file.
-                    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "UPDATED", md5_time)
+                    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "UPDATED", md5_time, version)
                     # if verbose:
                     #     print("INFO: UPDATED ", relpath)
                     # modified file. old one should be removed.
@@ -308,7 +320,7 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
         mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
         md5_time = time.time() - start
 
-        myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time)
+        myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time, version)
 
             
     return myargs
@@ -316,7 +328,10 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
 def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
-                     databasename="journal.db", verbose: bool = False):
+                     databasename="journal.db", 
+                     version: str = None,
+                     amend:bool = False, 
+                     verbose: bool = False):
     """
     Update the journal database with the files found in the specified root directory.
 
@@ -328,19 +343,21 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
     """
     print("INFO: Updating journal...", databasename, flush=True)
 
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
+    # TODO:  
+    # if amend, get the last version, and add files to that version.
+    # if not amend, create a new version - either with supplied version name, or with current time.
+    if amend: # get the last version
+        con = sqlite3.connect(databasename, check_same_thread=False)
+        cur = con.cursor()
+        last_version = cur.execute("SELECT MAX(VERSION) from journal").fetchone()[0]
+        con.close()
+        version = last_version if last_version is not None else version
+    else:
+        version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
+    
     
     # check if journal table exists.
     curtimestamp = int(math.floor(time.time() * 1e6))
-
-    i_file = cur.execute("SELECT MAX(file_id) from journal").fetchone()[0]
-    if i_file is None:
-        print("WARNING:  updating an empty database")
-        i_file = 1
-    else: 
-        i_file += 1
-    con.close()    
 
     modalities = modalities if modalities else DEFAULT_MODALITIES
     
@@ -365,7 +382,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         # get all active files, these are active-pending-delete until the file is found in filesystem
-        activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr from journal where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
+        activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr, version from journal where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
         con.close()
 
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
@@ -373,9 +390,9 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
         for i in activefiletuples:
             fpath = i[0]
             if fpath not in modality_files_to_inactivate.keys():
-                modality_files_to_inactivate[fpath] = [ (i[1], i[2], i[3], i[4], i[5]) ]
+                modality_files_to_inactivate[fpath] = [ (i[1], i[2], i[3], i[4], i[5], i[6]) ]
             else:
-                modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5]))
+                modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5], i[6]))
 
         nthreads = max(1, os.cpu_count() - 2)
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -386,7 +403,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
                 for relpath in paths:
                     if verbose:
                         print("INFO: scanning ", relpath)
-                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
+                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate, version)
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -429,7 +446,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
                         TIME_VALID_us, \
                         UPLOAD_DTSTR, \
                         STATE, \
-                        MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
+                        MD5_DURATION, \
+                        VERSION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
                 except sqlite3.IntegrityError as e:
                     print("ERROR: update ", e)
                     print(all_insert_args)
@@ -599,6 +617,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
 
 
 # all files to upload are marked with upload_dtstr = NULL. 
+# return list of files organized by version
 def list_files(databasename="journal.db", version: Optional[str] = None, 
                          modalities: list[str] = None,
                          verbose:bool = False):
@@ -612,9 +631,10 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
 
     Returns:
-        List[str]: The list of files to upload.
+        dict: The dictionary of {version: list[filenames]}.
     """
-    # Rest of the code...
+    # when listing files, looking for version match if specified, and upload_dtstr is NULL.
+        
         
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
@@ -631,14 +651,18 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_us from journal where upload_dtstr IS NULL").fetchall()
     # to_remove = [ ]
     
-    version_where = f"= '{version}'" if version is not None else "IS NULL"
+    if version is None:
+        where_clause = "upload_dtstr IS NULL"
+    else:
+        where_clause = f"upload_dtstr IS NULL AND version = '{version}'"
+    
     if (modalities is None) or (len(modalities) == 0):    
         # select where upload_dtstr is NULL or time_invalid_us is NULL
-        files_to_update = cur.execute(f"Select filepath, time_invalid_us from journal where upload_dtstr {version_where}").fetchall()
+        files_to_update = cur.execute(f"Select filepath, time_invalid_us, version from journal where {where_clause}").fetchall()
     else:
         files_to_update = []
         for modality in modalities:
-            files_to_update += cur.execute(f"Select filepath, time_invalid_us from journal where upload_dtstr {version_where} AND MODALITY = '{modality}'").fetchall()
+            files_to_update += cur.execute(f"Select filepath, time_invalid_us, version from journal where {where_clause} AND MODALITY = '{modality}'").fetchall()
     # print(files_to_update)
     # only need to add, not delete.  rely on journal to mark deletion.
     con.close()
@@ -654,17 +678,32 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     # deleted or overwritten files would still be in old version of the cloud.  so we don't need to delete.
     
     # first get the set of active and inactive files.  these are hashtables for quick lookups.
-    active_files = set()
-    inactive_files = set()
-    for (fn, invalidtime) in files_to_update:
+    # should not have same active file in multiple versions -  older one would be invalidated so should go to inactive files.
+    active_files = {}
+    inactive_files = {}
+    for (fn, invalidtime, version) in files_to_update:
         if invalidtime is None:
-            active_files.add(fn)  # current files or added files
+            # current files or added files
+            if (version in active_files.keys()):
+                active_files[version].add(fn)
+            else:
+                active_files[version] = set([fn])
         else:
-            inactive_files.add(fn) # old files or deleted files
+             # old files or deleted files
+            if (version in inactive_files.keys()):
+                inactive_files[version].add(fn)
+            else:
+                inactive_files[version] = set([fn])
     
-    updates = active_files.intersection(inactive_files)
-    adds = active_files - updates
-    deletes = inactive_files - updates
+    all_active_files = set()
+    all_inactive_files = set()
+    for k in active_files.keys():
+        all_active_files = set.union(all_active_files, active_files[k])
+    for k in inactive_files.keys():
+        all_inactive_files = set.union(all_inactive_files, inactive_files[k])
+    updates = all_active_files.intersection(all_inactive_files)
+    adds = all_active_files - updates
+    deletes = all_inactive_files - updates
     if verbose:
         for f in adds:
             print("INFO: ADD ", f)
@@ -673,17 +712,16 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
         for f in deletes:
             print("INFO: DELETE ", f)
             
-    file_list = list(active_files)
     # sort the file-list
     # file_list.sort()
     
-    if (file_list is None) or (len(file_list) == 0):
+    if len(all_active_files) == 0:
         print("INFO: No active files found")
     
     # do we need to delete files in central at all? NO.  journal will be updated.
     # we only need to add new files
                 
-    return file_list
+    return active_files
 
 # def list_uploads(databasename="journal.db"):
 #     """

@@ -65,6 +65,7 @@ import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 # TODO: DONE handle large files in azure that do not compute MD5 (recommendation is to set MD5 on cloud file using locally computed MD5 - not an integrity assurance)
 # TODO: explore other ways of computing MD5 on upload.
 # TODO: explore integration of azcli or az copy.
+# TODO: add a version string separate from upload_dtstr
 
 # process:
 #   1. local journal is created
@@ -340,22 +341,23 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         # os.remove(pushdir_name + ".db")
         print(f"ERROR: No journal exists for filename {databasename}")
         return
-
-    # if amend then get the latest version from db
-    if amend:
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
     
-        upload_ver_str = cur.execute("SELECT MAX(upload_dtstr) FROM journal").fetchone()[0]
-        if upload_ver_str is None:
-            raise ValueError("ERROR: no previous upload found to amend.")
-        con.close()
-    else:
-        # get the current datetime
-        upload_ver_str = strftime("%Y%m%d%H%M%S", gmtime())
+    # ======== upload_ver_str should be constructed from the version string in the journal.
+    # # if amend then get the latest version from db
+    # if amend:
+    #     con = sqlite3.connect(databasename, check_same_thread=False)
+    #     cur = con.cursor()
+    
+    #     upload_ver_str = cur.execute("SELECT MAX(version) FROM journal").fetchone()[0]
+    #     if upload_ver_str is None:
+    #         raise ValueError("ERROR: no previous upload found to amend.")
+    #     con.close()
+    # else:
+    #     # get the current datetime
+    #     upload_ver_str = strftime("%Y%m%d%H%M%S", gmtime())
         
-    # create a dated root directory to receive the files
-    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(upload_ver_str))
+    upload_ver_str = strftime("%Y%m%d%H%M%S", gmtime())   # use string for upload ver_str for readability
+
 
     #---------- upload files.    
     # first get the list of files for the requested version
@@ -435,54 +437,57 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     #             update_args = []
     #             del_args = []
 
-    for fn in files_to_upload:
-        (fn2, state, fid, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, dated_dest_path, databasename)
+    for version, files in files_to_upload.items():
+        # create a dated root directory to receive the files
+        dated_dest_path = FileSystemHelper(dest_path.root.joinpath(version))
+        for fn in files:
+            (fn2, state, fid, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, dated_dest_path, databasename)
 
-        if verbose:
-            print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
-        else:
-            print(".", end="", flush=True)
-        if state == sync_state.MISSING_IN_DB:
-            print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
-            missing_in_db.add(fn2)
-        elif state == sync_state.MISSING_DEST:
-            missing_dest.add(fn2)
-            print("ERROR:  missing file at destination", fn2)
-        elif state == sync_state.MISSING_SRC:
-            print("ERROR:  file not found ", fn2)
-            missing_src.add(fn2)
-        elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
-            print("ERROR: multiple entries in journal for ", fn2)
-            multiple_actives.add(fn2)
-        elif state == sync_state.MATCHED:
-            # merge the updates for matched.
-            matched.add(fn2)
-            update_args.append((upload_ver_str, copy_time, verify_time, fid))
-            del_args += [(upload_ver_str, fid) for fid in del_list]
-            if len(del_list) > 0:
-                replaced.add(fn2)
-        elif state == sync_state.MISMATCHED:
-            mismatched.add(fn2)
-            print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
+            if verbose:
+                print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
+            else:
+                print(".", end="", flush=True)
+            if state == sync_state.MISSING_IN_DB:
+                print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
+                missing_in_db.add(fn2)
+            elif state == sync_state.MISSING_DEST:
+                missing_dest.add(fn2)
+                print("ERROR:  missing file at destination", fn2)
+            elif state == sync_state.MISSING_SRC:
+                print("ERROR:  file not found ", fn2)
+                missing_src.add(fn2)
+            elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
+                print("ERROR: multiple entries in journal for ", fn2)
+                multiple_actives.add(fn2)
+            elif state == sync_state.MATCHED:
+                # merge the updates for matched.
+                matched.add(fn2)
+                update_args.append((upload_ver_str, copy_time, verify_time, fid))
+                del_args += [(upload_ver_str, fid) for fid in del_list]
+                if len(del_list) > 0:
+                    replaced.add(fn2)
+            elif state == sync_state.MISMATCHED:
+                mismatched.add(fn2)
+                print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
 
-        # elif state == sync_state.DELETED:
-        #     deleted.add(fn2)
-        
-        # update the journal - likely not parallelizable.
-        if len(update_args) >= step:
-            con = sqlite3.connect(databasename, check_same_thread=False)
-            cur = con.cursor()
-            try:        
-                cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
-                cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
-            except sqlite3.InterfaceError as e:
-                print("ERROR: update ", e)
-                print(update_args)
-                
-            con.commit() 
-            con.close()
-            update_args = []
-            del_args = []
+            # elif state == sync_state.DELETED:
+            #     deleted.add(fn2)
+            
+            # update the journal - likely not parallelizable.
+            if len(update_args) >= step:
+                con = sqlite3.connect(databasename, check_same_thread=False)
+                cur = con.cursor()
+                try:        
+                    cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
+                    cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
+                except sqlite3.InterfaceError as e:
+                    print("ERROR: update ", e)
+                    print(update_args)
+                    
+                con.commit() 
+                con.close()
+                update_args = []
+                del_args = []
     
     #### --------------OLD begin
     # # then copy the files over

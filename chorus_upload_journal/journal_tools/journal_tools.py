@@ -23,8 +23,8 @@ def list_uploads(databasename="journal.db"):
     con = sqlite3.connect(databasename)
     cur = con.cursor()
     
-    # List unique values in upload_dtstr column in journal table
-    uploads = [u[0] for u in cur.execute("SELECT DISTINCT upload_dtstr FROM journal;").fetchall()]
+    # List unique values in version column in journal table
+    uploads = [u[0] for u in cur.execute("SELECT DISTINCT version FROM journal;").fetchall()]
     con.close()
     
     if (uploads is not None) and (len(uploads) > 0):
