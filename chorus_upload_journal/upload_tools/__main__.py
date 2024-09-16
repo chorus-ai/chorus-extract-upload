@@ -13,7 +13,7 @@ from chorus_upload_journal.upload_tools import config_helper
 import json
 from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
 from chorus_upload_journal.upload_tools import upload_ops
-
+import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 
 
 
@@ -23,7 +23,8 @@ from chorus_upload_journal.upload_tools import upload_ops
 
 # TODO: DONE support Azure SAS token (via account url) and AWS session token
 # TODO: DONE capture command history.
-# TODO: NOT AT THIS TIME: function to generate bash scripts (azcopy and azcli) for upload instead of using built in.  This would require a verfication and mark_uploaded function.
+# TODO: DONE: function to generate bash scripts (azcopy and azcli) for upload instead of using built in.
+#       This would require a verfication and mark_uploaded function.
 # TODO: DONE check the sas token to account url conversion.
 # TODO: DONE update and upload one or more modality only
 
@@ -34,7 +35,7 @@ from chorus_upload_journal.upload_tools import upload_ops
 # TODO: DONE parallelize update
 # TODO: TESTED test large data and fix timeout if any.
 # TODO: use azcli or azcopy
-# TODO: add method to set the target version.
+# TODO: rename subcommands.
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -61,14 +62,14 @@ def _print_usage(args, config, journal_fn):
     print("  -c or --config:   config file (defaults to config.toml in the script directory) with storage path locations")
     print("generating journal")
     print("  update-journal:    python chorus_upload_journal/upload_tools --config ./config.toml update")
-    print("             python chorus_upload_journal/upload_tools update --modalities Waveforms,Images,OMOP")
+    print("             python chorus_upload_journal/upload_tools update-journal --modalities Waveforms,Images,OMOP")
     print("generating upload file list")
     print("  list-files:    python chorus_upload_journal/upload_tools select")
-    print("             python chorus_upload_journal/upload_tools select --version 20210901120000 -f filelist.txt")
+    print("             python chorus_upload_journal/upload_tools list-files --version 20210901120000 -f filelist.txt")
     print("uploading to and verifying with central")
     print("  upload-files:    python chorus_upload_journal/upload_tools upload ")
-    print("             python chorus_upload_journal/upload_tools upload --modalities Images")
-    print("  verify-files:    python chorus_upload_journal/upload_tools verify --modalities Images --version 20210901120000")
+    print("             python chorus_upload_journal/upload_tools upload-files --modalities Images")
+    print("  verify-files:    python chorus_upload_journal/upload_tools verify-files --modalities Images --version 20210901120000")
     # print("working with journals:")
     # print("  list:      python chorus_upload_journal/upload_tools list-versions")
     # print("  revert:    python chorus_upload_journal/upload_tools revert-version --version 20210901120000")
@@ -89,7 +90,9 @@ def _update_journal(args, config, journal_fn):
         datafs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
 
         print("Update journal ", journal_fn, " for ", mod)
-        update_journal(datafs, modalities = [mod], databasename = journal_fn, version = version, amend = (args.amend if first else True), verbose = args.verbose)
+        update_journal(datafs, modalities = [mod], databasename = journal_fn, 
+                       version = version, amend = (args.amend if first else True), 
+                       verbose = args.verbose)
         first = False
     
 # helper to list known update journals
@@ -105,9 +108,26 @@ def _update_journal(args, config, journal_fn):
 #     print("Revert to: ", revert_time)
 #     restore_journal(journal_fn, revert_time)
     
+WINDOWS_STRINGS = {
+    "eol": "\n",  # supposed to use "\n" reguardless of os.
+    "var_start": "%",
+    "var_end": "%",
+    "comment": "REM",
+    "set_var": "set ",
+    "export_var": "set "
+}
+LINUX_STRINGS = {
+    "eol": "\n",
+    "var_start": "${",
+    "var_end": "}",
+    "comment": "#",
+    "set_var": "",
+    "export_var": "export "
+}
+    
 # only works with azure dest for now.
 # file_list is a dictionary of structure {modality: (config, {version: [files]})}
-def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
+def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
     dest_config = kwargs.get('dest_config', {})
     
@@ -136,166 +156,208 @@ def _write_files(file_list: dict, dt: str, filename : str, **kwargs):
         
     # get output file name.
     p = Path(filename)
-    fn = "_".join([p.stem, dt]) + p.suffix
+    # fn = "_".join([p.stem, upload_datetime]) + p.suffix
+    fn = filename
     print("list writing to ", fn)
+
+    is_windows = os.name == 'nt'
+    
+    eol = WINDOWS_STRINGS["eol"] if is_windows else LINUX_STRINGS["eol"]
+    comment = WINDOWS_STRINGS["comment"] if is_windows else LINUX_STRINGS["comment"]
+    var_start = WINDOWS_STRINGS["var_start"] if is_windows else LINUX_STRINGS["var_start"]
+    var_end = WINDOWS_STRINGS["var_end"] if is_windows else LINUX_STRINGS["var_end"]
+    set_var = WINDOWS_STRINGS["set_var"] if is_windows else LINUX_STRINGS["set_var"]
+    export_var = WINDOWS_STRINGS["export_var"] if is_windows else LINUX_STRINGS["export_var"]
+    testme = ""
+    testmax = 15
     
     with open(fn, 'w') as f:
         # if windows, use double backslash
-        
         
         if (out_type != "azcli") and (out_type != "azcopy"):
             for mod, (config, flists) in file_list.items():
                 for version, flist in flists.items():
                     root = config["path"]            
                     filenames = ["/".join([root, fn]) for fn in flist]
-                    if (os.name == 'nt'):
-                        f.write("\n\r".join([fn.replace("/", "\\") for fn in filenames]))
-                        f,write("\r\n")
+                    if is_windows:
+                        fns = [fn.replace("/", "\\") for fn in filenames]
                     else:
-                        f.write("\n".join(filenames))
-                        f.write("\n")
+                        fns = filenames
+                        
+                    f.write(eol.join(fns))
+                    f.write(eol)
+        
         else:
-            if dt != "NEW":
-                print("ERROR: cannot generate azcli script for existing file upload version", dt)
-                return
             
             # this first part of the script is same for both azcli and azcopy.
-            if (os.name == 'nt'):
+            if is_windows:
                 # BATCH FILE FORMAT
-                f.write("@echo off\r\n")
-                f.write("setlocal\r\n")
-                f.write(f"set dt={dt}\r\n")
-                f.write("\r\n")
-                f.write("REM set environment variables\r\n")
-                f.write("set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\r\n")
-                f.write("\r\n")
-                f.write("REM Destination azure credentials\r\n")
-                f.write(f"set account={account_name}\r\n")
-                f.write(f"set sas_token=\"{sas_token}\"\r\n")
-                f.write(f"set container={container}\r\n")
-                f.write("\r\n")
-                f.write("echo PLEASE add your virtual environment activation string if any.\r\n")
-                f.write("\r\n")
-                f.write("REM upload files\r\n")
-                f.write("if exist files_%dt%.txt del files_%dt%.txt\r\n")
-                f.write("type nul > files_%dt%.txt\r\n")
+                f.write("@echo off" + eol)
+                f.write("setlocal" + eol)
             else:
-                f.write("#!/bin/bash\n")
-                f.write("# script to upload files to azure for upload date " + dt + "\n")
-                f.write(f"dt=\"{dt}\"\n")
-                f.write("\n")
-                f.write("# set environment variables\n")
-                f.write("export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1\n")
-                f.write("\n")
+                f.write("#!/bin/bash" + eol)
                 
-                f.write("# Destination azure credentials \n")
-                f.write(f"account=\"{account_name}\"\n")
-                f.write(f"sas_token=\"{sas_token}\"\n")
-                f.write(f"container=\"{container}\"\n")
-                f.write("\n")
-                
-                f.write("echo PLEASE add your virtual environment activation string if any.\n")
-                f.write("\n")
-                f.write("# upload files\n")
-                f.write("if [ -e files_${dt}.txt ]; then\n")
-                f.write("    rm files_${dt}.txt\n")
-                f.write("fi\n")
-                f.write("touch files_${dt}.txt\n")
+            f.write(comment + " script to upload files to azure for upload date " + upload_datetime + eol)
+            f.write(eol)
 
+            f.write(comment + " set environment variables" + eol)
+            f.write(set_var + "dt=\"" + upload_datetime + "\"" + eol)
+            f.write(export_var + " AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1" + eol)
+            f.write(eol)
+            f.write(comment + " Destination azure credentials" + eol)
+            f.write(set_var + "account=\"" + account_name + "\"" + eol)
+            f.write(set_var + "sas_token=\"" + sas_token + "\"" + eol)
+            f.write(set_var + "container=\"" + container + "\"" + eol)
+            f.write(eol)
+            
+            f.write("echo PLEASE add your virtual environment activation string if any." + eol)
+            f.write(eol)
+                        
+            f.write(comment + " upload files" + eol)
+            f.write(eol)
+
+            f.write(comment + " checkout the journal" + eol)
+            f.write(set_var + "local_journal=\"journal.db\"" + eol)
+            f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
+                    " checkout-journal --local-journal " + var_start+"local_journal"+var_end + eol)
+                
                 
             # then we iterate over the files, and decide based on out_type.
+            testcount = 0
             for mod, (config, flists) in file_list.items():
                 root = config['path']
                 
-                if (os.name == "nt"):
-                    f.write("\r\n")
-                    f.write(f"REM Files upload for {mod} at root {root}\r\n")
+                f.write(eol)
+                f.write(comment + " Files upload for " + mod + " at root " + root + eol)
+                
+                if is_windows:
+                    f.write("if exist files_" + var_start+"dt"+var_end + ".txt del files_" + var_start+"dt"+var_end + ".txt" + eol)
+                    f.write("type nul > files_" + var_start+"dt"+var_end + ".txt" + eol)
                 else:
-                    f.write("\n")
-                    f.write(f"# Files upload for {mod} at root {root}\n")
+                    f.write("if [ -e files_" + var_start+"dt"+var_end + ".txt ]; then" + eol)
+                    f.write("    rm files_" + var_start+"dt"+var_end + ".txt" + eol)
+                    f.write("fi" + eol)
+                    f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
                 
                 if (root.startswith("az://")):
                     mod_local_account = config.get('azure_account_name', '')
                     mod_local_container = config.get('azure_container', '')
                     mod_local_sas_token = config.get('azure_sas_token', '')
                     
-                    if (os.name == "nt"):
-                        f.write(f"set mod_local_account=\"{mod_local_account}\"\r\n")
-                        f.write(f"set mod_local_sas_token=\"{mod_local_sas_token}\"\r\n")
-                        f.write(f"set mod_local_container=\"{mod_local_container}\"\r\n")
-                        f.write("\r\n")
-                    else:
-                        f.write(f"mod_local_account=\"{mod_local_account}\"\n")
-                        f.write(f"mod_local_sas_token=\"{mod_local_sas_token}\"\n")
-                        f.write(f"mod_local_container=\"{mod_local_container}\"\n")
-                        f.write("\n")
+                    f.write(set_var + "mod_local_account=\"" + mod_local_account + "\"" + eol)
+                    f.write(set_var + "mod_local_sas_token=\"" + mod_local_sas_token + "\"" + eol)
+                    f.write(set_var + "mod_local_container=\"" + mod_local_container + "\"" + eol)
+                    f.write(eol)
                             
                 elif (root.startswith("s3://")):
                     mod_local_container = config.get('s3_bucket', '')
                     mod_local_ACCESS_KEY = config.get('s3_access_key', '')
                     mod_local_SECRET_KEY = config.get('s3_secret_key', '')
-                    if (os.name == "nt"):
-                        f.write(f"set AWS_ACCESS_KEY_ID=\"{mod_local_ACCESS_KEY}\"\r\n")
-                        f.write(f"set AWS_SECRET_ACCESS_KEY=\"{mod_local_SECRET_KEY}\"\r\n")
-                        f.write("\r\n")
-                    else:
-                        f.write(f"export AWS_ACCESS_KEY_ID=\"{mod_local_ACCESS_KEY}\"\n")
-                        f.write(f"export AWS_SECRET_ACCESS_KEY=\"{mod_local_SECRET_KEY}\"\n")
-                        f.write("\n")
+
+                    f.write(export_var + " AWS_ACCESS_KEY_ID=\"" + mod_local_ACCESS_KEY + "\"" + eol)
+                    f.write(export_var + " AWS_SECRET_ACCESS_KEY=\"" + mod_local_SECRET_KEY + "\"" + eol)
+                    f.write(eol)
 
                 for version, flist in flists.items():
-                    if (os.name == "nt"):
-                        f.write("\r\n")
-                        f.write(f"set ver=\"{version}\"\r\n")
-                    else:
-                        f.write("\n")
-                        f.write(f"export ver=\"{version}\"\n")
-
+                    f.write(eol)
+                    f.write(set_var + "ver=\"" + version + "\"" + eol)                    
+                    
+                    count = 0
+                    step = 10
                     for fn in flist:
-                        if (os.name == 'nt'):
+                        if is_windows:
                             local_file = "\\".join([root, fn])
                             local_file = local_file.replace("/", "\\")
-                            
-                            if (out_type == "azcli"):
-                                f.write(f"az storage blob upload --account-name %account% --sas-token %sas_token% --container-name %container% --name %ver%/" + fn + " --file " + local_file + "\r\n")
-                            elif (out_type == "azcopy"):
-                                if (root.startswith("az://")):
-                                    f.write(f"azcopy copy \"https://%mod_local_account%.blob.core.windows.net/%mod_local_container%/" + fn + "?%mod_local_sas_token%\" \"https://%account%.blob.core.windows.net/%container%/%ver%/" + fn + "?%sas_token%\"\n" )
-                                elif (root.startswith("s3://")):
-                                    f.write(f"azcopy copy \"https://s3.amazonaws.com/%mod_local_container%/" + fn + "\" \"https://%account%.blob.core.windows.net/%container%/%ver%/" + fn + "?%sas_token%\"\n" )
-                                # elif (root.startswith("gs://")):
-                                #     ...
-                                else:
-                                    f.write(f"azcopy copy \"" + local_file + "\" \"https://%account%.blob.core.windows.net/%container%/%ver%/" + fn + "?%sas_token%\"\n" )                            
-                                
-                            f.write("echo " + fn + " >> files_%dt%.txt\r\n")
-
                         else:
                             local_file = "/".join([root, fn])
                             
-                            if (out_type == "azcli"):
-                                f.write("az storage blob upload --account-name ${account} --sas-token \"${sas_token}\" --container-name ${container} --name ${ver}/" + fn + " --file " + local_file + "\n")     
-                            elif (out_type == "azcopy"):
-                                if (root.startswith("az://")):
-                                    f.write(f"azcopy copy \"https://${mod_local_account}.blob.core.windows.net/${mod_local_container}/" + fn + "?${mod_local_sas_token}\" \"https://${account}.blob.core.windows.net/${container}/${ver}/" + fn + "?${sas_token}\"\n" )
-                                elif (root.startswith("s3://")):
-                                    f.write(f"azcopy copy \"https://s3.amazonaws.com/${mod_local_container}/" + fn + "\" \"https://${account}.blob.core.windows.net/${container}/${ver}/" + fn + "?${sas_token}\"\n" )
-                                # elif (root.startswith("gs://")):
-                                #     ...
-                                else:
-                                    f.write(f"azcopy copy \"" + local_file + "\" \"https://${account}.blob.core.windows.net/${container}/${ver}/" + fn + "?${sas_token}\"\n" )
-                                    
-                            f.write("echo " + fn + " >> files_${dt}.txt\n")
-                                            
-                    
-            # last part is again the same.
-            if (os.name == 'nt'):
-                f.write("\r\n")
-                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list files_%dt%.txt --version %dt%\r\n")            
-            else:
-                f.write("\n")
-                f.write("python chorus_upload_journal/upload_tools -c " + config_fn + " mark-as-uploaded --file-list files_${dt}.txt --version ${dt}\n")
-                
+                        
+                        if (out_type == "azcli"):
+                            f.write(testme + "az storage blob upload --account-name " + var_start+"account"+var_end + 
+                                    " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
+                                    var_start+"container"+var_end + " --name " + var_start+"ver"+var_end + "/" + 
+                                    fn + " --file " + local_file + eol)     
+                        elif (out_type == "azcopy"):
+                            if (root.startswith("az://")):
+                                f.write(testme + "azcopy copy \"https://" + var_start+"mod_local_account"+var_end + 
+                                        ".blob.core.windows.net/" + var_start+"mod_local_container"+var_end + "/" + 
+                                        fn + "?" + var_start+"mod_local_sas_token"+var_end + "\" \"https://" + 
+                                        var_start+"account"+var_end + ".blob.core.windows.net/" + 
+                                        var_start+"container"+var_end + "/" + var_start+"ver"+var_end + 
+                                        "/" + fn + "?" + var_start+"sas_token"+var_end + "\"" + eol )
+                            elif (root.startswith("s3://")):
+                                f.write(testme + "azcopy copy \"https://s3.amazonaws.com/" + 
+                                        var_start+"mod_local_container"+var_end + "/" + fn + "\" \"https://" + 
+                                        var_start+"account"+var_end + ".blob.core.windows.net/" + 
+                                        var_start+"container"+var_end + "/" + var_start+"ver"+var_end + 
+                                        "/" + fn + "?" + var_start+"sas_token"+var_end + "\"" + eol )
+                            # elif (root.startswith("gs://")):
+                            #     ...
+                            else:
+                                f.write(testme + "azcopy copy \"" + local_file + "\" \"https://" + 
+                                        var_start+"account"+var_end + ".blob.core.windows.net/" + 
+                                        var_start+"container"+var_end + "/" + var_start+"ver"+var_end + 
+                                        "/" + fn + "?" + var_start+"sas_token"+var_end + "\"" + eol )
+                                
+                        f.write("echo " + fn + " >> files_" + var_start+"dt"+var_end + ".txt" + eol)
+                        f.write(eol)
+                        
+                        count += 1
+                        testcount += 1
+                        
+                        if (count >= step):
+                            # last part is again the same.
+                            f.write(eol)
+                            f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
+                                    " mark-as-uploaded-local --local-journal " + var_start+"local_journal"+var_end + 
+                                    " --file-list files_" + var_start+"dt"+var_end + ".txt --upload-datetime " + 
+                                    var_start+"dt"+var_end + eol)
+
+                            f.write(eol)
+                            if is_windows:
+                                f.write("if exist files_" + var_start+"dt"+var_end + ".txt del files_" + 
+                                        var_start+"dt"+var_end + ".txt" + eol)
+                                f.write("type nul > files_" + var_start+"dt"+var_end + ".txt" + eol)
+                            else:
+                                f.write("if [ -e files_" + var_start+"dt"+var_end + ".txt ]; then" + eol)
+                                f.write("    rm files_" + var_start+"dt"+var_end + ".txt" + eol)
+                                f.write("fi" + eol)
+                                f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
+                            f.write(eol)
+                            count = 0
+                        if testcount > testmax:
+                            break
+                              
+                    if count > 0:
+                        # last part is again the same.
+                        f.write(eol)
+                        f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
+                                " mark-as-uploaded-local --local-journal " + var_start+"local_journal"+var_end + 
+                                " --file-list files_" + var_start+"dt"+var_end + ".txt --upload-datetime " + 
+                                var_start+"dt"+var_end + eol)
+                        f.write(eol)
+                        
+                        if is_windows:
+                            f.write("if exist files_" + var_start+"dt"+var_end + ".txt del files_" + 
+                                    var_start+"dt"+var_end + ".txt" + eol)
+                            f.write("type nul > files_" + var_start+"dt"+var_end + ".txt" + eol)
+                        else:
+                            f.write("if [ -e files_" + var_start+"dt"+var_end + ".txt ]; then" + eol)
+                            f.write("    rm files_" + var_start+"dt"+var_end + ".txt" + eol)
+                            f.write("fi" + eol)
+                            f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
+
+                    if testcount > testmax:
+                        break
+                            
+            f.write(comment + "TEST checkin the journal" + eol)
+            f.write(testme + "az storage blob list --account-name " + var_start+"account"+var_end + 
+                    " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
+                    var_start+"container"+var_end + " --prefix " + var_start+"ver"+var_end +
+                    "/ --output table" + eol)     
+            f.write(eol)
+            f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
+                    " checkin-journal --local-journal " + var_start+"local_journal"+var_end + eol)
                 
             
 # helper to display/save files to upload
@@ -305,7 +367,7 @@ def _select_files(args, config, journal_fn):
     
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
     # do one modality at a time
-    dt = args.version if args.version else "NEW"
+    upload_datetime = args.version if args.version else time.strftime("%Y%m%d%H%M%S")
 
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
@@ -324,22 +386,95 @@ def _select_files(args, config, journal_fn):
 
             file_list[mod] = (mod_config, mod_files)
     
-        _write_files(file_list, dt, filename = args.output_file, out_type = args.output_type, dest_config = central, config_fn = args.config)
+        _write_files(file_list, upload_datetime, filename = args.output_file, 
+                     out_type = args.output_type, dest_config = central, config_fn = args.config)
     
     
 def _mark_as_uploaded(args, config, journal_fn):
-    version = args.version
+    upload_datetime = args.upload_datetime
     file = args.file
     filelist = args.file_list
     central_config = config_helper.get_central_config(config)
-    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))    
+    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
+    
+    journal_f = args.local_journal if args.local_journal else journal_fn
     
     if (filelist is not None):
         with open(filelist, 'r') as f:
             files = [fn.strip() for fn in f.readlines()]
-            upload_ops.mark_as_uploaded(centralfs, journal_fn, version, files, verbose = args.verbose)
+            upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, files, verbose = args.verbose)
     else:
-        upload_ops.mark_as_uploaded(centralfs, journal_fn, version, [file], verbose = args.verbose)
+        upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, [file], verbose = args.verbose)
+
+def _checkout_journal(args, config, journal_fn):
+    local_fn = args.local_journal if args.local_journal else "journal.db"
+    # if local_fn exists, make a backup.
+    if Path(local_fn).exists():
+        backup_fn = local_fn + ".bak_" + time.strftime("%Y%m%d%H%M%S")
+        print("INFO: Using local journal ", local_fn, " backup at ", backup_fn)
+        shutil.copy(local_fn, backup_fn)
+    
+    if journal_fn.startswith("az://") or journal_fn.startswith("s3://") or journal_fn.startswith("gs://"):
+        # central journal
+        # now download the journal file
+        journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config, local_fn)
+        if not Path(local_fn).exists():
+            raise ValueError("ERROR: journal file not properly checked out: ", local_fn)
+        else:
+            shutil.copy(local_fn, local_fn + ".bak")  # used for md5.
+        print("INFO: checked out ", journal_path, " to ", local_path, " with md5 ", journal_md5, " locked at ", locked_path)
+                
+    else:
+        # if local_fn and journal_fn are same, do nothing.
+        if local_fn != journal_fn:
+            if Path(journal_fn).exists():            
+                # make a copy
+                shutil.copy(journal_fn, local_fn)
+            print("INFO: copied ", journal_fn, " to ", local_fn)
+        else:
+            # else if local_fn and journal_fn are same, do nothing.
+            print("INFO: journal file is already local.")    
+        
+
+
+def _checkin_journal(args, config, journal_fn):
+    local_fn = args.local_journal if args.local_journal else "journal.db"
+    
+    if journal_fn.startswith("az://") or journal_fn.startswith("s3://") or journal_fn.startswith("gs://"):
+        # if cloud journal
+        client = storage_helper._make_client(config_helper.get_journal_config(config))
+        
+        # compute the lock path and md5
+        orig_md5 = FileSystemHelper.get_metadata(path=Path(local_fn + ".bak"), with_md5=True)['md5']
+        # generate the lock file name
+        journal_path = FileSystemHelper(journal_fn, client = client)
+                
+        local_file = FileSystemHelper(local_fn)
+        # check in to central.
+        upload_ops.checkin_journal(journal_path, local_file, orig_md5)
+ 
+        print("INFO: checked in ", local_fn, " to ", journal_fn, " with original md5 ", orig_md5)
+    
+    else:
+        # local journal
+        if journal_fn != local_fn:
+            # back up journal_fn
+            backup_fn = journal_fn + ".bak_" + time.strftime("%Y%m%d%H%M%S")
+            if Path(journal_fn).exists():            
+                shutil.copy(journal_fn, backup_fn)
+
+            # and copy local_fn back/
+            if Path(local_file).exist():
+                shutil.copy(local_file, journal_fn)
+            else:
+                print("ERROR:  no local file ", local_file, "to copy to ", journal_fn)            
+        else:
+            # else if local_fn and journal_fn are same, do nothing.
+            print("INFO: journal file is already local.")    
+    
+    
+    
+    
 
 # helper to upload files
 def _upload_files(args, config, journal_fn):
@@ -360,7 +495,7 @@ def _upload_files(args, config, journal_fn):
     # subsequent modalities in this call always amend.
     for mod, mod_config in mod_configs.items():
         sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-        upload_ops.upload_files(sitefs, centralfs, journal_fn, modalities = [mod], amend = (args.amend if first else True), verbose = args.verbose)
+        upload_ops.upload_files(sitefs, centralfs, journal_fn, modalities = [mod], amend = (not first), verbose = args.verbose)
         first = False
     
 # helper to report file verification
@@ -395,9 +530,15 @@ if __name__ == "__main__":
     
     #------ create the parser for the "update" command
     parser_update = subparsers.add_parser("update-journal", help = "create or update the current journal")
-    parser_update.add_argument("--modalities", help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
-    parser_update.add_argument("--version", help="version string for the upcoming upload.  If not specified, the current datetime in YYYYMMDDHHMMSS format is used.", required=False)
-    parser_update.add_argument("--amend", help="amend the last journal update.  If this flag is set but the version is not provided, then the last version is used.", action="store_true")
+    parser_update.add_argument("--modalities", 
+                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
+                               required=False)
+    parser_update.add_argument("--version", 
+                               help="version string for the upcoming upload.  If not specified, the current datetime in YYYYMMDDHHMMSS format is used.", 
+                               required=False)
+    parser_update.add_argument("--amend", 
+                               help="amend the last journal update.  If this flag is set but the version is not provided, then the last version is used.", 
+                               action="store_true")
     parser_update.set_defaults(func = _update_journal)
     
     # create the parser for the "list" command
@@ -423,23 +564,47 @@ if __name__ == "__main__":
     
     parser_upload = subparsers.add_parser("upload-files", help = "upload files to server")
     parser_upload.add_argument("--version", help="datetime of an upload (use list to get date times). defaults to all un-uploaded files", required=False)
-    parser_upload.add_argument("--modalities", help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
-    parser_upload.add_argument("--amend", help="amend the last upload", action="store_true")
+    parser_upload.add_argument("--modalities", 
+                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
+                               required=False)
     # optional list of files. if not present, use current journal
     # when upload, mark the journal version as uploaded.
     parser_upload.set_defaults(func = _upload_files)
 
-    parser_mark = subparsers.add_parser("mark-uploaded", help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
-    parser_mark.add_argument("--version", help="datetime of an upload (use list to get date times).", required=True)
+    parser_mark = subparsers.add_parser("mark-as-uploaded-central", 
+                                        help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
+    parser_mark.add_argument("--upload-datetime", help="datetime of an upload (use list to get date times).", required=True)
     parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.add_argument("--file-list", help="file list to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.set_defaults(func = _mark_as_uploaded)
+
+    parser_mark = subparsers.add_parser("mark-as-uploaded-local", 
+                                        help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
+    parser_mark.add_argument("--upload-datetime", help="datetime of an upload (use list to get date times).", required=True)
+    parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
+    parser_mark.add_argument("--file-list", help="file list to check.  version/file is the path in the central azure environment", required=False)
+    parser_mark.add_argument("--local-journal", help="local journal file name as alternative to the remote journal", required=False)
+    parser_mark.set_defaults(func = _mark_as_uploaded)
+
     
-    parser_verify = subparsers.add_parser("verify-files", help = "verify journal with file system.  WARNING files will be downloaded for md5 computation")
-    parser_verify.add_argument("--version", help="datetime of an upload (use list to get date times).  defaults to most recent uploaded files.", required=False)
-    parser_verify.add_argument("--modalities", help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", required=False)
+    parser_verify = subparsers.add_parser("verify-files", 
+                                          help = "verify a submssion version in cloud. Note Upload-files also verifies. WARNING files will be downloaded for md5 computation")
+    parser_verify.add_argument("--version", 
+                               help="datetime of a submission version.  defaults to most recent version.", 
+                               required=False)
+    parser_verify.add_argument("--modalities", 
+                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
+                               required=False)
     parser_verify.set_defaults(func = _verify_files)
         
+    parser_checkout = subparsers.add_parser("checkout-journal", help = "checkout a cloud journal file and create a local copy named journal.db")
+    parser_checkout.add_argument("--local-journal", help="local filename for the journal file", required=False)
+    parser_checkout.set_defaults(func = _checkout_journal)
+    
+    parser_checkin = subparsers.add_parser("checkin-journal", help = "check in a cloud journal file from local copy")
+    parser_checkin.add_argument("--local-journal", help="local filename for the journal file", required=False)
+    parser_checkin.set_defaults(func = _checkin_journal)
+    
     parser_unlock = subparsers.add_parser("unlock-journal", help = "unlock a cloud journal file")
     parser_unlock.set_defaults(func = upload_ops.unlock_journal)
         
@@ -463,16 +628,19 @@ if __name__ == "__main__":
     config = config_helper.load_config(config_fn)
     upload_method = config_helper.get_upload_methods(config)
     
-    if (args.command not in ["config-help", "usage", "unlock-journal"]):
+    if (args.command not in ["config-help", "usage",
+                             "unlock-journal", "checkout-journal",
+                             "checkin-journal", "mark-as-uploaded-local"]):
         journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config)
         
-        #     # push up a lock file.
+        #     # rename journal as a lock file a lock file.
         journal_fn = str(local_path.root)
         # === save command history
         args_dict = history_ops._strip_account_info(args)
         if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
             args_dict["config"] = config_fn
-        command_id = history_ops.save_command_history(*(history_ops._recreate_params(args_dict)), *(history_ops._get_paths_for_history(args, config)), journal_fn)
+        command_id = history_ops.save_command_history(*(history_ops._recreate_params(args_dict)),
+                                                      *(history_ops._get_paths_for_history(args, config)), journal_fn)
 
         # call the subcommand function.
         start = time.time()
@@ -483,7 +651,7 @@ if __name__ == "__main__":
         history_ops.update_command_completion(command_id, elapsed, journal_fn)
         
         # push journal up.
-        upload_ops.checkin_journal(journal_path, locked_path, local_path, journal_md5)
+        upload_ops.checkin_journal(journal_path, local_path, journal_md5)
         
     else:
         # if just printing usage or help, don't need to checkout the journal.
