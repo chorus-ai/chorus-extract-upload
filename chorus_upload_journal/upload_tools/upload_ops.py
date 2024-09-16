@@ -77,13 +77,13 @@ import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 # we always compare to the last journal.
 # all remote stores are dated, so override with partial uploads.
 
-
+LOCK_SUFFIX = ".locked"
 
 # check out a journal to work on
 # local name is what is in the config file
 # cloud file will be renamed to .locked
 # which will be returned as a key for unlocking later.
-def checkout_journal(config):
+def checkout_journal(config, local_fn = None):
     #============= get the journal file name and path obj  (download from cloud to local)
     journal_path_str = config_helper.get_journal_config(config)["path"]  # full file name
     print(config_helper.get_journal_config(config))
@@ -99,11 +99,13 @@ def checkout_journal(config):
     journal_fn = journal_file.name
     # see if any lock files exists.
     journal_dir = journal_file.parent
-    lock_file = journal_dir.joinpath(journal_fn + ".locked")
+    lock_file = journal_dir.joinpath(journal_fn + LOCK_SUFFIX)
     
     # so we try to lock by renaming. if it fails, then we handle if possible.
     downloadable = False
     already_locked = False
+        
+    # using rename to ensure that only one process can lock the file.
     try:
         journal_file.rename(lock_file)
         downloadable = True
@@ -120,7 +122,7 @@ def checkout_journal(config):
         raise ValueError("journal is locked. Please try again later.")
     # except FileExistsError as e:
        
-    local_path = FileSystemHelper(journal_fn)
+    local_path = FileSystemHelper(journal_fn) if local_fn is None else FileSystemHelper(local_fn)
     lock_path = FileSystemHelper(lock_file, client = journal_path.client)
     
     if downloadable:  # only if there something to download.
@@ -152,24 +154,26 @@ def checkout_journal(config):
     return (journal_path, lock_path, local_path, remote_md5)
 
 
-def checkin_journal(journal_path, lock_path, local_path, remote_md5):
+def checkin_journal(journal_path, local_path, remote_md5):
     # check journal file in.
     
     if not journal_path.is_cloud:
         # not cloud, so nothing to do.
         return
 
+    lock_file = journal_path.root.parent.joinpath(journal_path.root.name + LOCK_SUFFIX)
+
     # first copy local to cloud as lockfile. (with overwrite)
     # since each lock is dated, unlikely to have conflicts.
-    if lock_path.root.exists():
-        local_path.copy_file_to(relpath = None, dest_path = lock_path)
+    if lock_file.exists():
+        local_path.copy_file_to(relpath = None, dest_path = lock_file)
     else:
         raise ValueError("Locked file lost, unable to unlock.")
     
     # then rename lock back to journal.
     unlock_failed = False
     try:
-        lock_path.root.rename(journal_path.root)
+        lock_file.rename(journal_path.root)
     except:
         unlock_failed = True
         
@@ -186,7 +190,7 @@ def unlock_journal(args, config, journal_fn):
     # see if any lock files exists.
     journal_dir = journal_file.parent
     
-    locked_file = journal_dir.joinpath(journal_fn + ".locked")
+    locked_file = journal_dir.joinpath(journal_fn + LOCK_SUFFIX)
     has_journal = journal_file.exists()
     has_lock = locked_file.exists()
     if has_journal:
@@ -603,25 +607,26 @@ def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
     
     # this would actually compute the md5
     dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
-    dest_md5 = dest_meta['md5'] if dest_meta is not None else None
+    dest_md5 = dest_meta['md5'] if (dest_meta is not None) else None
 
     return (dest_meta, dest_md5, fid, fn, size, md5)
 
-def _get_file_info2(dated_dest_path: FileSystemHelper, file_info: tuple):
+def _get_file_info2(dest_path: FileSystemHelper, file_info: tuple):
     
-    fid, fn, size, md5 = file_info
+    fid, fn, size, md5, version = file_info
+    
+    dest_root = dest_path.root.joinpath(version)
     
     # this would actually compute the md5
-    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
-    dest_md5 = dest_meta['md5'] if dest_meta is not None else None
-    
-    print(fn, " md5s ", dest_md5, md5)
+    dest_meta = FileSystemHelper.get_metadata(root = dest_root, path = fn, with_metadata = True, with_md5 = True)
+    dest_md5 = dest_meta['md5'] if (dest_meta is not None) else None
 
-    return (dest_meta, dest_md5, fid, fn, size, md5)
+    return (dest_meta, dest_md5, dest_root, fid, fn, size, md5)
+
 
 # verify a set of files that have been uploaded.  version being None means using the last upload
 def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", 
-                 version: Optional[str] = None, 
+                 version: Optional[str] = None,
                  modalities: Optional[list] = None, verbose: bool = False):
     """
     Verify the integrity of uploaded files by comparing their metadata and MD5 checksums.
@@ -629,7 +634,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     Args:
         dest_path (FileSystemHelper): The destination path where the files are stored.
         databasename (str, optional): The name of the database file. Defaults to "journal.db".
-        upload_datetime_str (str, optional): The upload datetime string. If not provided, the latest upload datetime will be used.
+        version (str, optional): The version datetime string. If not provided, the latest version will be used.
 
     Returns:
         set: A set of filenames that have mismatched metadata or MD5 checksums.
@@ -643,8 +648,8 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
-    # get the current datetime
-    dtstr = cur.execute("SELECT MAX(upload_dtstr) FROM journal").fetchone()[0] if version is None else version
+    # get the most recent version's datetime
+    dtstr = cur.execute("SELECT MAX(version) FROM journal").fetchone()[0] if version is None else version
     
     if dtstr is None:
         print("INFO: no previous upload found.")
@@ -654,11 +659,16 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     
     # get the list of files, md5, size for upload_dtstr matching dtstr
     if modalities is None:
-        files_to_verify = cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL").fetchall()
+        files_to_verify = cur.execute(
+            "Select file_id, filepath, size, md5 from journal where version = '" +
+            dtstr + "' AND time_invalid_us is NULL").fetchall()
     else:
         files_to_verify = []
         for modality in modalities:
-            files_to_verify += cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr = '{dtstr}' AND time_invalid_us is NULL AND MODALITY = '{modality}'").fetchall()
+            files_to_verify += cur.execute(
+                "Select file_id, filepath, size, md5 from journal where version = '" + 
+                dtstr + "' AND time_invalid_us is NULL AND MODALITY = '" + 
+                modality + "'").fetchall()
         
     con.close()
     
@@ -743,15 +753,19 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
     if len(files) > 1:
         # more than 1 file to check. 
         # get the list of files, md5, size for unuploaded, active files
-        db_files = cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr is NULL AND time_invalid_us is NULL").fetchall()
+        db_files = cur.execute(
+            "Select file_id, filepath, size, md5, version from journal " + 
+            "where upload_dtstr is NULL AND time_invalid_us is NULL").fetchall()
     else:
-        db_files = cur.execute(f"Select file_id, filepath, size, md5 from journal where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '{files[0]}'").fetchall()
+        db_files = cur.execute(
+            "Select file_id, filepath, size, md5, version from journal " + 
+            "where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '" + 
+            files[0] + "'").fetchall()
         
     con.close()
     
     # make a hashtable
     db_files = {f[1]: f for f in db_files}
-    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(version))
     
     matched = []
     # nthreads = max(1, os.cpu_count() - 2)
@@ -785,11 +799,11 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         if f not in db_files:
             print("ERROR: file ", f, " not found in journal.")
             continue
-    
-        (dest_meta, dest_md5, fid, fn, size, md5) = _get_file_info2( dated_dest_path, db_files[f] )
+   
+        (dest_meta, dest_md5, dest_root,  fid, fn, size, md5) = _get_file_info2(dest_path, db_files[f] )
         
         if dest_meta is None:
-            print("ERROR:  missing file ", fn, " in destination ", dated_dest_path.root)
+            print("ERROR:  missing file ", fn, " in destination ", dest_root)
             continue
 
         if (size == dest_meta['size']) and (md5 == dest_md5):
