@@ -42,7 +42,7 @@ rm journal.db
 
 account="cs210032003ae243f15"
 container="test"
-sas="sp=racwdl&st=2024-09-05T14:27:06Z&se=2024-10-05T22:27:06Z&spr=https&sv=2022-11-02&sr=c&sig=k5NAbtzExdld%2ByHL6uzSGoUYyJD7frpYNR3CHob9Jyk%3D"
+sas=""
 
 # clean up
 az storage blob delete-batch --account-name ${account} --source ${container} --sas-token ${sas} --pattern "journal.db*"
