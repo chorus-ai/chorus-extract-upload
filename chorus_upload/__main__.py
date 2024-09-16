@@ -97,14 +97,7 @@ def _update_journal(args, config, journal_fn):
                        version = version, amend = (args.amend if first else True), 
                        verbose = args.verbose)
         first = False
-    
-# helper to list known update journals
-# def _list_journals(args, config, journal_fn):
-#     print("Uploads known in current journal: ")
-#     list_uploads(journal_fn)
-#     print("Backed up journals: ")
-#     list_journals(journal_fn)
-        
+            
 # helper to revert to a previous journal
 # def _revert_journal(args, config, journal_fn):
 #     revert_time = args.version
@@ -133,6 +126,7 @@ LINUX_STRINGS = {
 def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
     dest_config = kwargs.get('dest_config', {})
+    test_max = kwargs.get('max_num_files', 0)
     
     if (not dest_config['path'].startswith("az://")):
         print("WARNING: Destination is not an azure path.  cannot generate azcli script, but can genearete a list of source files")
@@ -172,7 +166,6 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     set_var = WINDOWS_STRINGS["set_var"] if is_windows else LINUX_STRINGS["set_var"]
     export_var = WINDOWS_STRINGS["export_var"] if is_windows else LINUX_STRINGS["export_var"]
     testme = ""
-    testmax = 15
     
     with open(fn, 'w') as f:
         # if windows, use double backslash
@@ -328,7 +321,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                                 f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
                             f.write(eol)
                             count = 0
-                        if testcount > testmax:
+                        if (test_max > 0) and (testcount > test_max):
                             break
                               
                     if count > 0:
@@ -350,7 +343,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                             f.write("fi" + eol)
                             f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
 
-                    if testcount > testmax:
+                    if (test_max > 0) and (testcount > test_max):
                         break
                             
             f.write(comment + "TEST checkin the journal" + eol)
@@ -390,7 +383,7 @@ def _select_files(args, config, journal_fn):
             file_list[mod] = (mod_config, mod_files)
     
         _write_files(file_list, upload_datetime, filename = args.output_file, 
-                     out_type = args.output_type, dest_config = central, config_fn = args.config)
+                     out_type = args.output_type, dest_config = central, config_fn = args.config, max_num_files = args.max_num_files)
     
     
 def _mark_as_uploaded(args, config, journal_fn):
@@ -515,9 +508,9 @@ def _verify_files(args, config, journal_fn):
     upload_ops.verify_files(centralfs, journal_fn, version = args.version, modalities = mods, verbose = args.verbose)
     
 def _list_versions(args, config, journal_fn):
-    print("Uploads known in current journal: ")
+    print("INFO: Uploads known in current journal: ")
     local_ops.list_versions(journal_fn)
-    print("Backed up journals: ")
+    print("INFO: Backed up journals: ")
     local_ops.list_journals(journal_fn)
 
 
@@ -596,6 +589,7 @@ if __name__ == "__main__":
     parser_select.add_argument("--modalities", help="list of modalities to include in the journal update. defaults to all.  case sensitive.", required=False)
     parser_select.add_argument("--output-file", help="output file", required=False)
     parser_select.add_argument("--output-type", help="the output file type: [list | azcli | azcopy].  azcli and azcopy are executable scripts.", required=False)
+    parser_select.add_argument("--max-num-files", help="maximum number of files to list.", required=False)
     parser_select.set_defaults(func = _select_files)
     
     parser_upload = file_subparsers.add_parser("upload", help = "upload files to server")
@@ -637,8 +631,6 @@ if __name__ == "__main__":
     # parse the arguments
     args = parser.parse_args()
     
-    print(args)
-    
     #============= locate and parse the config file
     # get the current script path
     if args.config is not None:
@@ -658,7 +650,7 @@ if __name__ == "__main__":
                             ". please create one from the config.toml.template file,",
                             " or specify the config file with the -c option.")
         
-        print("Using config file: ", config_fn)
+        print("INFO: Using config file: ", config_fn)
         config = config_helper.load_config(config_fn)
         upload_method = config_helper.get_upload_methods(config)
         

@@ -16,7 +16,6 @@ def _strip_account_info(args):
     return filtered_args
 
 def _recreate_params(filtered_args: dict):
-    print(filtered_args)
     
     params = ""
     common_params = ""
