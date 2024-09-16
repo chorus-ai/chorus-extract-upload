@@ -3,7 +3,7 @@ requires = ["flit_core >=3.2,<4"]
 build-backend = "flit_core.buildapi"
 
 [project]
-name = "chorus_upload_journal"
+name = "chorus_upload"
 authors = [
     {name = "Will Ashe"},
     {name = "Tony Pan"},

@@ -148,10 +148,10 @@ azure_sas_token = "sastoken"
 
 ## Usage
 
-The Upload Tool is named `chorus_upload_journal/upload_tools` in the subdirectory `upload_manifest` in `chorus-extract-upload`.  The Upload Tool can be run as
+The Upload Tool is named `chorus_upload` contained in the subdirectory `chorus_upload` in `chorus-extract-upload`.  The Upload Tool can be run as
 
 ```
-python chorus_upload_journal/upload_tools [params] <subcommand> [subcommand params]
+python chorus_upload [params] <subcommand> [subcommand params]
 ```
 
 The `-h` parameter will display help information for the tool or each subcommand.  Suppported commands include `update`, `upload`, `usage`, and `verify`
@@ -167,18 +167,18 @@ From the Azure Portal, navigate to `Storage Account` / `Containers`, and select 
 If you are transferring files from a cloud account to CHoRUS, please refer to you institution's documentation to retrieve credentials for other storage clouds.  For a list of supported authentication mechanisms for each tested cloud providers, please see the `config.toml.template` file.
 
 ### Create or Update Manifest
-To create or an update manifest, the required parameters are a manifest name, a `site-path`, and optionally the cloud credential if `site-path` is a cloud storage path.  Optionally, the type of data (`OMOP`, `Images`, `Waveforms`) to use to update manifest may be specified.   Multiple manifest updates may be performed before a data submission.
+To create or an update journal, the required parameters are a journal name, a `site-path`, and optionally the cloud credential if `site-path` is a cloud storage path.  Optionally, the type of data (`OMOP`, `Images`, `Waveforms`) to use to update journal may be specified.   Multiple journal updates may be performed before a data submission.
 
 ```
-python chorus_upload_journal/upload_tools update-journal
+python chorus_upload journal update
 ```
 
 
 ### Upload files
 
-File upload follows the same pattern as manifest update. 
+File upload follows the same pattern as journal update. 
 
 From local file system
 ```
-python chorus_upload_journal/upload_tools upload-files
+python chorus_upload file upload
 ```

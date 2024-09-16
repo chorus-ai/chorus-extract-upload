@@ -3,7 +3,7 @@ import sqlite3
 import pandas as pd
 import time
 import math
-from chorus_upload_journal.upload_tools.storage_helper import FileSystemHelper
+from chorus_upload.storage_helper import FileSystemHelper
 
 from typing import Optional, Union
 from time import strftime, gmtime
@@ -14,10 +14,10 @@ from pathlib import Path
 import re
 from enum import Enum
 import concurrent.futures
-from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
-from chorus_upload_journal.upload_tools.local_ops import list_files, backup_journal
-import chorus_upload_journal.upload_tools.config_helper as config_helper
-import chorus_upload_journal.upload_tools.storage_helper as storage_helper
+from chorus_upload.defaults import DEFAULT_MODALITIES
+from chorus_upload.local_ops import list_files, backup_journal
+import chorus_upload.config_helper as config_helper
+import chorus_upload.storage_helper as storage_helper
 
 
 # TODO: DONE - Remove registry

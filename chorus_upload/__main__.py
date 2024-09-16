@@ -3,18 +3,18 @@ import shutil
 import time
 import argparse
 
-from chorus_upload_journal.upload_tools.local_ops import update_journal, list_files
-# from chorus_upload_journal.upload_tools.generate_journal import restore_journal, list_uploads, list_journals
-# from chorus_upload_journal.upload_tools.upload_ops_builtin import upload_files, verify_files, list_files
-from chorus_upload_journal.upload_tools import history_ops 
-from chorus_upload_journal.upload_tools.storage_helper import FileSystemHelper, _make_client
+from chorus_upload.local_ops import update_journal, list_files
+# from chorus_upload.generate_journal import restore_journal, list_uploads, list_journals
+# from chorus_upload.upload_ops_builtin import upload_files, verify_files, list_files
+from chorus_upload import history_ops 
+from chorus_upload.storage_helper import FileSystemHelper, _make_client
 from pathlib import Path
-from chorus_upload_journal.upload_tools import config_helper
+from chorus_upload import config_helper
 import json
-from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
-from chorus_upload_journal.upload_tools import upload_ops
-from chorus_upload_journal.upload_tools import local_ops
-import chorus_upload_journal.upload_tools.storage_helper as storage_helper
+from chorus_upload.defaults import DEFAULT_MODALITIES
+from chorus_upload import upload_ops
+from chorus_upload import local_ops
+import chorus_upload.storage_helper as storage_helper
 
 
 
@@ -62,18 +62,20 @@ def _print_usage(args, config, journal_fn):
     print("  -v or --verbose:  verbose output")
     print("  -c or --config:   config file (defaults to config.toml in the script directory) with storage path locations")
     print("generating journal")
-    print("  update-journal:    python chorus_upload_journal/upload_tools --config ./config.toml update")
-    print("             python chorus_upload_journal/upload_tools update-journal --modalities Waveforms,Images,OMOP")
+    print("  journal update:    python chorus_upload --config ./config.toml journal update")
+    print("             python chorus_upload journal update --modalities Waveforms,Images,OMOP")
     print("generating upload file list")
-    print("  list-files:    python chorus_upload_journal/upload_tools select")
-    print("             python chorus_upload_journal/upload_tools list-files --version 20210901120000 -f filelist.txt")
+    print("  file list:    python chorus_upload file list")
+    print("             python chorus_upload file list --version 20210901120000 -f filelist.txt")
     print("uploading to and verifying with central")
-    print("  upload-files:    python chorus_upload_journal/upload_tools upload ")
-    print("             python chorus_upload_journal/upload_tools upload-files --modalities Images")
-    print("  verify-files:    python chorus_upload_journal/upload_tools verify-files --modalities Images --version 20210901120000")
-    # print("working with journals:")
-    # print("  list:      python chorus_upload_journal/upload_tools list-versions")
-    # print("  revert:    python chorus_upload_journal/upload_tools revert-version --version 20210901120000")
+    print("  file upload:    python chorus_upload file upload ")
+    print("             python chorus_upload file upload --modalities Images")
+    print("  file verify:    python chorus_upload file verify --modalities Images --version 20210901120000")
+    print("working with journals:")
+    print("  list versions:      python chorus_upload journal list")
+    print("  checkout:      python chorus_upload journal checkout --local-journal journal.db")
+    print("  checkin:      python chorus_upload journal checkin --local-journal journal.db")
+    # print("  revert:    python chorus_upload revert-version --version 20210901120000")
     
         
 # helper to call update journal
@@ -219,8 +221,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
 
             f.write(comment + " checkout the journal" + eol)
             f.write(set_var + "local_journal=\"journal.db\"" + eol)
-            f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
-                    " checkout-journal --local-journal " + var_start+"local_journal"+var_end + eol)
+            f.write(testme + "python chorus_upload -c " + config_fn + 
+                    " journal checkout --local-journal " + var_start+"local_journal"+var_end + eol)
                 
                 
             # then we iterate over the files, and decide based on out_type.
@@ -309,8 +311,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                         if (count >= step):
                             # last part is again the same.
                             f.write(eol)
-                            f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
-                                    " mark-as-uploaded-local --local-journal " + var_start+"local_journal"+var_end + 
+                            f.write(testme + "python chorus_upload -c " + config_fn + 
+                                    " file mark_as_uploaded_local --local-journal " + var_start+"local_journal"+var_end + 
                                     " --file-list files_" + var_start+"dt"+var_end + ".txt --upload-datetime " + 
                                     var_start+"dt"+var_end + eol)
 
@@ -332,8 +334,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                     if count > 0:
                         # last part is again the same.
                         f.write(eol)
-                        f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
-                                " mark-as-uploaded-local --local-journal " + var_start+"local_journal"+var_end + 
+                        f.write(testme + "python chorus_upload -c " + config_fn + 
+                                " file mark_as_uploaded_local --local-journal " + var_start+"local_journal"+var_end + 
                                 " --file-list files_" + var_start+"dt"+var_end + ".txt --upload-datetime " + 
                                 var_start+"dt"+var_end + eol)
                         f.write(eol)
@@ -357,8 +359,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                     var_start+"container"+var_end + " --prefix " + var_start+"ver"+var_end +
                     "/ --output table" + eol)     
             f.write(eol)
-            f.write(testme + "python chorus_upload_journal/upload_tools -c " + config_fn + 
-                    " checkin-journal --local-journal " + var_start+"local_journal"+var_end + eol)
+            f.write(testme + "python chorus_upload -c " + config_fn + 
+                    " journal checkin --local-journal " + var_start+"local_journal"+var_end + eol)
                 
             
 # helper to display/save files to upload
@@ -375,7 +377,7 @@ def _select_files(args, config, journal_fn):
             mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
             mod_config = config_helper.get_site_config(config, mod)
 
-            for (version, files) in mod_files:
+            for (version, files) in mod_files.items():
                 print("files for version: ", version, " root at ", mod_config["path"], " for ", mod)
                 print("\n".join(files))
     else:
@@ -535,8 +537,20 @@ if __name__ == "__main__":
     parser_auth = subparsers.add_parser("config-help", help = "show help information about the configuration file")
     parser_auth.set_defaults(func = config_helper._print_config_usage)
     
+    #------- history
+    parser_history = subparsers.add_parser("history", help = "show command history")
+    parser_history.set_defaults(func = _show_history)
+    
+    #------ create subparsers
+    parser_journal = subparsers.add_parser("journal", help = "journal operations (update, list, checkout, checkin, unlock)")
+    journal_subparsers = parser_journal.add_subparsers(help="sub-command help", dest="journal_command")
+    
+    parser_file = subparsers.add_parser("file", help = "file operations (list, upload, mark_as_uploaded_central, mark_as_uploaded_local, verify)")
+    file_subparsers = parser_file.add_subparsers(help="sub-command help", dest="file_command")
+    
+    
     #------ create the parser for the "update" command
-    parser_update = subparsers.add_parser("update-journal", help = "create or update the current journal")
+    parser_update = journal_subparsers.add_parser("update", help = "create or update the current journal")
     parser_update.add_argument("--modalities", 
                                help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
                                required=False)
@@ -549,8 +563,21 @@ if __name__ == "__main__":
     parser_update.set_defaults(func = _update_journal)
     
     # create the parser for the "list" command
-    parser_list = subparsers.add_parser("list-versions", help = "list the versions in a journal database")
+    parser_list = journal_subparsers.add_parser("list", help = "list the versions in a journal database")
     parser_list.set_defaults(func = _list_versions)
+    
+    parser_checkout = journal_subparsers.add_parser("checkout", help = "checkout a cloud journal file and create a local copy named journal.db")
+    parser_checkout.add_argument("--local-journal", help="local filename for the journal file", required=False)
+    parser_checkout.set_defaults(func = _checkout_journal)
+    
+    parser_checkin = journal_subparsers.add_parser("checkin", help = "check in a cloud journal file from local copy")
+    parser_checkin.add_argument("--local-journal", help="local filename for the journal file", required=False)
+    parser_checkin.set_defaults(func = _checkin_journal)
+    
+    parser_unlock = journal_subparsers.add_parser("unlock", help = "unlock a cloud journal file")
+    parser_unlock.set_defaults(func = upload_ops.unlock_journal)
+        
+
     
     # DANGEROUS
     # parser_revert = subparsers.add_parser("revert-version", help = "revert to a previous journal version.")
@@ -561,15 +588,17 @@ if __name__ == "__main__":
     # parser_delete = subparsers.add_parser("delete", help = "delete version in a journal database")
     # parser_delete.add_argument("--version", help="datetime of an upload (use list to get date times).", required=False)
 
+    # ----------- file stuff.
+
     # create the parser for the "select" command
-    parser_select = subparsers.add_parser("list-files", help = "list files to upload")
+    parser_select = file_subparsers.add_parser("list", help = "list files to upload")
     parser_select.add_argument("--version", help="datetime of an upload (use list to get date times).  defaults to all un-uploaded files.", required=False)
     parser_select.add_argument("--modalities", help="list of modalities to include in the journal update. defaults to all.  case sensitive.", required=False)
     parser_select.add_argument("--output-file", help="output file", required=False)
     parser_select.add_argument("--output-type", help="the output file type: [list | azcli | azcopy].  azcli and azcopy are executable scripts.", required=False)
     parser_select.set_defaults(func = _select_files)
     
-    parser_upload = subparsers.add_parser("upload-files", help = "upload files to server")
+    parser_upload = file_subparsers.add_parser("upload", help = "upload files to server")
     parser_upload.add_argument("--version", help="datetime of an upload (use list to get date times). defaults to all un-uploaded files", required=False)
     parser_upload.add_argument("--modalities", 
                                help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
@@ -578,14 +607,14 @@ if __name__ == "__main__":
     # when upload, mark the journal version as uploaded.
     parser_upload.set_defaults(func = _upload_files)
 
-    parser_mark = subparsers.add_parser("mark-as-uploaded-central", 
+    parser_mark = file_subparsers.add_parser("mark_as_uploaded_central", 
                                         help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
     parser_mark.add_argument("--upload-datetime", help="datetime of an upload (use list to get date times).", required=True)
     parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.add_argument("--file-list", help="file list to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.set_defaults(func = _mark_as_uploaded)
 
-    parser_mark = subparsers.add_parser("mark-as-uploaded-local", 
+    parser_mark = file_subparsers.add_parser("mark_as_uploaded_local", 
                                         help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
     parser_mark.add_argument("--upload-datetime", help="datetime of an upload (use list to get date times).", required=True)
     parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
@@ -594,7 +623,7 @@ if __name__ == "__main__":
     parser_mark.set_defaults(func = _mark_as_uploaded)
 
     
-    parser_verify = subparsers.add_parser("verify-files", 
+    parser_verify = file_subparsers.add_parser("verify", 
                                           help = "verify a submssion version in cloud. Note Upload-files also verifies. WARNING files will be downloaded for md5 computation")
     parser_verify.add_argument("--version", 
                                help="datetime of a submission version.  defaults to most recent version.", 
@@ -604,22 +633,11 @@ if __name__ == "__main__":
                                required=False)
     parser_verify.set_defaults(func = _verify_files)
         
-    parser_checkout = subparsers.add_parser("checkout-journal", help = "checkout a cloud journal file and create a local copy named journal.db")
-    parser_checkout.add_argument("--local-journal", help="local filename for the journal file", required=False)
-    parser_checkout.set_defaults(func = _checkout_journal)
-    
-    parser_checkin = subparsers.add_parser("checkin-journal", help = "check in a cloud journal file from local copy")
-    parser_checkin.add_argument("--local-journal", help="local filename for the journal file", required=False)
-    parser_checkin.set_defaults(func = _checkin_journal)
-    
-    parser_unlock = subparsers.add_parser("unlock-journal", help = "unlock a cloud journal file")
-    parser_unlock.set_defaults(func = upload_ops.unlock_journal)
-        
-    parser_history = subparsers.add_parser("history", help = "show command history")
-    parser_history.set_defaults(func = _show_history)
         
     # parse the arguments
     args = parser.parse_args()
+    
+    print(args)
     
     #============= locate and parse the config file
     # get the current script path
@@ -628,43 +646,54 @@ if __name__ == "__main__":
     else:
         scriptdir = Path(__file__).absolute().parent
         config_fn = str(scriptdir.joinpath("config.toml"))
-    if (not Path(config_fn).exists()):
-        raise ValueError("Config file does not exist: ", config_fn, ". please create one from the config.toml.template file.")
-        
-    print("Using config file: ", config_fn)
-    config = config_helper.load_config(config_fn)
-    upload_method = config_helper.get_upload_methods(config)
     
-    if (args.command not in ["config-help", "usage",
-                             "unlock-journal", "checkout-journal",
-                             "checkin-journal", "mark-as-uploaded-local"]):
-        journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config)
-        
-        #     # rename journal as a lock file a lock file.
-        journal_fn = str(local_path.root)
-        # === save command history
-        args_dict = history_ops._strip_account_info(args)
-        if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
-            args_dict["config"] = config_fn
-        command_id = history_ops.save_command_history(*(history_ops._recreate_params(args_dict)),
-                                                      *(history_ops._get_paths_for_history(args, config)), journal_fn)
-
+    if (args.command in ["config-help", "usage"]):
         # call the subcommand function.
-        start = time.time()
-        args.func(args, config, journal_fn)
-        end = time.time()
-        elapsed = end - start
-        print(f"Command Completed in {elapsed:.2f} seconds.")
-        history_ops.update_command_completion(command_id, elapsed, journal_fn)
-        
-        # push journal up.
-        upload_ops.checkin_journal(journal_path, local_path, journal_md5)
+        args.func(args, None, None)
         
     else:
-        # if just printing usage or help, don't need to checkout the journal.
-        # if unlock, do it in the cloud only.
-        journal_fn = config_helper.get_journal_config(config)["path"]
-    
-        # call the subcommand function.
-        args.func(args, config, journal_fn)
+        if (not Path(config_fn).exists()):
+            raise ValueError("Config file does not exist: ", 
+                            config_fn, 
+                            ". please create one from the config.toml.template file,",
+                            " or specify the config file with the -c option.")
+        
+        print("Using config file: ", config_fn)
+        config = config_helper.load_config(config_fn)
+        upload_method = config_helper.get_upload_methods(config)
+        
+        skip_checkout = (args.command in ["config-help", "usage"]) or \
+            ((args.command in ["journal"]) and (args.journal_command in ["unlock", "checkout", "checkin"])) or \
+            ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"]))    
+        
+        if (not skip_checkout):
+            journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config)
+            
+            #     # rename journal as a lock file a lock file.
+            journal_fn = str(local_path.root)
+            # === save command history
+            args_dict = history_ops._strip_account_info(args)
+            if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
+                args_dict["config"] = config_fn
+            command_id = history_ops.save_command_history(*(history_ops._recreate_params(args_dict)),
+                                                        *(history_ops._get_paths_for_history(args, config)), journal_fn)
+
+            # call the subcommand function.
+            start = time.time()
+            args.func(args, config, journal_fn)
+            end = time.time()
+            elapsed = end - start
+            print(f"Command Completed in {elapsed:.2f} seconds.")
+            history_ops.update_command_completion(command_id, elapsed, journal_fn)
+            
+            # push journal up.
+            upload_ops.checkin_journal(journal_path, local_path, journal_md5)
+            
+        else:
+            # if just printing usage or help, don't need to checkout the journal.
+            # if unlock, do it in the cloud only.
+            journal_fn = config_helper.get_journal_config(config)["path"]
+        
+            # call the subcommand function.
+            args.func(args, config, journal_fn)
     

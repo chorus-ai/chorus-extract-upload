@@ -1,7 +1,7 @@
 import sqlite3
 import time
-import chorus_upload_journal.upload_tools.config_helper as config_helper
-from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
+import chorus_upload.config_helper as config_helper
+from chorus_upload.defaults import DEFAULT_MODALITIES
 import json
 
 def _strip_account_info(args):
@@ -16,6 +16,8 @@ def _strip_account_info(args):
     return filtered_args
 
 def _recreate_params(filtered_args: dict):
+    print(filtered_args)
+    
     params = ""
     common_params = ""
     command = ""
@@ -31,10 +33,15 @@ def _recreate_params(filtered_args: dict):
     
     if ("command" in filtered_args.keys()) and (filtered_args["command"] is not None):
         command = filtered_args["command"]
-    
+        
+    exclude_params = ["command", "verbose", "config"]
+    if (command in ["journal", "file"]):    
+        command = command + " " + filtered_args[command + "_command"]
+        exclude_params.append(command + "_command")
+            
     # cat the rest
     for arg, val in filtered_args.items():
-        if (arg not in ["command", "verbose", "config"]) and (val is not None):
+        if (arg not in exclude_params) and (val is not None):
             arg_str = arg.replace("_", "-")
             if type(val) == bool:
                 if val == True:
@@ -49,8 +56,11 @@ def _recreate_params(filtered_args: dict):
 
 def _get_paths_for_history(args, config):
     command = args.command
+    # if (command in ["journal", "file"]):    
+    #     command = command + " " + args[command + "_command"]
     
-    if (command in ["update", "verify", "upload"]):
+    if ((command == "file") and 
+        (args.file_command in ["upload", "verify", "mark_as_uploaded_central", "mark_as_uploaded_local"])):
         dest_path = config_helper.get_central_config(config)["path"]
     else:
         dest_path = None
@@ -58,7 +68,10 @@ def _get_paths_for_history(args, config):
     src_paths_json = None    
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
-    if (command in ["update", "upload", "select"]):
+    if (((command == "file") and 
+         (args.file_command in ["upload"])) or 
+        ((command == "journal") and 
+         (args.journal_command in ["update"]))):
         src_paths = { mod: mod_config["path"] for mod, mod_config in mod_configs.items() }
         # convert dict to json string
         if len(src_paths) > 0:

@@ -57,13 +57,13 @@ azcli=TestData/azcli1.sh
 azcli2=TestData/azcli2.sh
 
 echo TEST update journal
-echo python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities OMOP,Waveforms
-python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${config} journal update --modalities OMOP,Waveforms
+python chorus_upload -v -c ${config} journal update --modalities OMOP,Waveforms
 cp journal.db TestData/journal1.1.db
 
 echo TEST generate file list
-echo python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
 cat ${azcli}
 
 echo TEST with local journal and upload to central azcli
@@ -75,14 +75,14 @@ eval ${azcli}
 # wait for user input
 cp journal.db TestData/journal1.2.db
 
-echo python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
-python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
+echo python chorus_upload -v -c ${config} journal update --modalities Images
+python chorus_upload -v -c ${config} journal update --modalities Images
 cp journal.db TestData/journal1.3.db
 
 
 echo TEST generate file list again 
-echo python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
-python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
 cat ${azcli2}
 
 echo TEST with local journal and upload to central azcli - AMENDING
@@ -92,26 +92,26 @@ eval ${azcli2}
 cp journal.db TestData/journal1.4.db
 
 echo TEST with local journal and upload to central built in - AMENDING
-echo python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities OMOP,Waveforms
-python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
+python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
 cp journal.db TestData/journal1.5.db
 
 
 echo TEST update journal with second snapshot data
-echo python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
-python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
+echo python chorus_upload -v -c ${config} journal update --modalities Images
+python chorus_upload -v -c ${config} journal update --modalities Images
 cp journal.db TestData/journal1.6.db
 
 
 echo TEST with local journal and upload to central using built in
-echo python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities Images
-python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities Images
+echo python chorus_upload -v -c ${config} file upload --modalities Images
+python chorus_upload -v -c ${config} file upload --modalities Images
 cp journal.db TestData/journal1.7.db
 
 
 echo TEST verify the version
-echo python chorus_upload_journal/upload_tools -v -c ${config} verify-files --modalities OMOP
-python chorus_upload_journal/upload_tools -v -c ${config} verify-files --modalities OMOP
+echo python chorus_upload -v -c ${config} file verify --modalities OMOP
+python chorus_upload -v -c ${config} file verify --modalities OMOP
 
 # ========================
 echo TEST phase 2:  cloud journal with firstsnapshot data
@@ -123,13 +123,13 @@ azcli2=TestData/azcli4.sh
 
 
 echo TEST update journal
-echo python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities OMOP,Waveforms
-python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${config} journal update --modalities OMOP,Waveforms
+python chorus_upload -v -c ${config} journal update --modalities OMOP,Waveforms
 cp journal.db TestData/journal2.1.db
 
 echo TEST generate file list
-echo python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
 cat ${azcli}
 
 echo TEST with cloud journal and upload to central azcli
@@ -138,14 +138,14 @@ chmod a+x ${azcli}
 eval ${azcli}
 cp journal.db TestData/journal2.2.db
 
-echo python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
-python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
+echo python chorus_upload -v -c ${config} journal update --modalities Images
+python chorus_upload -v -c ${config} journal update --modalities Images
 cp journal.db TestData/journal2.3.db
 
 
 echo TEST generate file list again
-echo python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
-python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
 cat ${azcli2}
 
 echo TEST with cloud journal and upload to central azcli - AMENDING
@@ -155,25 +155,25 @@ eval ${azcli2}
 cp journal.db TestData/journal2.4.db
 
 echo TEST with cloud journal and upload to central built in - AMENDING
-echo python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities OMOP,Waveforms
-python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
+python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
 cp journal.db TestData/journal2.5.db
 
 
 echo TEST update journal with second snapshot data
-echo python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
-python chorus_upload_journal/upload_tools -v -c ${config} update-journal --modalities Images
+echo python chorus_upload -v -c ${config} journal update --modalities Images
+python chorus_upload -v -c ${config} journal update --modalities Images
 cp journal.db TestData/journal2.6.db
 
 
 echo TEST with cloud journal and upload to central using builcloud
-echo python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities Images
-python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities Images
+echo python chorus_upload -v -c ${config} file upload --modalities Images
+python chorus_upload -v -c ${config} file upload --modalities Images
 cp journal.db TestData/journal2.7.db
 
 echo TEST verify the version
-echo python chorus_upload_journal/upload_tools -v -c ${config} verify-files --modalities OMOP
-python chorus_upload_journal/upload_tools -v -c ${config} verify-files --modalities OMOP
+echo python chorus_upload -v -c ${config} file verify --modalities OMOP
+python chorus_upload -v -c ${config} file verify --modalities OMOP
 
 
 # ========================
@@ -187,26 +187,26 @@ azcli2=TestData/azcli6.sh
 localjournal=journal.db
 
 echo TEST checkout cloud journal, update, then check in.
-echo python chorus_upload_journal/upload_tools -v -c ${config} checkout-journal --local-journal ${localjournal}
-python chorus_upload_journal/upload_tools -v -c ${config} checkout-journal --local-journal ${localjournal}
+echo python chorus_upload -v -c ${config} journal checkout --local-journal ${localjournal}
+python chorus_upload -v -c ${config} journal checkout --local-journal ${localjournal}
 cp journal.db TestData/journal3.1.db
 
-echo python chorus_upload_journal/upload_tools -v -c ${configlocal} update-journal --modalities OMOP,Waveforms
-python chorus_upload_journal/upload_tools -v -c ${configlocal} update-journal --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${configlocal} journal update --modalities OMOP,Waveforms
+python chorus_upload -v -c ${configlocal} journal update --modalities OMOP,Waveforms
 cp journal.db TestData/journal3.2.db
 
-echo python chorus_upload_journal/upload_tools -v -c ${config} checkin-journal --local-journal ${localjournal}
-python chorus_upload_journal/upload_tools -v -c ${config} checkin-journal --local-journal ${localjournal}
+echo python chorus_upload -v -c ${config} journal checkin --local-journal ${localjournal}
+python chorus_upload -v -c ${config} journal checkin --local-journal ${localjournal}
 
 echo TEST checkout cloud journal 
-echo python chorus_upload_journal/upload_tools -v -c ${config} checkout-journal --local-journal ${localjournal}
-python chorus_upload_journal/upload_tools -v -c ${config} checkout-journal --local-journal ${localjournal}
+echo python chorus_upload -v -c ${config} journal checkout --local-journal ${localjournal}
+python chorus_upload -v -c ${config} journal checkout --local-journal ${localjournal}
 cp journal.db TestData/journal3.3.db
 
 
 echo TEST generate file list
-echo python chorus_upload_journal/upload_tools -v -c ${configlocal} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload_journal/upload_tools -v -c ${configlocal} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
 cat ${azcli}
 
 echo TEST with local journal and upload to central azcli
@@ -217,8 +217,8 @@ cp journal.db TestData/journal3.4.db
 
 
 echo TEST generate file list
-echo python chorus_upload_journal/upload_tools -v -c ${configlocal} list-files --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
-python chorus_upload_journal/upload_tools -v -c ${configlocal} list-files --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+echo python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
 cat ${azcli2}
 
 echo TEST with local journal and upload to central azcli - AMENDING
@@ -229,13 +229,13 @@ cp journal.db TestData/journal3.5.db
 
 
 echo TEST checkin journal
-echo python chorus_upload_journal/upload_tools -v -c ${config} checkin-journal --local-journal ${localjournal}
-python chorus_upload_journal/upload_tools -v -c ${config} checkin-journal --local-journal ${localjournal}
+echo python chorus_upload -v -c ${config} journal checkin --local-journal ${localjournal}
+python chorus_upload -v -c ${config} journal checkin --local-journal ${localjournal}
 
 
 echo TEST generate file list central
-echo python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload_journal/upload_tools -v -c ${config} list-files --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
 cat ${azcli}
 
 echo TEST with central journal and upload to central azcli - AMENDING
@@ -246,10 +246,10 @@ cp journal.db TestData/journal3.6.db
 
 
 echo TEST with cloud journal upload to central built in - AMENDING
-echo python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities OMOP,Waveforms
-python chorus_upload_journal/upload_tools -v -c ${config} upload-files --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
+python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
 cp journal.db TestData/journal3.7.db
 
 echo TEST verify the version
-echo python chorus_upload_journal/upload_tools -v -c ${config} verify-files --modalities OMOP
-python chorus_upload_journal/upload_tools -v -c ${config} verify-files --modalities OMOP
+echo python chorus_upload -v -c ${config} file verify --modalities OMOP
+python chorus_upload -v -c ${config} file verify --modalities OMOP

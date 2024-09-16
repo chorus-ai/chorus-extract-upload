@@ -61,7 +61,7 @@ import time
 import os
 
 import shutil
-from chorus_upload_journal.upload_tools import config_helper
+from chorus_upload import config_helper
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)

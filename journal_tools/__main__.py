@@ -7,7 +7,7 @@ from journal_tools import restore_journal, list_uploads, list_journals
 # from chorus_upload_journal/journal_tools import save_command_history, show_command_history
 
 from pathlib import Path
-from chorus_upload_journal.upload_tools import config_helper
+from chorus_upload import config_helper
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands

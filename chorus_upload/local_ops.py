@@ -4,9 +4,9 @@ import time
 import math
 import os
 from typing import Optional, List
-from chorus_upload_journal.upload_tools.storage_helper import FileSystemHelper
+from chorus_upload.storage_helper import FileSystemHelper
 from pathlib import Path
-from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
+from chorus_upload.defaults import DEFAULT_MODALITIES
 import concurrent.futures
 
 
