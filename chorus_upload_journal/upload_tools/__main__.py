@@ -13,6 +13,7 @@ from chorus_upload_journal.upload_tools import config_helper
 import json
 from chorus_upload_journal.upload_tools.defaults import DEFAULT_MODALITIES
 from chorus_upload_journal.upload_tools import upload_ops
+from chorus_upload_journal.upload_tools import local_ops
 import chorus_upload_journal.upload_tools.storage_helper as storage_helper
 
 
@@ -511,6 +512,12 @@ def _verify_files(args, config, journal_fn):
     
     upload_ops.verify_files(centralfs, journal_fn, version = args.version, modalities = mods, verbose = args.verbose)
     
+def _list_versions(args, config, journal_fn):
+    print("Uploads known in current journal: ")
+    local_ops.list_versions(journal_fn)
+    print("Backed up journals: ")
+    local_ops.list_journals(journal_fn)
+
 
 if __name__ == "__main__":
     
@@ -542,8 +549,8 @@ if __name__ == "__main__":
     parser_update.set_defaults(func = _update_journal)
     
     # create the parser for the "list" command
-    # parser_list = subparsers.add_parser("list-versions", help = "list the versions in a journal database")
-    # parser_list.set_defaults(func = _list_journals)
+    parser_list = subparsers.add_parser("list-versions", help = "list the versions in a journal database")
+    parser_list.set_defaults(func = _list_versions)
     
     # DANGEROUS
     # parser_revert = subparsers.add_parser("revert-version", help = "revert to a previous journal version.")

@@ -188,17 +188,6 @@ def __make_az_client(auth_params: dict):
     else:
         raise ValueError("No viable Azure account info available to open connection")
         
-    # from cloudpathlib import AzureBlobClient
-    # if azure_account_url:
-    #     return AzureBlobClient(account_url=azure_account_url, file_cache_mode = FileCacheMode.cloudpath_object)
-    # elif azure_storage_connection_string:
-    #     # connection string specified, then use it
-    #     return AzureBlobClient(connection_string = azure_storage_connection_string, file_cache_mode = FileCacheMode.cloudpath_object)
-    # elif azure_storage_connection_string_env:
-    #     # connection string specified, then use it
-    #     return AzureBlobClient(connection_string = azure_storage_connection_string_env, file_cache_mode = FileCacheMode.cloudpath_object)
-    # else:
-    #     raise ValueError("No viable Azure account info available to open connection")
 
 # # internal helper to create the cloud client
 # def __make_gs_client(auth_params: dict):

@@ -493,28 +493,6 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 update_args = []
                 del_args = []
     
-    #### --------------OLD begin
-    # # then copy the files over
-    # count = src_path.copy_files_to(files_to_upload, dated_dest_path, verbose=verbose, )
-    
-    # print("INFO: copied ", count, " files from ", src_path.root, " to ", dated_dest_path.root)
-
-    # #----------- verify upload and update journal
-    
-    # # get list of files that have been uploaded and needs to be updated.
-    # # update the journal with what's uploaded, verifying the size and md5 also.
-    # con = sqlite3.connect(databasename, check_same_thread=False)
-    # cur = con.cursor()
-    # # note that this is not the same list as the selected files since that one excludes deleted  
-    # entries_in_version = cur.execute("Select file_id, filepath, modality, size, md5 from journal where time_invalid_us is NULL AND upload_dtstr is NULL").fetchall()
-    # con.close()
-
-    # # check for boundary cases
-    # uploaded_files = set(files_to_upload)
-    # files_to_update = set([f[1] for f in entries_in_version])
-    # if len(uploaded_files - files_to_update) > 0:
-    #     missing_in_db = uploaded_files - files_to_update
-    #     print("ERROR: some uploaded files are not in journal.  ", uploaded_files - files_to_update)
         
     # # other cases are handled below.
     

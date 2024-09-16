@@ -723,76 +723,78 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
                 
     return active_files
 
-# def list_uploads(databasename="journal.db"):
-#     """
-#     Retrieve a list of unique upload dates from the journal database.
+def list_versions(databasename="journal.db"):
+    """
+    Retrieve a list of unique upload dates from the journal database.
 
-#     Args:
-#         databasename (str): The name of the journal database file. Defaults to "journal.db".
+    Args:
+        databasename (str): The name of the journal database file. Defaults to "journal.db".
 
-#     Returns:
-#         list: A list of unique upload dates from the journal database.
+    Returns:
+        list: A list of unique upload dates from the journal database.
 
-#     Raises:
-#         None
+    Raises:
+        None
 
-#     """
+    """
     
-#     if not Path(databasename).exists():
-#         print(f"ERROR: No journal exists for filename {databasename}")
-#         return None
+    if not Path(databasename).exists():
+        print(f"ERROR: No journal exists for filename {databasename}")
+        return None
     
-#     con = sqlite3.connect(databasename, check_same_thread=False)
-#     cur = con.cursor()
+    con = sqlite3.connect(databasename, check_same_thread=False)
+    cur = con.cursor()
     
-#     # List unique values in upload_dtstr column in journal table
-#     uploads = [u[0] for u in cur.execute("SELECT DISTINCT upload_dtstr FROM journal;").fetchall()]
-#     con.close()
+    # List unique values in upload_dtstr column in journal table
+    versions = [u[0] for u in cur.execute("SELECT DISTINCT version FROM journal;").fetchall()]
+    con.close()
     
-#     if (uploads is not None) and (len(uploads) > 0):
-#         print("INFO: upload records in the database:")
-#         for table in uploads:
-#             print("INFO:  ", table)
-#     else:
-#         print("INFO: No uploads found in the database.")
+    if (versions is not None) and (len(versions) > 0):
+        print("INFO: upload records in the database:")
+        for table in versions:
+            print("INFO:  ", table)
+    else:
+        print("INFO: No uploads found in the database.")
     
-#     return uploads
+    return versions
 
-# def list_journals(databasename="journal.db"):
-#     """
-#     Lists the tables in the SQLite database specified by the given database name.
 
-#     Args:
-#         databasename (str): The name of the SQLite database file. Defaults to "journal.db".
+def list_journals(databasename="journal.db"):
+    """
+    Lists the tables in the SQLite database specified by the given database name.
 
-#     Returns:
-#         list: A list of tables in the database.
+    Args:
+        databasename (str): The name of the SQLite database file. Defaults to "journal.db".
 
-#     Raises:
-#         None
+    Returns:
+        list: A list of tables in the database.
 
-#     """
-    
-#     if not Path(databasename).exists():
-#         print(f"ERROR: No journal exists for filename {databasename}")
-#         return None
-    
-#     con = sqlite3.connect(databasename, check_same_thread=False)
-#     cur = con.cursor()
-    
-#     # List tables in the SQLite database
-#     tables = cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()
-    
-#     if tables:
-#         print("INFO: Tables in the database:")
-#         for table in tables:
-#             print("INFO:  ", table[0])
-#     else:
-#         print("INFO: No tables found in the database.")
-    
-#     con.close()
+    Raises:
+        None
 
-#     return tables
+    """
+    
+    if not Path(databasename).exists():
+        print(f"ERROR: No journal exists for filename {databasename}")
+        return None
+    
+    con = sqlite3.connect(databasename, check_same_thread=False)
+    cur = con.cursor()
+    
+    # List tables in the SQLite database
+    tables = [c[0] for c in cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
+    
+    if tables:
+        print("INFO: Journals in the database:")
+        for table in tables:
+            if table.startswith("journal"):
+                print("INFO:  ", table)
+    else:
+        print("INFO: No tables found in the database.")
+    
+    con.close()
+
+    return tables
 
 
 # def delete_journal(databasename="journal.db", suffix:str = None):
