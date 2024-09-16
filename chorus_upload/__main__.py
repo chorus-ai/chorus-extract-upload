@@ -656,11 +656,38 @@ if __name__ == "__main__":
         config = config_helper.load_config(config_fn)
         upload_method = config_helper.get_upload_methods(config)
         
-        skip_checkout = (args.command in ["config-help", "usage"]) or \
-            ((args.command in ["journal"]) and (args.journal_command in ["unlock", "checkout", "checkin"])) or \
-            ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"]))    
         
-        if (not skip_checkout):
+        skip_checkout_and_history = (args.command in ["config-help", "usage"]) or \
+            ((args.command in ["journal"]) and (args.journal_command in ["unlock", "checkout", "checkin"]))
+            
+        skip_checkout = ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"]))    
+        
+        if (skip_checkout_and_history):
+            # if just printing usage or help, don't need to checkout the journal.
+            # if unlock, do it in the cloud only.
+            journal_fn = config_helper.get_journal_config(config)["path"]
+        
+            # call the subcommand function.
+            args.func(args, config, journal_fn)
+        elif skip_checkout:
+            journal_fn = args.local_journal if args.local_journal else "journal.db"
+            
+            # === save command history
+            args_dict = history_ops._strip_account_info(args)
+            if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
+                args_dict["config"] = config_fn
+            command_id = history_ops.save_command_history(*(history_ops._recreate_params(args_dict)),
+                                                        *(history_ops._get_paths_for_history(args, config)), journal_fn)
+
+            # call the subcommand function.
+            start = time.time()
+            args.func(args, config, journal_fn)
+            end = time.time()
+            elapsed = end - start
+            print(f"Command Completed in {elapsed:.2f} seconds.")
+            history_ops.update_command_completion(command_id, elapsed, journal_fn)
+                        
+        else:
             journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config)
             
             #     # rename journal as a lock file a lock file.
@@ -683,11 +710,4 @@ if __name__ == "__main__":
             # push journal up.
             upload_ops.checkin_journal(journal_path, local_path, journal_md5)
             
-        else:
-            # if just printing usage or help, don't need to checkout the journal.
-            # if unlock, do it in the cloud only.
-            journal_fn = config_helper.get_journal_config(config)["path"]
-        
-            # call the subcommand function.
-            args.func(args, config, journal_fn)
     
