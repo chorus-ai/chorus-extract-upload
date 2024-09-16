@@ -126,7 +126,7 @@ LINUX_STRINGS = {
 def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
     dest_config = kwargs.get('dest_config', {})
-    test_max = kwargs.get('max_num_files', 0)
+    test_max = int(kwargs.get('max_num_files', 0))
     
     if (not dest_config['path'].startswith("az://")):
         print("WARNING: Destination is not an azure path.  cannot generate azcli script, but can genearete a list of source files")
@@ -415,7 +415,9 @@ def _checkout_journal(args, config, journal_fn):
         # now download the journal file
         journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config, local_fn)
         if not Path(local_fn).exists():
-            raise ValueError("ERROR: journal file not properly checked out: ", local_fn)
+            if journal_md5 is not None:
+                raise ValueError("ERROR: journal file not properly checked out: ", local_fn)
+            # else - original journal does not exist.
         else:
             shutil.copy(local_fn, local_fn + ".bak")  # used for md5.
         print("INFO: checked out ", journal_path, " to ", local_path, " with md5 ", journal_md5, " locked at ", locked_path)

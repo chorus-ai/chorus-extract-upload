@@ -144,8 +144,8 @@ def checkout_journal(config, local_fn = None):
             local_md5 = FileSystemHelper.get_metadata(local_path.root, with_metadata = False, with_md5 = True)['md5']
     else:
         # nothing to download, using local file 
-        remote_md5 = ""
-        local_md5 = ""
+        remote_md5 = None
+        local_md5 = None
 
     if remote_md5 != local_md5:
         raise ValueError(f"journal file is not downloaded correctly - MD5 remote {remote_md5}, local {local_md5}.  Please check the file.")
