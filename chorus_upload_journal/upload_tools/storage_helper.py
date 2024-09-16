@@ -145,6 +145,8 @@ def __make_az_client(auth_params: dict):
     azure_storage_connection_string_env = os.environ.get("AZURE_STORAGE_CONNECTION_STRING") if "AZURE_STORAGE_CONNECTION_STRING" in os.environ.keys() else None
     from azure.storage.blob import BlobServiceClient
 
+    # to avoid connection timeout: https://stackoverflow.com/questions/65092741/solve-timeout-errors-on-file-uploads-with-new-azure-storage-blob-package
+
     # ms copilot code is not accurate. do not use _connection_verify, or set _connection_ssl_context (or create a ssl context.)
     # it's also not needed to directly create a ConnectionConfiguration object.
     # the kwargs contain keywords that are extracted as needed by ConnectionConfiguration and other objects.
@@ -153,12 +155,36 @@ def __make_az_client(auth_params: dict):
 
     from cloudpathlib import AzureBlobClient
     if azure_account_url:
-        return AzureBlobClient(blob_service_client = BlobServiceClient(account_url=azure_account_url, connection_verify = False, connection_cert = None), file_cache_mode = FileCacheMode.cloudpath_object)
+        return AzureBlobClient(
+            blob_service_client = BlobServiceClient(
+                account_url=azure_account_url, 
+                connection_verify = False, 
+                connection_cert = None,
+                max_single_get_size = 8 * 1024 * 1024,
+                max_single_put_size = 8 * 1024 * 1024,
+                ),
+            file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
         # connection string specified, then use it
-        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string, connection_verify = False, connection_cert = None), file_cache_mode = FileCacheMode.cloudpath_object)
+        return AzureBlobClient(
+            blob_service_client = BlobServiceClient.from_connection_string(
+                conn_str = azure_storage_connection_string, 
+                connection_verify = False, 
+                connection_cert = None,
+                max_single_get_size = 8 * 1024 * 1024,
+                max_single_put_size = 8 * 1024 * 1024,
+                ), 
+            file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string_env:
-        return AzureBlobClient(blob_service_client = BlobServiceClient.from_connection_string(conn_str = azure_storage_connection_string_env, connection_verify = False, connection_cert = None), file_cache_mode = FileCacheMode.cloudpath_object)
+        return AzureBlobClient(
+            blob_service_client = BlobServiceClient.from_connection_string(
+                conn_str = azure_storage_connection_string_env, 
+                connection_verify = False, 
+                connection_cert = None,
+                max_single_get_size = 8 * 1024 * 1024,
+                max_single_put_size = 8 * 1024 * 1024,
+                ),
+            file_cache_mode = FileCacheMode.cloudpath_object)
     else:
         raise ValueError("No viable Azure account info available to open connection")
         
@@ -344,8 +370,9 @@ class FileSystemHelper:
         Returns:
             dict: A dictionary containing the metadata of the file or directory.
         """
+        metadata = {'md5': None, 'size': None, 'create_time_us': None, 'modify_time_us': None, 'path': None}
         if path is None and root is None:
-            return {}
+            return metadata
         
         if path is None:
             curr = root
@@ -357,7 +384,9 @@ class FileSystemHelper:
             curr = root.joinpath(path)
             rel = path
         
-        metadata = {}
+        if not curr.exists():
+            return metadata
+        
         if (with_metadata):
             info = curr.stat()
             metadata["path"] = FileSystemHelper._as_posix(rel)
