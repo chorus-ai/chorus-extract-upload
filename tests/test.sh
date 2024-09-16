@@ -62,8 +62,8 @@ python chorus_upload -v -c ${config} journal update --modalities OMOP,Waveforms
 cp journal.db TestData/journal1.1.db
 
 echo TEST generate file list
-echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
 cat ${azcli}
 
 echo TEST with local journal and upload to central azcli
@@ -81,8 +81,8 @@ cp journal.db TestData/journal1.3.db
 
 
 echo TEST generate file list again 
-echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
-python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli  --max-num-files 15
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli  --max-num-files 15
 cat ${azcli2}
 
 echo TEST with local journal and upload to central azcli - AMENDING
@@ -128,8 +128,8 @@ python chorus_upload -v -c ${config} journal update --modalities OMOP,Waveforms
 cp journal.db TestData/journal2.1.db
 
 echo TEST generate file list
-echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
 cat ${azcli}
 
 echo TEST with cloud journal and upload to central azcli
@@ -144,8 +144,8 @@ cp journal.db TestData/journal2.3.db
 
 
 echo TEST generate file list again
-echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
-python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli --max-num-files 15
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli --max-num-files 15
 cat ${azcli2}
 
 echo TEST with cloud journal and upload to central azcli - AMENDING
@@ -205,8 +205,8 @@ cp journal.db TestData/journal3.3.db
 
 
 echo TEST generate file list
-echo python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
+python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
 cat ${azcli}
 
 echo TEST with local journal and upload to central azcli
@@ -217,8 +217,8 @@ cp journal.db TestData/journal3.4.db
 
 
 echo TEST generate file list
-echo python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
-python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli
+echo python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli --max-num-files 15
+python chorus_upload -v -c ${configlocal} file list --modalities OMOP,Waveforms --output-file ${azcli2} --output-type azcli --max-num-files 15
 cat ${azcli2}
 
 echo TEST with local journal and upload to central azcli - AMENDING
@@ -234,8 +234,8 @@ python chorus_upload -v -c ${config} journal checkin --local-journal ${localjour
 
 
 echo TEST generate file list central
-echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
-python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli
+echo python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
+python chorus_upload -v -c ${config} file list --modalities OMOP,Waveforms --output-file ${azcli} --output-type azcli --max-num-files 15
 cat ${azcli}
 
 echo TEST with central journal and upload to central azcli - AMENDING
