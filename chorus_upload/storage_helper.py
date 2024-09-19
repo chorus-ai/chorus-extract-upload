@@ -62,6 +62,7 @@ import os
 
 import shutil
 from chorus_upload import config_helper
+import base64
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
@@ -348,13 +349,15 @@ class FileSystemHelper:
     def get_metadata(cls, root: Union[CloudPath, Path] = None, 
                      path: Union[CloudPath, Path] = None,
                      with_metadata: bool = True,
-                     with_md5: bool = False) -> dict:
+                     with_md5: bool = False,
+                     local_md5: str = None) -> dict:
         """
         Get the metadata of a file or directory.
 
         Args:
             path (Union[str, CloudPath, Path]): The path to the file or directory.
             client (Optional[Client]): An optional client object for accessing the storage location. Defaults to None.
+            local_md5 (str) : if a local md5 string is supplied, will use if if the r
 
         Returns:
             dict: A dictionary containing the metadata of the file or directory.
@@ -404,20 +407,30 @@ class FileSystemHelper:
                 if (curr.md5 is not None):
                     md5_str = curr.md5.hex()
                 else:
-                    md5 = FileSystemHelper._calc_file_md5(curr)  # not available, so calculate.
-                    # then set the content md5 to whatever we calculated
-                    if (md5 is not None):
+                    if local_md5 is not None:
                         blob_serv_client = curr.client.service_client
                         blob_client = blob_serv_client.get_blob_client(container = curr.container, blob = curr.blob)
                         content_settings = blob_client.get_blob_properties().content_settings
-                        content_settings.content_md5 = md5.digest()
+                        content_settings.content_md5 = base64.b64encode(bytes.fromhex(local_md5))
                         blob_client.set_http_headers(content_settings = content_settings)
-                        md5_str = md5.hexdigest()
-                        # print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5, " hex ", content_settings.content_md5.hex(), " hex digtest ", md5_str)
-                        print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5.hex())
+                        md5_str = local_md5
+                        print("NOTE: setting MD5 for ", curr, " to local md5 ", content_settings.content_md5.hex())
 
                     else:
-                        md5_str = None
+                        md5 = FileSystemHelper._calc_file_md5(curr)  # have to calculate
+                        # then set the content md5 to whatever we calculated
+                        if (md5 is not None):
+                            blob_serv_client = curr.client.service_client
+                            blob_client = blob_serv_client.get_blob_client(container = curr.container, blob = curr.blob)
+                            content_settings = blob_client.get_blob_properties().content_settings
+                            content_settings.content_md5 = md5.digest()
+                            blob_client.set_http_headers(content_settings = content_settings)
+                            md5_str = md5.hexdigest()
+                            # print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5, " hex ", content_settings.content_md5.hex(), " hex digtest ", md5_str)
+                            print("NOTE: computed MD5 for ", curr, " to ", content_settings.content_md5.hex())
+
+                        else:
+                            md5_str = None
                         
             elif isinstance(curr, GSPath):
                 # likely not reliable, like S3 or AzureBlob

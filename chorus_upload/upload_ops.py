@@ -83,7 +83,7 @@ LOCK_SUFFIX = ".locked"
 # local name is what is in the config file
 # cloud file will be renamed to .locked
 # which will be returned as a key for unlocking later.
-def checkout_journal(config, local_fn = None):
+def checkout_journal(config, local_fn = None, simulate = False):
     #============= get the journal file name and path obj  (download from cloud to local)
     journal_path_str = config_helper.get_journal_config(config)["path"]  # full file name
     print(config_helper.get_journal_config(config))
@@ -101,10 +101,17 @@ def checkout_journal(config, local_fn = None):
     journal_dir = journal_file.parent
     lock_file = journal_dir.joinpath(journal_fn + LOCK_SUFFIX)
     
+    local_path = FileSystemHelper(journal_fn) if local_fn is None else FileSystemHelper(local_fn)
+    lock_path = FileSystemHelper(lock_file, client = journal_path.client)
+    
+    if simulate:
+        return (journal_path, lock_path, local_path, None)
+    
     # so we try to lock by renaming. if it fails, then we handle if possible.
     downloadable = False
     already_locked = False
-        
+    
+    # if simulations, then don't try to lock.    
     # using rename to ensure that only one process can lock the file.
     try:
         journal_file.rename(lock_file)
@@ -122,6 +129,10 @@ def checkout_journal(config, local_fn = None):
         raise ValueError("journal is locked. Please try again later.")
     # except FileExistsError as e:
        
+       
+    local_path = FileSystemHelper(journal_fn) if local_fn is None else FileSystemHelper(local_fn)
+    lock_path = FileSystemHelper(lock_file, client = journal_path.client)
+
     local_path = FileSystemHelper(journal_fn) if local_fn is None else FileSystemHelper(local_fn)
     lock_path = FileSystemHelper(lock_file, client = journal_path.client)
     
@@ -265,7 +276,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
         # get the dest file info.  Don't rely on cloud md5
         start = time.time()
-        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
+        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True, local_md5 = md5)
         # case 2 missing in cloud.  this is the missing case;
         verify_time = time.time() - start
         if dest_meta is None:
@@ -320,7 +331,8 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
 def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                  databasename="journal.db",
-                 modalities: list[str] = DEFAULT_MODALITIES, amend:bool = False, verbose: bool = False):
+                 modalities: list[str] = DEFAULT_MODALITIES, verbose: bool = False,
+                 max_num_files : int = None):
     """
     Uploads files from the source path to the destination path and updates the journal.
     only allows uploaded new files and not reupload of previous upload.
@@ -344,7 +356,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     if not os.path.exists(databasename):
         # os.remove(pushdir_name + ".db")
         print(f"ERROR: No journal exists for filename {databasename}")
-        return
+        return None, max_num_files
     
     # ======== upload_ver_str should be constructed from the version string in the journal.
     # # if amend then get the latest version from db
@@ -368,7 +380,20 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     files_to_upload = list_files(databasename, version=None, modalities=modalities, verbose = False)
     if (files_to_upload is None) or (len(files_to_upload) == 0):
         print("INFO: no files copied.  Done")
-        return None
+        return None, max_num_files
+    
+    if max_num_files is not None:
+        remaining = max_num_files
+        for version, files in files_to_upload.items():
+            if len(files) > remaining:
+                files_to_upload[version] = set(list(files)[:remaining])
+                remaining = 0
+                break
+            else:
+                remaining -= len(files)
+    else:
+        remaining = None
+
     
     # copy file, verify and update journal
     update_args = []
@@ -385,61 +410,25 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # NEW    
     step = 100
     
-    # nthreads = max(1, os.cpu_count() - 2)
-    # nthreads = 2
+    # nthreads = max(1, min(4, os.cpu_count() - 2))
     # with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
     #     futures = []
-    #     for fn in files_to_upload:
-    #         future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
-    #         futures.append(future)
+    #     for version, files in files_to_upload.items():
+    #         dated_dest_path = FileSystemHelper(dest_path.root.joinpath(version))
+    #         for fn in files:
+    #             future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
+    #             futures.append(future)
         
     #     for future in concurrent.futures.as_completed(futures):
     #         (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
-    #         if verbose:
-    #             print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
-    #         else:
-    #             print(".", end="", flush=True)
-    #         if state == sync_state.MISSING_IN_DB:
-    #             print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
-    #             missing_in_db.add(fn2)
-    #         elif state == sync_state.MISSING_DEST:
-    #             missing_dest.add(fn2)
-    #             print("ERROR:  missing file at destination", fn2)
-    #         elif state == sync_state.MISSING_SRC:
-    #             print("ERROR:  file not found ", fn2)
-    #             missing_src.add(fn2)
-    #         elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
-    #             print("ERROR: multiple entries in journal for ", fn2)
-    #             multiple_actives.add(fn2)
-    #         elif state == sync_state.MATCHED:
-    #             # merge the updates for matched.
-    #             matched.add(fn2)
-    #             update_args.append((upload_ver_str, copy_time, verify_time, fid))
-    #             del_args += [(upload_ver_str, fid) for fid in del_list]
-    #             if len(del_list) > 0:
-    #                 replaced.add(fn2)
-    #         elif state == sync_state.MISMATCHED:
-    #             mismatched.add(fn2)
-    #             print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
 
-    #         # elif state == sync_state.DELETED:
-    #         #     deleted.add(fn2)
-            
-    #         # update the journal - likely not parallelizable.
-    #         if len(update_args) >= step:
-    #             con = sqlite3.connect(databasename, check_same_thread=False)
-    #             cur = con.cursor()
-    #             try:        
-    #                 cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
-    #                 cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
-    #             except sqlite3.InterfaceError as e:
-    #                 print("ERROR: update ", e)
-    #                 print(update_args)
-                    
-    #             con.commit() 
-    #             con.close()
-    #             update_args = []
-    #             del_args = []
+    # finally, upload the journal.
+    journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
+    # Question - do we put journal in the dated target subdirectory?  YES for now
+    # Question - do we leave the journal update time as NULL?  
+    # Question - do we copy the journal into the source directory? YES for now (in case of overwrite)
+    journal_fn = os.path.basename(databasename)
+
 
     for version, files in files_to_upload.items():
         # create a dated root directory to receive the files
@@ -492,36 +481,13 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 con.close()
                 update_args = []
                 del_args = []
-    
+
+                # backup intermediate file into the dated dest path.
+                journal_path.copy_file_to(journal_fn, dated_dest_path)
         
     # # other cases are handled below.
-    
     modality_set = set(modalities) if modalities is not None else set(DEFAULT_MODALITIES)
-    # for (file_id, fn, modality, size, md5) in entries_in_version:
-    #     if modality not in modality_set:
-    #         # exclude the files that do not have requested modality
-    #         continue
-                
-    #     if fn in uploaded_files:
-    #         dest_meta = dated_dest_path.get_file_metadata(fn)
-    #         if dest_meta is None:
-    #             missing.add(fn)
-    #             print("ERROR:  missing file at destination", fn)
-    #             continue
-
-    #         dest_md5 = dated_dest_path.get_file_md5(fn)
-            
-    #         if (size == dest_meta['size']) and (md5 == dest_md5):
-    #             matched.add(fn)
-    #             update_args.append((upload_ver_str, file_id))  # verified
-    #         else:      
-    #             mismatched.add(fn)
-    #             # entries are not updated because of mismatch.
-    #             print("ERROR:  mismatched file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
-    #     else:
-    #         print("ERROR:  unuploaded active file in upload set ", fn, " fileid ", file_id, " : size ", size, " md5 ", md5)
-    #### --------------OLD end
-    
+   
     if len(update_args) > 0:
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
@@ -567,17 +533,10 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # create a versioned backup - AFTER updating the journal.
     backup_journal(databasename, suffix=upload_ver_str)
     
-    # finally, upload the journal.
-    journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
-    
-    # Question - do we put journal in the dated target subdirectory?  YES for now
-    # Question - do we leave the journal update time as NULL?  
-    # Question - do we copy the journal into the source directory? YES for now (in case of overwrite)
-    journal_fn = os.path.basename(databasename)
     journal_path.copy_file_to(journal_fn, dated_dest_path)
     # journal_path.copy_files_to([(journal_fn, "_".join([journal_fn, upload_ver_str]))], src_path)
 
-    return upload_ver_str
+    return upload_ver_str, remaining
 
 def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
     
@@ -596,7 +555,7 @@ def _get_file_info2(dest_path: FileSystemHelper, file_info: tuple):
     dest_root = dest_path.root.joinpath(version)
     
     # this would actually compute the md5
-    dest_meta = FileSystemHelper.get_metadata(root = dest_root, path = fn, with_metadata = True, with_md5 = True)
+    dest_meta = FileSystemHelper.get_metadata(root = dest_root, path = fn, with_metadata = True, with_md5 = True, local_md5=md5)
     dest_md5 = dest_meta['md5'] if (dest_meta is not None) else None
 
     return (dest_meta, dest_md5, dest_root, fid, fn, size, md5)
@@ -659,34 +618,17 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     matched = set()
     large_matched = set()
     mismatched = set()
-    # nthreads = max(1, os.cpu_count() - 2)
-    # nthreads = 2
+
+    # nthreads = max(1, min(4, os.cpu_count() - 2))
     # with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
     #     futures = []
-        # for file_info in files_to_verify:
-        #     future = executor.submit(_get_file_info, dated_dest_path, file_info )
-        #     futures.append(future)
+    #     for file_info in files_to_verify:
+    #         future = executor.submit(_get_file_info, dated_dest_path, file_info )
+    #         futures.append(future)
             
-        # for future in concurrent.futures.as_completed(futures):
-        #     (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
-        #     if dest_meta is None:
-        #         missing.add(fn)
-        #         print("ERROR:  missing file ", fn)
-        #         continue
-
-        #     if (size == dest_meta['size']) and (md5 == dest_md5):
-        #         if verbose:
-        #             print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
-        #         else:
-        #             print(".", end="", flush=True)
-        #         matched.add(fn)
-        #     # elif (dest_md5 is None) and (dest_meta['size'] == size):
-        #     #     print("INFO: large file, matched by size only ", fn)
-        #     #     large_matched.add(fn)
-        #     else:
-        #         print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
-        #         mismatched.add(fn)
-        
+    #     for future in concurrent.futures.as_completed(futures):
+    #         (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
+            
     for file_info in files_to_verify:
         (dest_meta, dest_md5, fid, fn, size, md5) = _get_file_info(dated_dest_path, file_info )
         if dest_meta is None:
@@ -746,33 +688,7 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
     db_files = {f[1]: f for f in db_files}
     
     matched = []
-    # nthreads = max(1, os.cpu_count() - 2)
-    # nthreads = 2
-    # with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
-    #     futures = []
-    #     for f in files:
-    #         if f not in db_files:
-    #             print("ERROR: file ", f, " not found in journal.")
-    #             continue
-        
-    #         future = executor.submit(_get_file_info2, dated_dest_path, db_files[f] )
-    #         futures.append(future)
-            
-    #     for future in concurrent.futures.as_completed(futures):
-    #         (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
-    #         if dest_meta is None:
-    #             print("ERROR:  missing file ", fn, " in destination ", dated_dest_path.root)
-    #             continue
-
-    #         if (size == dest_meta['size']) and (md5 == dest_md5):
-    #             if verbose:
-    #                 print("INFO: marking as uploaded", version, " ", fn, " ", fid)
-    #             else:
-    #                 print(".", end="", flush=True)
-    #             matched.append((fid,))
-    #         else:
-    #             print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
-                
+    
     for f in files:
         if f not in db_files:
             print("ERROR: file ", f, " not found in journal.")
