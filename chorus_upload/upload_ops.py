@@ -83,7 +83,8 @@ LOCK_SUFFIX = ".locked"
 # local name is what is in the config file
 # cloud file will be renamed to .locked
 # which will be returned as a key for unlocking later.
-def checkout_journal(config, local_fn = None, simulate = False):
+def checkout_journal(config, local_fn = None, simulate : bool = False):
+      
     #============= get the journal file name and path obj  (download from cloud to local)
     journal_path_str = config_helper.get_journal_config(config)["path"]  # full file name
     print(config_helper.get_journal_config(config))
@@ -109,30 +110,21 @@ def checkout_journal(config, local_fn = None, simulate = False):
     
     # so we try to lock by renaming. if it fails, then we handle if possible.
     downloadable = False
-    already_locked = False
+    already_locked = lock_file.exists()
+
+    if already_locked:
+        raise ValueError("journal is locked. Please try again later.")
     
     # if simulations, then don't try to lock.    
-    # using rename to ensure that only one process can lock the file.
-    try:
+    # Can't use rename to ensure that only one process can lock the file.  linux and cloud - silent replacement.  Windows - exception.
+    if journal_file.exists(): 
         journal_file.rename(lock_file)
-        downloadable = True
-    except:
-        # if journal file is not found, it's either that we don't have a file, or it's locked.
-
-        if (not lock_file.exists()):
-            # not locked, so journal does not exist.  create a lock.  this is to indicate to others that there is a lock
-            lock_file.touch()
-        else:
-            already_locked = True
-            
-    if already_locked:      
-        raise ValueError("journal is locked. Please try again later.")
-    # except FileExistsError as e:
+        downloadable = True;    
+    else:
+        # no lock and no journal file.  okay to create.
+        lock_file.touch()
+                
        
-       
-    local_path = FileSystemHelper(journal_fn) if local_fn is None else FileSystemHelper(local_fn)
-    lock_path = FileSystemHelper(lock_file, client = journal_path.client)
-
     local_path = FileSystemHelper(journal_fn) if local_fn is None else FileSystemHelper(local_fn)
     lock_path = FileSystemHelper(lock_file, client = journal_path.client)
     
@@ -160,6 +152,8 @@ def checkout_journal(config, local_fn = None, simulate = False):
 
     if remote_md5 != local_md5:
         raise ValueError(f"journal file is not downloaded correctly - MD5 remote {remote_md5}, local {local_md5}.  Please check the file.")
+
+    print("INFO: checkd out journal from cloud storage as local file ", str(local_path.root))
 
     # return journal_file (final in cloud), lock_file (locked in cloud), and local_file (local)
     return (journal_path, lock_path, local_path, remote_md5)

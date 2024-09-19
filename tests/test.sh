@@ -92,8 +92,8 @@ eval ${azcli2}
 cp journal.db TestData/journal1.4.db
 
 echo TEST with local journal and upload to central built in - AMENDING
-echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
-python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms  --max-num-files 15
+python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms --max-num-files 15
 cp journal.db TestData/journal1.5.db
 
 
@@ -155,8 +155,8 @@ eval ${azcli2}
 cp journal.db TestData/journal2.4.db
 
 echo TEST with cloud journal and upload to central built in - AMENDING
-echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
-python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
+echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms  --max-num-files 15
+python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms  --max-num-files 15
 cp journal.db TestData/journal2.5.db
 
 
@@ -247,7 +247,7 @@ cp journal.db TestData/journal3.6.db
 
 echo TEST with cloud journal upload to central built in - AMENDING
 echo python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
-python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms
+python chorus_upload -v -c ${config} file upload --modalities OMOP,Waveforms 
 cp journal.db TestData/journal3.7.db
 
 echo TEST verify the version

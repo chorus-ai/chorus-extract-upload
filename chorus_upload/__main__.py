@@ -672,15 +672,8 @@ if __name__ == "__main__":
         print("INFO: Using config file: ", config_fn)
         config = config_helper.load_config(config_fn)
         upload_method = config_helper.get_upload_methods(config)
-        
-        if (args.command in ["config-help", "usage"]):
-            # if just printing usage or help, don't need to checkout the journal.
-            journal_fn = None
-            skip_history = True
-            skip_checkout = True
-            skip_checkin = True
-        
-        elif ((args.command in ["journal"]) and (args.journal_command in ["unlock", "checkout", "checkin"])):
+
+        if ((args.command in ["journal"]) and (args.journal_command in ["unlock", "checkout", "checkin"])):
             # if unlock, do it in the cloud only. for checkout and checkin, the argfunc handles the checkin and checkout.
             # TODO: merge this later.
             skip_history = True
@@ -689,14 +682,12 @@ if __name__ == "__main__":
             # journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config, simulate = skip_checkout)
             # journal_fn = str(journal_path.root)
             journal_fn = config_helper.get_journal_config(config)["path"]
-
         elif ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"])):
             # purely local operation on the local file.
             skip_history = False
             skip_checkout = True
             skip_checkin = True
             journal_fn = args.local_journal if args.local_journal else "journal.db"
-            
         # elif ((args.command in ["file"]) and (args.file_command in ["upload"]) and ("resume" in vars(args)) and (args.resume)):
         #     # resume an upload means no checkout is needed
         #     skip_history = False
