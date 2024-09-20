@@ -264,7 +264,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                     f.write(set_var + "ver=\"" + version + "\"" + eol)                    
                     
                     count = 0
-                    step = 10
+                    step = 100
                     for fn in flist:
                         if is_windows:
                             local_file = "\\".join([root, fn])
