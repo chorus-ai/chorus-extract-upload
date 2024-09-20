@@ -132,8 +132,7 @@ LINUX_STRINGS = {
 def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
     dest_config = kwargs.get('dest_config', {})
-    max_upload_count = int(kwargs.get('max_num_files', 0))
-    
+    max_upload_count = int(args.max_num_files) if ("max_num_files" in vars(args)) and (args.max_num_files is not None) else None 
     if (not dest_config['path'].startswith("az://")):
         print("WARNING: Destination is not an azure path.  cannot generate azcli script, but can genearete a list of source files")
         out_type = "list"
@@ -327,7 +326,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                                 f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
                             f.write(eol)
                             count = 0
-                        if (max_upload_count > 0) and (upload_count > max_upload_count):
+                        if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count > max_upload_count):
                             break
                               
                     if count > 0:
@@ -349,7 +348,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                             f.write("fi" + eol)
                             f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
 
-                    if (max_upload_count > 0) and (upload_count > max_upload_count):
+                    if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count > max_upload_count):
                         break
                             
             f.write(comment + "TEST checkin the journal" + eol)
