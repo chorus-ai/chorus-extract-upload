@@ -8,7 +8,7 @@ from chorus_upload.storage_helper import FileSystemHelper
 from pathlib import Path
 from chorus_upload.defaults import DEFAULT_MODALITIES
 import concurrent.futures
-
+import chorus_upload.perf_counter as perf_counter
 
 def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
                    databasename="journal.db", 
@@ -74,6 +74,8 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
     # TODO: set the version to either the supplied version name, or with current time.
     new_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
         
+    perf = perf_counter.PerformanceCounter()
+        
     con = sqlite3.connect(databasename, check_same_thread=False)
     cur = con.cursor()
 
@@ -132,6 +134,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
                 
                 for future in concurrent.futures.as_completed(futures):
                     myargs = future.result()
+                    perf.add_file(myargs[4])
                     rlpath = myargs[1]
                     status = myargs[7]
                     if verbose and status == "ADDED":
@@ -165,7 +168,10 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
                 total_count += len(all_args)
                 print("INFO: Added ", total_count, " files to journal.db" )
                 all_args = []
+                
+                perf.report()
         
+        del perf
         print("INFO: Journal Update took ", time.time() - start, "s")
         
         # paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
@@ -355,6 +361,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
     else:
         version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
     
+    perf = perf_counter.PerformanceCounter()
     
     # check if journal table exists.
     curtimestamp = int(math.floor(time.time() * 1e6))
@@ -408,6 +415,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
                 
                 for future in concurrent.futures.as_completed(futures):
                     myargs = future.result()
+                    perf.add_file(myargs[4])
+                    
                     status = myargs[8]
                     rlpath = myargs[1]
                     if status == "ERROR1":
@@ -457,6 +466,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
                 total_count += len(all_insert_args)
                 print("INFO: Added ", total_count, " files to journal.db" )
                 all_insert_args = []
+                
+                perf.report()
 
             # for all files that were active but aren't there anymore
             # invalidate in journal
@@ -497,6 +508,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
             else:
                 print("INFO: Nothing to change in journal for modality ", modality)
             
+        del perf
         print("INFO: Journal Update Elapsed time ", time.time() - start, "s")
 
 

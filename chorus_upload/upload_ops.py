@@ -18,7 +18,7 @@ from chorus_upload.defaults import DEFAULT_MODALITIES
 from chorus_upload.local_ops import list_files, backup_journal
 import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
-
+import chorus_upload.perf_counter as perf_counter
 
 # TODO: DONE - Remove registry
 # TODO: DONE - Change schema of files to include modtime, filesize
@@ -262,6 +262,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
             state = sync_state.MULTIPLE_ACTIVES_IN_DB
             # print("ERROR: multiple entries in journal for ", fn)
     
+    size = 0
     # src metadata
     # print(result)
     if (state == sync_state.UNKNOWN):
@@ -318,7 +319,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
                 # state = sync_state.DELETED
                 del_list.append(file_id)  # this may not be paralleizable.
 
-    return (fn, state, file_id, del_list, copy_time, verify_time)
+    return (fn, state, file_id, del_list, copy_time, verify_time, size)
 
 
 
@@ -388,6 +389,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     else:
         remaining = None
 
+    perf = perf_counter.PerformanceCounter(total_file_count = sum([len(files) for files in files_to_upload.values()]))
     
     # copy file, verify and update journal
     update_args = []
@@ -423,13 +425,13 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # Question - do we copy the journal into the source directory? YES for now (in case of overwrite)
     journal_fn = os.path.basename(databasename)
 
-
     for version, files in files_to_upload.items():
         # create a dated root directory to receive the files
         dated_dest_path = FileSystemHelper(dest_path.root.joinpath(version))
         for fn in files:
-            (fn2, state, fid, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, dated_dest_path, databasename)
-
+            (fn2, state, fid, del_list, copy_time, verify_time, size) = _upload_and_verify( src_path, fn, dated_dest_path, databasename)
+            perf.add_file(size)
+            
             if verbose:
                 print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
             else:
@@ -477,7 +479,10 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 del_args = []
 
                 # backup intermediate file into the dated dest path.
-                journal_path.copy_file_to(journal_fn, dated_dest_path)
+                # journal_path.copy_file_to(journal_fn, dated_dest_path)
+                
+                perf.report()
+
         
     # # other cases are handled below.
     modality_set = set(modalities) if modalities is not None else set(DEFAULT_MODALITIES)
@@ -527,9 +532,12 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # create a versioned backup - AFTER updating the journal.
     backup_journal(databasename, suffix=upload_ver_str)
     
+    perf.report()
+    
     journal_path.copy_file_to(journal_fn, dated_dest_path)
     # journal_path.copy_files_to([(journal_fn, "_".join([journal_fn, upload_ver_str]))], src_path)
 
+    del perf
     return upload_ver_str, remaining
 
 def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
