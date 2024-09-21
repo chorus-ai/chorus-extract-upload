@@ -467,8 +467,8 @@ def _checkin_journal(args, config, journal_fn):
                 shutil.copy(journal_fn, backup_fn)
 
             # and copy local_fn back/
-            if Path(local_file).exist():
-                shutil.copy(local_file, journal_fn)
+            if Path(local_fn).exist():
+                shutil.copy(local_fn, journal_fn)
             else:
                 print("ERROR:  no local file ", local_file, "to copy to ", journal_fn)            
         else:
