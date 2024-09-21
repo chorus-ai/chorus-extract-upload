@@ -11,9 +11,10 @@ class PerformanceCounter:
             if self.has_total:
                 percent_files = (self.file_count / self.total_file_count) * 100
                 remaining_time = (elapsed / self.file_count) * (self.total_file_count - self.file_count) 
-                print("Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and " + \
+                print("Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and ".format(
+                    elapsed, self.file_count, file_throughput) + \
                     " {:.2f} MB ({:.2f} MB/s). {:.2f}% files and Estimated remaining time: {:.2f} seconds".format(
-                    elapsed, self.file_count, file_throughput, size, size_throughput, percent_files, remaining_time))
+                    size, size_throughput, percent_files, remaining_time))
             else:
                 print("Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and {:.2f} MB ({:.2f} MB/s).".format(
                     elapsed, self.file_count, file_throughput, size, size_throughput))
