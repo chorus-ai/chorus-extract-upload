@@ -8,10 +8,15 @@
 
 [configuration]
 # supported modalities are "OMOP,Images,Waveforms"
-# supported_modalities = "OMOP,Images,Waveforms"
+supported_modalities = "OMOP,Images,Waveforms"
 
 # upload method can be one of "azcli" or "builtin"
 upload_method = "builtin"
+
+# journaling mode can be either "snapshot" or "append". 
+# in snapshot mode, the source data is assumed to be a full repo and journal is taking a snapshot.  Previous version file that are missing in the current file system are considered as deleted
+# in append mode, the source data is assumed to be new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  To delete a file, "file delete" has to be called.
+journaling_mode = "snapshot"
 
 [journal]
 path = "journal.db"   # specify the journal file name. defaults to cloud storage

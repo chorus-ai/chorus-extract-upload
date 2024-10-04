@@ -11,7 +11,6 @@ from chorus_upload.storage_helper import FileSystemHelper, _make_client
 from pathlib import Path
 from chorus_upload import config_helper
 import json
-from chorus_upload.defaults import DEFAULT_MODALITIES
 from chorus_upload import upload_ops
 from chorus_upload import local_ops
 import chorus_upload.storage_helper as storage_helper
@@ -42,7 +41,8 @@ import chorus_upload.storage_helper as storage_helper
 #           This is to address a interrupted "file upload", where journal has been checked out but not checked in
 #           the central site then has a lock file that is old, and local journal contains updates.
 # TODO: DONE use local MD5 instead of computing MD5 by downloading.  with HTTPs, each rest call should be computing MD5 for the block on transit.
-
+# TODO: add support for snapshot vs append modes for journal update
+# TODO: add support for marking files as deleted.
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -88,9 +88,11 @@ def _print_usage(args, config, journal_fn):
 def _update_journal(args, config, journal_fn):
     version = args.version
     amend = args.amend
-    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
+    default_modalities = config_helper.get_modalities(config)
+    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     # get the config path for each modality.  if not matched, use default.
-    mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
+    mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
+    journaling_mode = config_helper.get_journaling_mode(config)
 
     # for each modality, create the file system help and process
     first = True
@@ -99,7 +101,8 @@ def _update_journal(args, config, journal_fn):
         datafs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
 
         print("Update journal ", journal_fn, " for ", mod)
-        update_journal(datafs, modalities = [mod], databasename = journal_fn, 
+        update_journal(datafs, modalities = [mod], journaling_mode = journaling_mode,
+                       databasename = journal_fn, 
                        version = version, amend = (args.amend if first else True), 
                        verbose = args.verbose)
         first = False
@@ -365,8 +368,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
 def _select_files(args, config, journal_fn):
     
     # get the local path and central path and credentials
-    
-    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
+    default_modalities = config_helper.get_modalities(config)
+    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     # do one modality at a time
     upload_datetime = args.version if args.version else time.strftime("%Y%m%d%H%M%S")
 
@@ -406,6 +409,24 @@ def _mark_as_uploaded(args, config, journal_fn):
             upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, files, verbose = args.verbose)
     else:
         upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, [file], verbose = args.verbose)
+        
+        
+def _mark_as_deleted(args, config, journal_fn):
+    version = args.version
+    file = args.file
+    filelist = args.file_list
+    central_config = config_helper.get_central_config(config)
+    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
+    
+    journal_f = args.local_journal if args.local_journal else journal_fn
+    
+    if (filelist is not None):
+        with open(filelist, 'r') as f:
+            files = [fn.strip() for fn in f.readlines()]
+            local_ops.mark_files_as_deleted(files, databasename = journal_f, version = version, verbose = args.verbose)
+    else:
+        local_ops.mark_files_as_deleted([file], databasename = journal_f, version = version, verbose = args.verbose)
+        
 
 def _checkout_journal(args, config, journal_fn):
     local_fn = args.local_journal if args.local_journal else "journal.db"
@@ -483,7 +504,8 @@ def _checkin_journal(args, config, journal_fn):
 def _upload_files(args, config, journal_fn):
     max_upload_count = int(args.max_num_files) if ("max_num_files" in vars(args)) and (args.max_num_files is not None) else None
 
-    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
+    default_modalities = config_helper.get_modalities(config)
+    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     # get the config path for each modality.  if not matched, use default.
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
 
@@ -501,19 +523,20 @@ def _upload_files(args, config, journal_fn):
         remaining = max_upload_count
         for mod, mod_config in mod_configs.items():
             sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-            _, remaining = upload_ops.upload_files(sitefs, centralfs, journal_fn, modalities = [mod], verbose = args.verbose, max_num_files = remaining)
+            _, remaining = upload_ops.upload_files(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose, max_num_files = remaining)
             if remaining <= 0:
                 break        
     else:
         for mod, mod_config in mod_configs.items():
             sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-            upload_ops.upload_files(sitefs, centralfs, journal_fn, modalities = [mod], verbose = args.verbose)
+            upload_ops.upload_files(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose)
     
 # helper to report file verification
 def _verify_files(args, config, journal_fn):
     print("NOTE: This will download files to verify md5.  It will take a while and can take significant disk space.")
     
-    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
+    default_modalities = config_helper.get_modalities(config)
+    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     # get the config path for each modality.  if not matched, use default.
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
 
@@ -607,12 +630,21 @@ if __name__ == "__main__":
     parser_select.add_argument("--max-num-files", help="maximum number of files to list.", required=False)
     parser_select.set_defaults(func = _select_files)
     
+    
+    parser_delete = file_subparsers.add_parser("mark_as_deleted", 
+                                        help = "mark a file or a list of files as deleted. ")
+    parser_delete.add_argument("--version", help="a version to work on (use 'journal list' to get date times).  defaults to all versions.", required=False)
+    parser_delete.add_argument("--file", help="file name of the file to mark as deleted. uses relative path", required=False)
+    parser_delete.add_argument("--file-list", help="file list to mark as deleted.  uses relative path", required=False)
+    parser_delete.add_argument("--local-journal", help="local journal file name as alternative to the remote journal", required=False)
+    parser_delete.set_defaults(func = _mark_as_deleted)
+
+    
     parser_upload = file_subparsers.add_parser("upload", help = "upload files to server")
     parser_upload.add_argument("--version", help="datetime of an upload (use list to get date times). defaults to all un-uploaded files", required=False)
     parser_upload.add_argument("--modalities", 
                                help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
                                required=False)
-    # parser_select.add_argument("--resume", help="resume an upload - assumption is local journal file is checked out from central and partially updated.", required=False)
     parser_upload.add_argument("--max-num-files", help="maximum number of files to list.", required=False)
 
     # optional list of files. if not present, use current journal
@@ -620,14 +652,14 @@ if __name__ == "__main__":
     parser_upload.set_defaults(func = _upload_files)
 
     parser_mark = file_subparsers.add_parser("mark_as_uploaded_central", 
-                                        help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
+                                        help = "verify a file and mark as uploaded with time stamp.")
     parser_mark.add_argument("--upload-datetime", help="datetime of an upload (use list to get date times).", required=True)
     parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.add_argument("--file-list", help="file list to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.set_defaults(func = _mark_as_uploaded)
 
     parser_mark = file_subparsers.add_parser("mark_as_uploaded_local", 
-                                        help = "verify a file and mark as uploaded with time stamp.  WARNING files will be downloaded for md5 computation")
+                                        help = "verify a file and mark as uploaded with time stamp.")
     parser_mark.add_argument("--upload-datetime", help="datetime of an upload (use list to get date times).", required=True)
     parser_mark.add_argument("--file", help="file name of the file to check.  version/file is the path in the central azure environment", required=False)
     parser_mark.add_argument("--file-list", help="file list to check.  version/file is the path in the central azure environment", required=False)

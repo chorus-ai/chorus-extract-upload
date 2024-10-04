@@ -1,7 +1,6 @@
 import sqlite3
 import time
 import chorus_upload.config_helper as config_helper
-from chorus_upload.defaults import DEFAULT_MODALITIES
 import json
 
 def _strip_account_info(args):
@@ -64,8 +63,9 @@ def _get_paths_for_history(args, config):
     else:
         dest_path = None
     
-    src_paths_json = None    
-    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else DEFAULT_MODALITIES
+    src_paths_json = None
+    default_modalities = config_helper.get_modalities(config)  
+    mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
     if (((command == "file") and 
          (args.file_command in ["upload"])) or 

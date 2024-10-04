@@ -6,11 +6,11 @@ import os
 from typing import Optional, List
 from chorus_upload.storage_helper import FileSystemHelper
 from pathlib import Path
-from chorus_upload.defaults import DEFAULT_MODALITIES
 import concurrent.futures
 import chorus_upload.perf_counter as perf_counter
 
-def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
+def update_journal(root : FileSystemHelper, modalities: list[str],
+                  journaling_mode = "append",
                    databasename="journal.db", 
                    version: str = None,
                    amend: bool = False,
@@ -24,7 +24,8 @@ def update_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODA
 
     # check if journal table exists
     if (table_exists is not None) and (table_exists[0] == "journal"):
-        return _update_journal(root, modalities, databasename, version = version, amend = amend, verbose= verbose)
+        return _update_journal(root, modalities, journaling_mode = journaling_mode, 
+                               databasename = databasename, version = version, amend = amend, verbose= verbose)
     else:  # no amend possible since the file did not exist.
         return _gen_journal(root, modalities, databasename, version = version, verbose = verbose)
         
@@ -56,7 +57,7 @@ def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, cu
 
 
 
-def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES, 
+def _gen_journal(root : FileSystemHelper, modalities: list[str], 
                   databasename="journal.db", 
                   version:str = None, 
                   verbose: bool = False):
@@ -102,7 +103,6 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str] = DEFAULT_MODALI
     curtimestamp = int(math.floor(time.time() * 1e6))
     all_args = []
     
-    modalities = modalities if modalities else DEFAULT_MODALITIES
     
     for modality in modalities:
         start = time.time()
@@ -333,7 +333,8 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
-def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODALITIES,
+def _update_journal(root: FileSystemHelper, modalities: list[str],
+                    journaling_mode = "append",
                      databasename="journal.db", 
                      version: str = None,
                      amend:bool = False, 
@@ -365,8 +366,6 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
     
     # check if journal table exists.
     curtimestamp = int(math.floor(time.time() * 1e6))
-
-    modalities = modalities if modalities else DEFAULT_MODALITIES
     
     page_size = 1000
     paths = []
@@ -480,14 +479,18 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
                 if verbose:
                     if (relpath in paths):
                         print("INFO: OUTDATED  ", relpath)
-                    else:
+                    elif (journaling_mode == "snapshot"):
                         print("INFO: DELETED  ", relpath)
                 state = "OUTDATED" if (relpath in paths) else "DELETED"
                 for v in vals:
-                    all_del_args.append((curtimestamp, state, v[0]))
+                    if (relpath in paths):
+                        all_del_args.append(("OUTDATED", v[0]))
+                    elif (journaling_mode == "snapshot"):
+                        all_del_args.append(("DELETED", v[0]))
             # print("SQLITE update arguments ", all_del_args)
-
-            if (len(all_del_args) > 0):
+            if (total_count == 0) and len(all_del_args) == 0:
+                print("INFO: Nothing to change in journal for modality ", modality)
+            elif (len(all_del_args) > 0) and (journaling_mode == "snapshot"):
                 # back up only on upload
                 # backup_journal(databasename)
                 
@@ -496,7 +499,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
 
                 try:
                     if (len(all_del_args) > 0):
-                        cur.executemany("UPDATE journal SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
+                        cur.executemany(f"UPDATE journal SET TIME_INVALID_us={curtimestamp}, STATE=? WHERE file_id=?", all_del_args)
                         
                         print("Inactivated ", len(all_del_args), " from Journal")
                 except sqlite3.IntegrityError as e:
@@ -505,128 +508,73 @@ def _update_journal(root: FileSystemHelper, modalities: list[str] = DEFAULT_MODA
                         
                 con.commit() 
                 con.close()
-            else:
-                print("INFO: Nothing to change in journal for modality ", modality)
             
         del perf
         print("INFO: Journal Update Elapsed time ", time.time() - start, "s")
 
 
-        #     paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
-            
-        #     for relpath in paths:
-        #         if verbose:
-        #             print("INFO: scanning ", relpath)
-        #         future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate)
-        #         futures.append(future)
-            
-        #     for future in concurrent.futures.as_completed(futures):
-        #         myargs = future.result()
-        #         status = myargs[8]
-        #         rlpath = myargs[1]
-        #         if status == "ERROR1":
-        #             print("ERROR: Multiple active files with that path - journal is not consistent", relpath)
-        #         elif status == "ERROR2":
-        #             print("ERROR: File found but no metadata.", rlpath)
-        #         elif status == "ERROR3":
-        #             print("ERROR: File size is different but modtime is the same.", rlpath)
-        #         elif status == "KEEP":
-        #             del modality_files_to_inactivate[myargs[1]]
-        #         else:
-        #             if verbose:
-        #                 if status == "MOVED":
-        #                     print("INFO: COPIED/MOVED ", rlpath)
-        #                 elif status == "UPDATED":
-        #                     print("INFO: UPDATED ", rlpath)
-        #                 elif status == "ADDED":
-        #                     print("INFO: ADDED ", rlpath)
-        #             all_insert_args.append(myargs)
+# explicitly mark files as deleted.  This is best used when the journaling mode is "append"        
+def mark_files_as_deleted(files_to_remove:List[str], 
+                          databasename="journal.db", 
+                          version: str = None, 
+                          verbose:bool = False):
+    
+    if version is not None:
+        where_clause = f"TIME_INVALID_us IS NULL AND version = '{version}'"
+    else:
+        where_clause = "TIME_INVALID_us IS NULL"
         
-
-        #         if (len(all_insert_args) > 1000):
-        #             # back up only on upload
-        #             # backup_journal(databasename)
-                    
-        #             con = sqlite3.connect(databasename, check_same_thread=False)
-        #             cur = con.cursor()
-
-        #             try:
-        #                 cur.executemany("INSERT INTO journal (\
-        #                     PERSON_ID, \
-        #                     FILEPATH, \
-        #                     MODALITY, \
-        #                     SRC_MODTIME_us, \
-        #                     SIZE, \
-        #                     MD5, \
-        #                     TIME_VALID_us, \
-        #                     UPLOAD_DTSTR, \
-        #                     STATE, \
-        #                     MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
-        #             except sqlite3.IntegrityError as e:
-        #                 print("ERROR: update ", e)
-        #                 print(all_insert_args)
-                        
-        #             con.commit() 
-        #             con.close()
-        #             print("INFO: Added ", len(all_insert_args), " files to journal.db" )
-        #             all_insert_args = []
-
-        # # for all files that were active but aren't there anymore
-        # # invalidate in journal
-        
-        # for relpath, vals in modality_files_to_inactivate.items():
-        #     # check if there are non alphanumeric characters in the path
-        #     # if so, print out the path
-        #     if not (relpath.isalnum() or relpath.isascii()):
-        #         print("INFO: Path contains non-alphanumeric characters:", relpath)
-        #     if verbose:
-        #         if (relpath in paths):
-        #             print("INFO: OUTDATED  ", relpath)
-        #         else:
-        #             print("INFO: DELETED  ", relpath)
-        #     state = "OUTDATED" if (relpath in paths) else "DELETED"
-        #     for v in vals:
-        #         all_del_args.append((curtimestamp, state, v[0]))
-        # # print("SQLITE update arguments ", all_del_args)
-
-        # if (len(all_insert_args) > 0) or (len(all_del_args) > 0):
-        #     # back up only on upload
-        #     # backup_journal(databasename)
+    
+    # find all files that are active
+    con = sqlite3.connect(databasename, check_same_thread=False)
+    cur = con.cursor()
+    activefiletuples = cur.execute(f"Select filepath, file_id from journal where {where_clause}").fetchall()
+    con.close()
+    
+    # convert filepath to dictionary with list of file_id for quick look up
+    active_files = {}
+    for (fpath, file_id) in activefiletuples:
+        if fpath in active_files.keys():
+            active_files[fpath].append(file_id)
+        else:
+            active_files[fpath] = [file_id]
+    
+    # get the list of file ids.
+    to_inactivate = set()
+    for f in files_to_remove:
+        if f in active_files.keys():
+            to_inactivate = set.union(to_inactivate, set(active_files[f]))
             
-        #     con = sqlite3.connect(databasename, check_same_thread=False)
-        #     cur = con.cursor()
-
-        #     try:
-        #         if len(all_insert_args) > 0:
-        #             cur.executemany("INSERT INTO journal (\
-        #                 PERSON_ID, \
-        #                 FILEPATH, \
-        #                 MODALITY, \
-        #                 SRC_MODTIME_us, \
-        #                 SIZE, \
-        #                 MD5, \
-        #                 TIME_VALID_us, \
-        #                 UPLOAD_DTSTR, \
-        #                 STATE, \
-        #                 MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
-                    
-        #     except sqlite3.IntegrityError as e:
-        #         print("ERROR: update ", e)
-        #         print(all_insert_args)
-
-        #     try:
-        #         if (len(all_del_args) > 0):
-        #             cur.executemany("UPDATE journal SET TIME_INVALID_us=?, STATE=? WHERE file_id=?", all_del_args)
-        #     except sqlite3.IntegrityError as e:
-        #         print("ERROR: delete ", e)
-        #         print(all_del_args)
-                    
-        #     con.commit() 
-        #     con.close()
-        # else:
-        #     print("INFO: Nothing to change in journal for modality ", modality)
+    if verbose:
+        print("INFO: Inactivating (marking as deleted) ", len(all_del_args), " files")
+        for f in to_inactivate:
+            print("INFO: DELETED ", f)
         
+    if to_inactivate is None or len(to_inactivate) == 0:
+        print("No files to delete")
+        return
 
+    all_del_args = [(f,) for f in to_inactivate]
+    # all_del_args = list(to_inactivate)
+    
+    # get the current timestamp
+    curtimestamp = int(math.floor(time.time() * 1e6))
+    
+    # update the database
+    con = sqlite3.connect(databasename, check_same_thread=False)
+    cur = con.cursor()
+    try:
+        cur.executemany(f"UPDATE journal SET TIME_INVALID_us={curtimestamp}, STATE='DELETED' WHERE file_id=?", all_del_args)
+    except sqlite3.IntegrityError as e:
+        print("ERROR: delete ", e)
+        print(all_del_args)
+        
+    con.commit()
+    con.close()
+    
+        
+    
+    
 
 # all files to upload are marked with upload_dtstr = NULL. 
 # return list of files organized by version

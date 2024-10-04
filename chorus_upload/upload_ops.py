@@ -14,7 +14,6 @@ from pathlib import Path
 import re
 from enum import Enum
 import concurrent.futures
-from chorus_upload.defaults import DEFAULT_MODALITIES
 from chorus_upload.local_ops import list_files, backup_journal
 import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
@@ -325,8 +324,8 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
 
 def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
-                 databasename="journal.db",
-                 modalities: list[str] = DEFAULT_MODALITIES, verbose: bool = False,
+                 modalities: list[str], databasename="journal.db",
+                 verbose: bool = False,
                  max_num_files : int = None):
     """
     Uploads files from the source path to the destination path and updates the journal.
@@ -485,7 +484,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
         
     # # other cases are handled below.
-    modality_set = set(modalities) if modalities is not None else set(DEFAULT_MODALITIES)
+    modality_set = set(modalities)
    
     if len(update_args) > 0:
         con = sqlite3.connect(databasename, check_same_thread=False)
@@ -509,7 +508,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     entries_in_version = cur.execute("Select file_id, filepath, modality from journal where time_invalid_us is not NULL AND upload_dtstr is NULL").fetchall()
     con.close()
 
-    modality_set = set(modalities) if modalities is not None else set(DEFAULT_MODALITIES)
+    modality_set = set(modalities) 
     for (file_id, fn, modality) in entries_in_version:
         if modality not in modality_set:
             # exclude the files that do not have requested modality
