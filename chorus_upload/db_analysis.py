@@ -28,7 +28,15 @@ orig_df = pd.DataFrame(result, columns=["size", "upload_dtstr", "md5_duration", 
 orig_df['size'] = orig_df['size'].astype('int') / (1024*1024)
 orig_df['upload_throughput'] = orig_df['size'] / orig_df['upload_duration']
 
-df = orig_df[orig_df['upload_dtstr'] > '20240921000000']
+# df = orig_df[orig_df['upload_dtstr'] > '20240921000000']
+df = orig_df
+
+print("total files: ", len(df))
+print("total size: ", sum(df['size']))
+print("total md5 time: ", sum(df['md5_duration']))
+print("total upload time: ", sum(df['upload_duration']))
+print("total verify time: ", sum(df['verify_duration']))
+print("min/max throughtput: ", min(df['upload_throughput']), max(df['upload_throughput']))
 
 
 
@@ -62,7 +70,6 @@ def plot_violin(df, x_column, y_column, bins):
     my_plot.set_xticklabels(bins[1:], rotation=90)
     # axes.set_xticks(bin_edges)
     plt.show()
-    
 
 #%%
 # plot the md5_duration as a min-max boxplot, binned by size
@@ -72,7 +79,6 @@ plot_violin(df, 'size (MiB)', 'md5_duration', bin_edges)
 #%%
 # plot the upload_duration as a min-max boxplot, binned by size
 plot_violin(df, 'size (MiB)', 'upload_duration', bin_edges)
-
 
 #%%
 # plot the verify_duration as a min-max boxplot, binned by size

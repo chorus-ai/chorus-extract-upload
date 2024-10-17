@@ -40,6 +40,9 @@ azure_sas_token = "sastoken"
 # azure_account_url = "account_url"
 
 [site_path]
+
+# LOCAL WINDOWS PATH should use either forward slash "/" or double backslash "\\"
+
   [site_path.default]
   # specify the default site (source) path
   path = "/mnt/data/site"

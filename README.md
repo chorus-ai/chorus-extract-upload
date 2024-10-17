@@ -94,8 +94,8 @@ Also, please make sure that the following environment variable is set:
 
 Windows
 ```
-set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION 1
-set ADAL_PYTHON_SSL_NO_VERIFY 1
+set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
+set ADAL_PYTHON_SSL_NO_VERIFY=1
 ```
 
 Linux
