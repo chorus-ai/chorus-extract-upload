@@ -44,7 +44,7 @@ def get_central_config(config: dict):
 
 def get_modalities(config: dict):
     subconfig = config['configuration']
-    return subconfig['supported_modalities'] if 'supported_modalities' in subconfig.keys() else ['OMOP','Waveforms','Images']
+    return subconfig['supported_modalities'].split(',') if 'supported_modalities' in subconfig.keys() else ['OMOP','Waveforms','Images']
 
 def get_upload_methods(config: dict):
     subconfig = config['configuration']
