@@ -124,7 +124,7 @@ WINDOWS_STRINGS = {
     "eol": "\n",  # supposed to use "\n" reguardless of os.
     "var_start": "%",
     "var_end": "%",
-    "comment": "REM",
+    "comment": "@REM",
     "set_var": "set ",
     "set_var_quoted": "set \"",
     "set_var_quoted_start": "",
@@ -190,8 +190,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     fn = filename
     print("list writing to ", fn)
 
-    is_windows = os.name == 'nt'
-    # is_windows = True
+    # is_windows = os.name == 'nt'
+    is_windows = True
     
     eol = WINDOWS_STRINGS["eol"] if is_windows else LINUX_STRINGS["eol"]
     comment = WINDOWS_STRINGS["comment"] if is_windows else LINUX_STRINGS["comment"]
@@ -240,7 +240,10 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             f.write(eol)
             f.write(comment + " Destination azure credentials" + eol)
             f.write(set_var + "account=" + account_name + "" + eol)
-            f.write(set_var_quoted + "sas_token=" + set_var_quoted_start + sas_token + set_var_quoted_end + eol)
+            if is_windows:
+                f.write(set_var_quoted + "sas_token=" + set_var_quoted_start + sas_token.replace("%", "%%") + set_var_quoted_end + eol)
+            else:                
+                f.write(set_var_quoted + "sas_token=" + set_var_quoted_start + sas_token + set_var_quoted_end + eol)
             f.write(set_var + "container=" + container + "" + eol)
             f.write(eol)
             
@@ -261,44 +264,45 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                 # if no, check if journal exists, 
                 #    if yes, move it to locked, and copy it to local
                 #    if no, create a locked file.  use local journal.
-                
+
                 if is_windows:
-                    f.write("for /F \"tokens=*\" %a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
+                    f.write("for /F \"tokens=*\" %%a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
                             " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + "') do " + 
-                            set_var + "exists=%a" + eol)
-                    f.write("if %exists% == \"True\" (" + eol)
+                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + " --output tsv') do " + 
+                            set_var + "exists=%%a" + eol)
+                    f.write("if \"%exists%\" == \"True\" (" + eol)
                 else:
                     f.write(set_var + "exists=`az storage blob exists --account-name " + var_start+"account"+var_end +
                             " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + "`" + eol)
+                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + " --output tsv`" + eol)
                     f.write("if [[ \"\$exists\" == \"True\" ]]; then" + eol)
                     
                 f.write("    echo Journal is locked.  Cannot continue." + eol)
-                f.write("    exit 1" + eol)
                 if is_windows:
+                    f.write("    exit \\b 1" + eol)
                     f.write(")" + eol)
                 else:
+                    f.write("    exit 1" + eol)
                     f.write("fi" + eol)
                 
                 if is_windows:
-                    f.write("for /F \"tokens=*\" %a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
+                    f.write("for /F \"tokens=*\" %%a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
                         " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + "') do " + 
-                        set_var + "exists=%a" + eol)
-                    f.write("if %exists% == \"False\" (" + eol)
-                    f.write("type nul > files_" + var_start+"local_journal"+var_end + eol)
+                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + " --output tsv') do " + 
+                        set_var + "exists=%%a" + eol)
+                    f.write("if \"%exists%\" == \"False\" (" + eol)
+                    f.write("    type nul > files_" + var_start+"local_journal"+var_end + eol)
                 else:
                     f.write(set_var + "exists=`az storage blob exists --account-name " + var_start+"account"+var_end +
                         " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + "`" + eol)
+                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + " --output tsv`" + eol)
                     f.write("if [[ \"\$exists\" == \"False\" ]]; then" + eol)
                     # create a new lock file
                     f.write("    touch " + var_start+"local_journal"+var_end + eol)
                 f.write("    az storage blob upload --account-name " + var_start+"account"+var_end +
                         " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
                         var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" +
-                        " --file " + var_start+"local_journal"+var_end + eol)
+                        " --file " + var_start+"local_journal"+var_end + " --only-show-errors --output none" + eol)
                 if is_windows:
                     f.write(") else (" + eol)
                 else:
@@ -316,7 +320,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                 f.write(testme + "    az storage blob download --account-name " + var_start+"account"+var_end +
                         " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
                         var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end +
-                        " --file " + var_start+"local_journal"+var_end + testme_end + " --overwrite" + eol)
+                        " --file " + var_start+"local_journal"+var_end + testme_end + " --overwrite --only-show-errors --output none" + eol)
                 if is_windows:
                     f.write(")" + eol)
                 else:
@@ -381,7 +385,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                             f.write(testme + "az storage blob upload --account-name " + var_start+"account"+var_end + 
                                     " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
                                     var_start+"container"+var_end + " --name " + var_start+"ver"+var_end + "/" + 
-                                    fn + " --file " + local_file + " --overwrite" + testme_end + eol)     
+                                    fn + " --file " + local_file + " --overwrite --only-show-errors --output none" + testme_end + eol)     
                         elif (out_type == "azcopy"):
                             if (root.startswith("az://")):
                                 f.write(testme + "azcopy copy \"https://" + var_start+"mod_local_account"+var_end + 
@@ -465,7 +469,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             f.write(testme + "az storage blob upload --account-name " + var_start+"account"+var_end + 
                         " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
                         var_start+"container"+var_end + " --name " + var_start+"ver"+var_end + "/journal.db" + 
-                        " --file " + var_start+"local_journal"+var_end + " --overwrite" + testme_end + eol) 
+                        " --file " + var_start+"local_journal"+var_end + " --overwrite --only-show-errors --output none" + testme_end + eol) 
             
             if (journal_transport == "builtin"):
                 f.write(testme + "python chorus_upload -c " + config_fn + 
@@ -475,11 +479,11 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                 f.write(testme + "az storage blob upload --account-name " + var_start+"account"+var_end + 
                                         " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
                                         var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + 
-                                        " --file " + var_start+"local_journal"+var_end + " --overwrite" + testme_end + eol)
+                                        " --file " + var_start+"local_journal"+var_end + " --overwrite --only-show-errors --output none" + testme_end + eol)
                 f.write(testme + "az storage blob delete --account-name " + var_start+"account"+var_end + 
                                         " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
                                         var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + 
-                                        testme_end + eol)
+                                        " --only-show-errors --output none" + testme_end + eol)
                 f.write(eol)
                 
             
