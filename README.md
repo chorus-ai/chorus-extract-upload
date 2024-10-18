@@ -7,7 +7,7 @@ Scripts and tools for organizing uploads to the CHoRUS central data repository
 | ---- | ------------------ |
 | PITT | AZURE - Linux      |
 | UVA  | LOCAL - Windows    | 
-| EMRY | AWS - Linux        |
+| EMRY | AWS/LOCAL - Linux        |
 | TUFT | AZURE - Linux      |
 | SEA  | GCP - Linux        |
 | MGH  | AZURE - Linux      |
@@ -95,13 +95,11 @@ Also, please make sure that the following environment variable is set:
 Windows
 ```
 set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
-set ADAL_PYTHON_SSL_NO_VERIFY=1
 ```
 
 Linux
 ```
 export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
-export ADAL_PYTHON_SSL_NO_VERIFY=1
 ```
 
 
