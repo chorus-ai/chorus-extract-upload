@@ -257,6 +257,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             # check to see if cloud_journal is a cloud path
             if not cloud_journal.startswith("az://"):
                 local_journal = cloud_journal
+                f.write(set_var + "local_journal=" + local_journal + eol)
             else:
                             
                 f.write(comment + " Checkout the journal" + eol)
