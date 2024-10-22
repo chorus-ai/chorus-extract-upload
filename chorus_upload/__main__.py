@@ -257,13 +257,20 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             # check to see if cloud_journal is a cloud path
             if not cloud_journal.startswith("az://"):
                 local_journal = cloud_journal
-                f.write(set_var + "local_journal=\"" + local_journal + "\"" + eol)
+                if is_windows:
+                    f.write(set_var + "\"local_journal=" + local_journal + "\"" + eol)
+                else:
+                    f.write(set_var + "local_journal=\"" + local_journal + "\"" + eol)
             else:
                             
                 f.write(comment + " Checkout the journal" + eol)
-                f.write(set_var + "local_journal=\"" + local_journal + "\"" + eol)
-                f.write(set_var + "cloud_journal=\"" + cloud_journal_path + "\"" + eol)
-                
+                if is_windows:
+                    f.write(set_var + "\"local_journal=" + local_journal + "\"" + eol)
+                    f.write(set_var + "\"cloud_journal=" + cloud_journal_path + "\"" + eol)
+                else:
+                    f.write(set_var + "local_journal=\"" + local_journal + "\"" + eol)
+                    f.write(set_var + "cloud_journal=\"" + cloud_journal_path + "\"" + eol)
+                    
                 if (journal_transport == "builtin"):
                     f.write(testme + "python chorus_upload -c " + config_fn + 
                             " journal checkout --local-journal \"" + var_start+"local_journal"+var_end + "\"" + testme_end + eol)                
