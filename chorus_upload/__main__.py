@@ -159,6 +159,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     else:
         # if not storing journal in azure, then don't use azcli for journal transport.
         journal_transport = "builtin"
+        cloud_journal_path = "journal.db"
     
     local_journal = cloud_journal.split("/")[-1]
     
@@ -253,82 +254,87 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             f.write("echo PLEASE add your virtual environment activation string if any." + eol)
             f.write(eol)
                         
-            f.write(comment + " Checkout the journal" + eol)
-            f.write(set_var + "local_journal=" + local_journal + eol)
-            f.write(set_var + "cloud_journal=" + cloud_journal_path + eol)
-            
-            if (journal_transport == "builtin"):
-                f.write(testme + "python chorus_upload -c " + config_fn + 
-                        " journal checkout --local-journal " + var_start+"local_journal"+var_end + testme_end + eol)                
+            # check to see if cloud_journal is a cloud path
+            if not cloud_journal.startswith("az://"):
+                local_journal = cloud_journal
             else:
-                # use azclid to perform checkout.
-                # check if lock file exists.
-                # if yes, end.
-                # if no, check if journal exists, 
-                #    if yes, move it to locked, and copy it to local
-                #    if no, create a locked file.  use local journal.
+                            
+                f.write(comment + " Checkout the journal" + eol)
+                f.write(set_var + "local_journal=" + local_journal + eol)
+                f.write(set_var + "cloud_journal=" + cloud_journal_path + eol)
+                
+                if (journal_transport == "builtin"):
+                    f.write(testme + "python chorus_upload -c " + config_fn + 
+                            " journal checkout --local-journal " + var_start+"local_journal"+var_end + testme_end + eol)                
+                else:
+                    # use azcli to perform checkout.
+                    # check if lock file exists.
+                    # if yes, end.
+                    # if no, check if journal exists, 
+                    #    if yes, move it to locked, and copy it to local
+                    #    if no, create a locked file.  use local journal.
 
-                if is_windows:
-                    f.write("for /F \"tokens=*\" %%a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
-                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + " --output tsv') do " + 
-                            set_var + "exists=%%a" + eol)
-                    f.write("if \"%exists%\" == \"True\" (" + eol)
-                else:
-                    f.write(set_var + "exists=`az storage blob exists --account-name " + var_start+"account"+var_end +
-                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + " --output tsv`" + eol)
-                    f.write("if [[ \"\$exists\" == \"True\" ]]; then" + eol)
+                    if is_windows:
+                        f.write("for /F \"tokens=*\" %%a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
+                                " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
+                                var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + " --output tsv') do " + 
+                                set_var + "exists=%%a" + eol)
+                        f.write("if \"%exists%\" == \"True\" (" + eol)
+                    else:
+                        f.write(set_var + "exists=`az storage blob exists --account-name " + var_start+"account"+var_end +
+                                " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
+                                var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + " --output tsv`" + eol)
+                        f.write("if [[ \"\$exists\" == \"True\" ]]; then" + eol)
+                        
+                    f.write("    echo Journal is locked.  Cannot continue." + eol)
+                    if is_windows:
+                        f.write("    exit /b 1" + eol)
+                        f.write(")" + eol)
+                    else:
+                        f.write("    exit 1" + eol)
+                        f.write("fi" + eol)
                     
-                f.write("    echo Journal is locked.  Cannot continue." + eol)
-                if is_windows:
-                    f.write("    exit /b 1" + eol)
-                    f.write(")" + eol)
-                else:
-                    f.write("    exit 1" + eol)
-                    f.write("fi" + eol)
-                
-                if is_windows:
-                    f.write("for /F \"tokens=*\" %%a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
-                        " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + " --output tsv') do " + 
-                        set_var + "exists=%%a" + eol)
-                    f.write("if \"%exists%\" == \"False\" (" + eol)
-                    f.write("    type nul > files_" + var_start+"local_journal"+var_end + eol)
-                else:
-                    f.write(set_var + "exists=`az storage blob exists --account-name " + var_start+"account"+var_end +
-                        " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + " --output tsv`" + eol)
-                    f.write("if [[ \"\$exists\" == \"False\" ]]; then" + eol)
-                    # create a new lock file
-                    f.write("    touch " + var_start+"local_journal"+var_end + eol)
-                f.write("    " + cmd_proc + "az storage blob upload --account-name " + var_start+"account"+var_end +
-                        " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" +
-                        " --file " + var_start+"local_journal"+var_end + " --only-show-errors --output none" + eol)
-                if is_windows:
-                    f.write(") else (" + eol)
-                else:
-                    f.write("else" + eol)
-                # move the journal to locked
-                f.write(testme + "    " + cmd_proc + "az storage blob copy start" + 
-                        " --source-blob " + var_start+"cloud_journal"+var_end +
-                        " --source-container " + var_start+"container"+var_end + 
-                        " --source-account-name " + var_start+"account"+var_end +
-                        " --source-sas \"" + var_start+"sas_token"+var_end + "\"" + 
-                        " --destination-blob " + var_start+"cloud_journal"+var_end + ".locked" + 
-                        " --destination-container " + var_start+"container"+var_end + 
-                        " --account-name " + var_start+"account"+var_end +
-                        " --sas-token \"" + var_start+"sas_token"+var_end + "\"" +  testme_end + eol)
-                f.write(testme + "    " + cmd_proc + "az storage blob download --account-name " + var_start+"account"+var_end +
-                        " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
-                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end +
-                        " --file " + var_start+"local_journal"+var_end + testme_end + " --overwrite --only-show-errors --output none" + eol)
-                if is_windows:
-                    f.write(")" + eol)
-                else:
-                    f.write("fi" + eol)
-                
+                    if is_windows:
+                        f.write("for /F \"tokens=*\" %%a in ('az storage blob exists --account-name " + var_start+"account"+var_end +
+                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
+                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + " --output tsv') do " + 
+                            set_var + "exists=%%a" + eol)
+                        f.write("if \"%exists%\" == \"False\" (" + eol)
+                        f.write("    type nul > files_" + var_start+"local_journal"+var_end + eol)
+                    else:
+                        f.write(set_var + "exists=`az storage blob exists --account-name " + var_start+"account"+var_end +
+                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
+                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + " --output tsv`" + eol)
+                        f.write("if [[ \"\$exists\" == \"False\" ]]; then" + eol)
+                        # create a new lock file
+                        f.write("    touch " + var_start+"local_journal"+var_end + eol)
+                    f.write("    " + cmd_proc + "az storage blob upload --account-name " + var_start+"account"+var_end +
+                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
+                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" +
+                            " --file " + var_start+"local_journal"+var_end + " --only-show-errors --output none" + eol)
+                    if is_windows:
+                        f.write(") else (" + eol)
+                    else:
+                        f.write("else" + eol)
+                    # move the journal to locked
+                    f.write(testme + "    " + cmd_proc + "az storage blob copy start" + 
+                            " --source-blob " + var_start+"cloud_journal"+var_end +
+                            " --source-container " + var_start+"container"+var_end + 
+                            " --source-account-name " + var_start+"account"+var_end +
+                            " --source-sas \"" + var_start+"sas_token"+var_end + "\"" + 
+                            " --destination-blob " + var_start+"cloud_journal"+var_end + ".locked" + 
+                            " --destination-container " + var_start+"container"+var_end + 
+                            " --account-name " + var_start+"account"+var_end +
+                            " --sas-token \"" + var_start+"sas_token"+var_end + "\"" +  testme_end + eol)
+                    f.write(testme + "    " + cmd_proc + "az storage blob download --account-name " + var_start+"account"+var_end +
+                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
+                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end +
+                            " --file " + var_start+"local_journal"+var_end + testme_end + " --overwrite --only-show-errors --output none" + eol)
+                    if is_windows:
+                        f.write(")" + eol)
+                    else:
+                        f.write("fi" + eol)
+                    
             f.write(eol)
             
             f.write(comment + " upload files" + eol)
@@ -474,20 +480,21 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                         var_start+"container"+var_end + " --name " + var_start+"ver"+var_end + "/journal.db" + 
                         " --file " + var_start+"local_journal"+var_end + " --overwrite --only-show-errors --output none" + testme_end + eol) 
             
-            if (journal_transport == "builtin"):
-                f.write(testme + "python chorus_upload -c " + config_fn + 
-                        " journal checkin --local-journal " + var_start+"local_journal"+var_end + testme_end + eol)
-            else:
-                f.write(comment + " COPY journal file to upload directory" + eol)
-                f.write(testme + "" + cmd_proc + "az storage blob upload --account-name " + var_start+"account"+var_end + 
-                                        " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
-                                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + 
-                                        " --file " + var_start+"local_journal"+var_end + " --overwrite --only-show-errors --output none" + testme_end + eol)
-                f.write(testme + "" + cmd_proc + "az storage blob delete --account-name " + var_start+"account"+var_end + 
-                                        " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
-                                        var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + 
-                                        " --only-show-errors --output none" + testme_end + eol)
-                f.write(eol)
+            if cloud_journal.startswith("az://"):
+                if (journal_transport == "builtin"):
+                    f.write(testme + "python chorus_upload -c " + config_fn + 
+                            " journal checkin --local-journal " + var_start+"local_journal"+var_end + testme_end + eol)
+                else:
+                    f.write(comment + " COPY journal file to upload directory" + eol)
+                    f.write(testme + "" + cmd_proc + "az storage blob upload --account-name " + var_start+"account"+var_end + 
+                                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
+                                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + 
+                                            " --file " + var_start+"local_journal"+var_end + " --overwrite --only-show-errors --output none" + testme_end + eol)
+                    f.write(testme + "" + cmd_proc + "az storage blob delete --account-name " + var_start+"account"+var_end + 
+                                            " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
+                                            var_start+"container"+var_end + " --name " + var_start+"cloud_journal"+var_end + ".locked" + 
+                                            " --only-show-errors --output none" + testme_end + eol)
+                    f.write(eol)
                 
             
 # helper to display/save files to upload
