@@ -308,7 +308,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                             var_start+"container"+var_end + " --name \"" + var_start+"cloud_journal"+var_end + "\" --output tsv') do " + 
                             set_var + "exists=%%a" + eol)
                         f.write("if \"%exists%\" == \"False\" (" + eol)
-                        f.write("    type nul > files_" + var_start+"local_journal"+var_end + eol)
+                        f.write("    type nul > " + var_start+"local_journal"+var_end + eol)
                     else:
                         f.write(set_var + "exists=`az storage blob exists --account-name " + var_start+"account"+var_end +
                             " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " +
