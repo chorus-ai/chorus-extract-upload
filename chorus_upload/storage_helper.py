@@ -431,7 +431,8 @@ class FileSystemHelper:
 
                         else:
                             md5_str = None
-                        
+                            print("NOTE: computed MD5 for ", curr, " but is none ")
+
             elif isinstance(curr, GSPath):
                 # likely not reliable, like S3 or AzureBlob
                 md5_str = curr.etag.strip('"')
@@ -568,4 +569,3 @@ class FileSystemHelper:
         # md5 = meta['md5']
         # print("INFO:  info time: ", time.time() - start, " size =", meta['size'], " md5 = ", md5)   
         
-    
