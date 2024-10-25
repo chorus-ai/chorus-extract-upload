@@ -707,6 +707,10 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         #     continue
         # db_files = {ff[1]: ff for ff in meta}
    
+        if f not in db_files:
+            print("ERROR: file ", f, " not found in journal.")
+            continue
+   
         (dest_meta, dest_md5, dest_root,  fid, fn, size, md5) = _get_file_info2(dest_path, db_files[f] )
         
         if dest_meta is None:
