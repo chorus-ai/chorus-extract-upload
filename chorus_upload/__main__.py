@@ -193,8 +193,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     fn = filename
     print("list writing to ", fn)
 
-    # is_windows = os.name == 'nt'
-    is_windows = True
+    is_windows = os.name == 'nt'
+    # is_windows = True
     
     eol = WINDOWS_STRINGS["eol"] if is_windows else LINUX_STRINGS["eol"]
     comment = WINDOWS_STRINGS["comment"] if is_windows else LINUX_STRINGS["comment"]
