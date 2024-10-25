@@ -668,34 +668,45 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         print(f"ERROR: No journal exists for filename {databasename}")
         return
 
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
+    # con = sqlite3.connect(databasename, check_same_thread=False)
+    # cur = con.cursor()
 
-    if len(files) > 1:
-        # more than 1 file to check. 
-        # get the list of files, md5, size for unuploaded, active files
-        db_files = cur.execute(
-            "Select file_id, filepath, size, md5, version from journal " + 
-            "where upload_dtstr is NULL AND time_invalid_us is NULL").fetchall()
-    else:
-        db_files = cur.execute(
-            "Select file_id, filepath, size, md5, version from journal " + 
-            "where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '" + 
-            files[0] + "'").fetchall()
+    # if len(files) > 1:
+    #     # more than 1 file to check. 
+    #     # get the list of files, md5, size for unuploaded, active files
+    #     db_files = cur.execute(
+    #         "Select file_id, filepath, size, md5, version from journal " + 
+    #         "where upload_dtstr is NULL AND time_invalid_us is NULL").fetchall()
+    # else:
+    #     db_files = cur.execute(
+    #         "Select file_id, filepath, size, md5, version from journal " + 
+    #         "where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '" + 
+    #         files[0] + "'").fetchall()
         
-    con.close()
+    # con.close()
     
     # make a hashtable
-    db_files = {f[1]: f for f in db_files}
+    # db_files = {f[1]: f for f in db_files}
     
     matched = []
     
     for f in files:
-        if f not in db_files:
+        
+        con = sqlite3.connect(databasename, check_same_thread=False)
+        cur = con.cursor()
+
+        meta = cur.execute(
+            "Select file_id, filepath, size, md5, version from journal " + 
+            "where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '" + 
+            f + "'").fetchall()
+            
+        con.close()
+        
+        if meta is None or len(meta) == 0:
             print("ERROR: file ", f, " not found in journal.")
             continue
    
-        (dest_meta, dest_md5, dest_root,  fid, fn, size, md5) = _get_file_info2(dest_path, db_files[f] )
+        (dest_meta, dest_md5, dest_root,  fid, fn, size, md5) = _get_file_info2(dest_path, meta )
         
         if dest_meta is None:
             print("ERROR:  missing file ", fn, " in destination ", dest_root)
@@ -710,8 +721,11 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         else:
             print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
 
+    if len(matched) > 0:
         con = sqlite3.connect(databasename, check_same_thread=False)
         cur = con.cursor()
         cur.executemany(f"UPDATE journal SET upload_dtstr = '{version}' WHERE file_id = ?", matched)
         con.commit()
         con.close()
+    
+    print("INFO:  marked ", len(matched), " files as uploaded.")

@@ -24,6 +24,7 @@ path = "journal.db"   # specify the journal file name. defaults to cloud storage
 # example:  "/home/user/journal.db"
 # azure_account_name = "account_name"
 # azure_sas_token = "sastoken"
+# if "builtin" then azcli script will use chorus_upload.  else it would use azcli to upload.
 upload_method = "builtin"
 
 [central_path]
