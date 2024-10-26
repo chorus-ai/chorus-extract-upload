@@ -528,13 +528,15 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         con.commit() 
         con.close()
 
-    # create a versioned backup - AFTER updating the journal.
-    backup_journal(databasename, suffix=upload_ver_str)
     
     perf.report()
     
+    # create a versioned backup - AFTER updating the journal.
+    # do not do backup the table - this will create really big files.
+    # backup_journal(databasename, suffix=upload_ver_str)
+    # just copy the journal file to the dated dest path as a backup, and locally sa well
     journal_path.copy_file_to(journal_fn, dated_dest_path)
-    # journal_path.copy_files_to([(journal_fn, "_".join([journal_fn, upload_ver_str]))], src_path)
+    journal_path.copy_file_to("_".join([journal_fn, upload_ver_str]), src_path)
 
     del perf
     return upload_ver_str, remaining
@@ -708,7 +710,7 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         # db_files = {ff[1]: ff for ff in meta}
    
         if f not in db_files:
-            print("ERROR: file ", f, " not found in journal.")
+            print("WARNING: file ", f, " not found in journal or was previously uploaded.")
             continue
    
         (dest_meta, dest_md5, dest_root,  fid, fn, size, md5) = _get_file_info2(dest_path, db_files[f] )
