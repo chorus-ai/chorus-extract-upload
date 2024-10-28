@@ -536,8 +536,9 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # backup_journal(databasename, suffix=upload_ver_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
     journal_path.copy_file_to(journal_fn, dated_dest_path)
-    journal_path.copy_file_to("_".join([journal_fn, upload_ver_str]), src_path)
-
+    dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_ver_str]))
+    journal_path.copy_file_to(journal_fn, dest_fn)
+    
     del perf
     return upload_ver_str, remaining
 
