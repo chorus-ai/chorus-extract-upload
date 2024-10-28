@@ -501,15 +501,20 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
         if invalidtime is None:
             # current files or added files
             if (version in active_files.keys()):
-                active_files[version].add(fn)
+                active_files[version].append(fn)
             else:
-                active_files[version] = set([fn])
+                active_files[version] = [fn]
         else:
              # old files or deleted files
             if (version in inactive_files.keys()):
-                inactive_files[version].add(fn)
+                inactive_files[version].append(fn)
             else:
-                inactive_files[version] = set([fn])
+                inactive_files[version] = [fn]
+                
+    for version in active_files.keys():
+        active_files[version] = set(active_files[version])
+    for version in inactive_files.keys():
+        inactive_files[version] = set(inactive_files[version])
     
     if verbose:
         all_active_files = set()
@@ -616,15 +621,18 @@ def list_files_with_info(databasename="journal.db", version: Optional[str] = Non
                 active_files[fn] = {'file_id': fid, 'size': size, 'md5': md5, 'version': version}
                 
             if (version in active_files_by_version.keys()):
-                active_files_by_version[version].add(fn)
+                active_files_by_version[version].append(fn)
             else:
-                active_files_by_version[version] = set([fn])
+                active_files_by_version[version] = [fn]
         else:
             # old files or deleted files
             if (fid in inactive_files.keys()):
                 inactive_files[fn].append(fid)
             else:
                 inactive_files[fn] = set([fid])
+    
+    for version in active_files_by_version.keys():
+        active_files_by_version[version] = set(active_files_by_version[version])
     
     # figure out the deleted ones 
     if verbose:

@@ -384,14 +384,14 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # copy file, verify and update journal
     update_args = []
     del_args = []
-    missing_dest = set()
-    missing_src = set()
-    multiple_actives = set()
-    matched = set()
-    mismatched = set()
-    replaced = set()
-    deleted = set()
-    missing_in_db = set()
+    missing_dest = []
+    missing_src = []
+    multiple_actives = []
+    matched = []
+    mismatched = []
+    replaced = []
+    deleted = []
+    missing_in_db = []
 
     # NEW    
     step = 100
@@ -428,31 +428,32 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
             else:
                 print(".", end="", flush=True)
+                
             if state == sync_state.MISSING_IN_DB:
                 print("ERROR: uploaded file is not matched in journal.  should not happen.", fn2)
-                missing_in_db.add(fn2)
+                missing_in_db.append(fn2)
             elif state == sync_state.MISSING_DEST:
-                missing_dest.add(fn2)
+                missing_dest.append(fn2)
                 print("ERROR:  missing file at destination", fn2)
             elif state == sync_state.MISSING_SRC:
                 print("ERROR:  file not found ", fn2)
-                missing_src.add(fn2)
+                missing_src.append(fn2)
             elif state == sync_state.MULTIPLE_ACTIVES_IN_DB:
                 print("ERROR: multiple entries in journal for ", fn2)
-                multiple_actives.add(fn2)
+                multiple_actives.append(fn2)
             elif state == sync_state.MATCHED:
                 # merge the updates for matched.
-                matched.add(fn2)
+                matched.append(fn2)
                 update_args.append((upload_dt_str, copy_time, verify_time, fid))
                 del_args += [(upload_dt_str, fid) for fid in del_list]
                 if len(del_list) > 0:
-                    replaced.add(fn2)
+                    replaced.append(fn2)
             elif state == sync_state.MISMATCHED:
-                mismatched.add(fn2)
+                mismatched.append(fn2)
                 print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", fid)            
 
             # elif state == sync_state.DELETED:
-            #     deleted.add(fn2)
+            #     deleted.append(fn2)
             
             # update the journal - likely not parallelizable.
             if len(update_args) >= step:
@@ -477,7 +478,15 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 
                 perf.report()
 
-        
+    missing_dest = set(missing_dest)
+    missing_src = set(missing_src)
+    multiple_actives = set(multiple_actives)
+    matched = set(matched)
+    mismatched = set(mismatched)
+    replaced = set(replaced)
+    missing_in_db = set(missing_in_db)
+
+    
     # # other cases are handled below.
     modality_set = set(modalities)
    
@@ -512,8 +521,10 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             # exclude the files that do not have requested modality
             continue
         
-        deleted.add(fn)
+        deleted.append(fn)
         del_args.append((upload_dt_str, file_id))  # deleted
+        
+    deleted = set(deleted)
         
     if len(del_args) > 0:
         JournalDB.update(database_name = databasename, table_name = "journal",
@@ -529,8 +540,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
     journal_path.copy_file_to(journal_fn, dated_dest_path)
-    journal_path.copy_file_to(journal_fn, journal_path.root.joinpath("_".join([journal_fn, upload_dt_str]), src_path))
-
+    dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
+    journal_path.copy_file_to(journal_fn, dest_fn)
     del perf
     return upload_dt_str, remaining
 
@@ -667,12 +678,12 @@ def upload_files_new(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # copy file, verify and update journal
     update_args = []
     del_args = []
-    missing_dest = set()
-    missing_src = set()
-    matched = set()
-    mismatched = set()
-    replaced = set()
-    deleted = set()
+    missing_dest = []
+    missing_src = []
+    matched = []
+    mismatched = []
+    replaced = []
+    deleted = []
 
     # NEW    
     step = 100
@@ -710,24 +721,24 @@ def upload_files_new(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             print(".", end="", flush=True)
             
         if state == sync_state.MISSING_DEST:
-            missing_dest.add(fn2)
+            missing_dest.append(fn2)
             print("ERROR:  missing file at destination", fn2)
         elif state == sync_state.MISSING_SRC:
             print("ERROR:  file not found ", fn2)
-            missing_src.add(fn2)
+            missing_src.append(fn2)
         elif state == sync_state.MATCHED:
             # merge the updates for matched.
-            matched.add(fn2)
+            matched.append(fn2)
             update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
             if len(del_list) > 0:
                 del_args += [(upload_dt_str, fid) for fid in del_list]
-                replaced.add(fn2)
+                replaced.append(fn2)
         elif state == sync_state.MISMATCHED:
-            mismatched.add(fn2)
+            mismatched.append(fn2)
             print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", info['file_id'])            
 
         # elif state == sync_state.DELETED:
-        #     deleted.add(fn2)
+        #     deleted.append(fn2)
         
         # update the journal - likely not parallelizable.
         if len(update_args) >= step:
@@ -754,6 +765,13 @@ def upload_files_new(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             
             perf.report()
 
+
+    missing_dest = set(missing_dest)
+    missing_src = set(missing_src)
+    matched = set(matched)
+    mismatched = set(mismatched)
+    replaced = set(replaced)
+
         
     # # other cases are handled below.
    
@@ -779,9 +797,10 @@ def upload_files_new(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
     del_args = []
     for fn, fids in files_to_mark_deleted:
-        deleted.add(fn)
+        deleted.append(fn)
         for fid in fids:
             del_args.append((upload_dt_str, fid))  # deleted
+    deleted = set(deleted)
     
     # delete every thing in mark_deleted.
     if len(del_args) > 0:
@@ -798,7 +817,7 @@ def upload_files_new(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
     journal_path.copy_file_to(journal_fn, dated_dest_path)
-    dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_ver_str]))
+    dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
     journal_path.copy_file_to(journal_fn, dest_fn)
     
     del perf
@@ -872,10 +891,10 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr))
     
     # now compare the metadata and md5
-    missing = set()
-    matched = set()
-    large_matched = set()
-    mismatched = set()
+    missing = []
+    matched = []
+    large_matched = []
+    mismatched = []
 
     # nthreads = max(1, min(4, os.cpu_count() - 2))
     # with concurrent.futures.ThreadPoolExecutor(max_workers = nthreads) as executor:
@@ -890,7 +909,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     for file_info in files_to_verify:
         (dest_meta, dest_md5, fid, fn, size, md5) = _get_file_info(dated_dest_path, file_info )
         if dest_meta is None:
-            missing.add(fn)
+            missing.append(fn)
             print("ERROR:  missing file ", fn)
             continue
 
@@ -899,14 +918,19 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
                 print("INFO: Verified upload", dtstr, " ", fn, " ", fid)
             else:
                 print(".", end="", flush=True)
-            matched.add(fn)
+            matched.append(fn)
         # elif (dest_md5 is None) and (dest_meta['size'] == size):
         #     print("INFO: large file, matched by size only ", fn)
-        #     large_matched.add(fn)
+        #     large_matched.append(fn)
         else:
             print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", dtstr, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
-            mismatched.add(fn)
+            mismatched.append(fn)
             
+    missing = set(missing)
+    matched = set(matched)
+    large_matched = set(large_matched)
+    mismatched = set(mismatched)
+    
     print("INFO:  verified ", len(matched), " files (", len(large_matched), "large files w/o md5)", len(mismatched), " mismatched, ", len(missing), " missing.")
             
     return matched, mismatched, missing
