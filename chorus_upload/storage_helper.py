@@ -47,7 +47,8 @@
 from cloudpathlib import AnyPath, CloudPath, S3Path, AzureBlobPath, GSPath
 from cloudpathlib.client import Client
 from cloudpathlib.enums import FileCacheMode
-from pathlib import Path, WindowsPath, PureWindowsPath, PurePosixPath, PosixPath
+from pathlib import Path, WindowsPath, PureWindowsPath, PurePosixPath
+# from pathlib import PosixPath
 import hashlib
 import math
 from typing import Optional, Union
@@ -57,7 +58,6 @@ if sys.version_info >= (3, 11):
 else:
     from typing_extensions import Self
 
-import time
 import os
 
 import shutil
@@ -66,6 +66,11 @@ import base64
 
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
+from cloudpathlib import S3Client
+from azure.storage.blob import BlobServiceClient
+from cloudpathlib import AzureBlobClient
+#     from cloudpathlib import GoogleCloudClient
 
 # to ensure consistent interface, we use default profile (S3) or require environment variables to be set
 # azure:  url:  az://{container}/
@@ -90,7 +95,6 @@ def __make_aws_client(auth_params: dict):
     aws_access_key_id = config_helper.get_auth_param(auth_params, "aws_access_key_id")    
     aws_secret_access_key = config_helper.get_auth_param(auth_params, "aws_secret_access_key")
     
-    from cloudpathlib import S3Client
     if aws_session_token:  # preferred.
         # session token specified, then use it
         return S3Client(aws_session_token = aws_session_token, file_cache_mode = FileCacheMode.cloudpath_object)
@@ -144,7 +148,7 @@ def __make_az_client(auth_params: dict):
         azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" if azure_account_name and azure_account_key else None 
     
     azure_storage_connection_string_env = os.environ.get("AZURE_STORAGE_CONNECTION_STRING") if "AZURE_STORAGE_CONNECTION_STRING" in os.environ.keys() else None
-    from azure.storage.blob import BlobServiceClient
+    
 
     # to avoid connection timeout: https://stackoverflow.com/questions/65092741/solve-timeout-errors-on-file-uploads-with-new-azure-storage-blob-package
 
@@ -154,7 +158,6 @@ def __make_az_client(auth_params: dict):
     # so just put their keywords as name value pairs.  specifically, just set on BlobServiceClient the following:
     # connection_verify = False, connection_cert = None
 
-    from cloudpathlib import AzureBlobClient
     if azure_account_url:
         return AzureBlobClient(
             blob_service_client = BlobServiceClient(
@@ -192,7 +195,6 @@ def __make_az_client(auth_params: dict):
 
 # # internal helper to create the cloud client
 # def __make_gs_client(auth_params: dict):
-#     from cloudpathlib import GoogleCloudClient
 #     if google_application_credentials:
 #         # application credentials specified, then use it
 #         return GoogleCloudClient(application_credentials = google_application_credentials)

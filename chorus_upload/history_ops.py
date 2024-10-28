@@ -1,4 +1,3 @@
-import sqlite3
 import time
 import chorus_upload.config_helper as config_helper
 import json

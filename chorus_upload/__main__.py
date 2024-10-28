@@ -3,15 +3,13 @@ import shutil
 import time
 import argparse
 
-from chorus_upload.local_ops import update_journal, list_files
+from chorus_upload.local_ops import update_journal, list_files_with_info
 # from chorus_upload.generate_journal import restore_journal, list_uploads, list_journals
 # from chorus_upload.upload_ops_builtin import upload_files, verify_files, list_files
 from chorus_upload import history_ops 
 from chorus_upload.storage_helper import FileSystemHelper, _make_client
 from pathlib import Path
-from cloudpathlib import AnyPath
 from chorus_upload import config_helper
-import json
 from chorus_upload import upload_ops
 from chorus_upload import local_ops
 import chorus_upload.storage_helper as storage_helper
@@ -516,7 +514,7 @@ def _select_files(args, config, journal_fn):
 
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
-            mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
+            mod_files, _, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
             mod_config = config_helper.get_site_config(config, mod)
 
             for (version, files) in mod_files.items():
@@ -526,7 +524,7 @@ def _select_files(args, config, journal_fn):
         central = config_helper.get_central_config(config)
         file_list = {}
         for mod in mods:
-            mod_files = list_files(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
+            mod_files, _, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
             mod_config = config_helper.get_site_config(config, mod)
 
             file_list[mod] = (mod_config, mod_files)
