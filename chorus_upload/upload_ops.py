@@ -14,10 +14,14 @@ from pathlib import Path
 import re
 from enum import Enum
 import concurrent.futures
-from chorus_upload.local_ops import list_files, backup_journal
+from chorus_upload.local_ops import list_files, list_files_with_info
+from itertools import islice
+# from chorus_upload.local_ops import backup_journal
 import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
 import chorus_upload.perf_counter as perf_counter
+
+from chorus_upload.journaldb_ops import JournalDB
 
 # TODO: DONE - Remove registry
 # TODO: DONE - Change schema of files to include modtime, filesize
@@ -242,12 +246,12 @@ def _upload_and_verify(src_path : FileSystemHelper,
     copy_time = time.time() - start
     verify_time = None
     
-    # ======= read metadata from db.  May be parallelizable        
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-    # note that this is not the same list as the selected files since that one excludes deleted  
-    result = cur.execute(f"Select file_id, size, md5 from journal where time_invalid_us is NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
-    con.close()
+    # ======= read metadata from db.  May be parallelizable  
+    result = JournalDB.query(database_name = databasename,
+                             table_name = "journal",
+                             columns = ["file_id", "size", "md5"],
+                             where_clause = f"time_invalid_us is NULL AND upload_dtstr is NULL AND filepath = '{fn}'",
+                             count = None)
 
     verified = False
     if (state == sync_state.UNKNOWN):
@@ -306,13 +310,13 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
     # if verified upload, then remove any old file
     # ======= read metadata from db.  May be parallelizable
-    if verified:        
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
-        # note that this is not the same list as the selected files since that one excludes deleted  
-        result = cur.execute(f"Select file_id from journal where time_invalid_us is NOT NULL AND upload_dtstr is NULL AND filepath = '{fn}'").fetchall()
-        con.close()
-
+    if verified:
+        result = JournalDB.query(database_name = databasename,
+                                 table_name = "journal",
+                                 columns = ["file_id"],
+                                 where_clause = f"time_invalid_us is not NULL AND upload_dtstr is NULL AND filepath = '{fn}'",
+                                 count = None)
+        
         if (result is not None) and (len(result) > 0):
             for (file_id,) in result:
                 # state = sync_state.DELETED
@@ -352,21 +356,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         print(f"ERROR: No journal exists for filename {databasename}")
         return None, max_num_files
     
-    # ======== upload_ver_str should be constructed from the version string in the journal.
-    # # if amend then get the latest version from db
-    # if amend:
-    #     con = sqlite3.connect(databasename, check_same_thread=False)
-    #     cur = con.cursor()
-    
-    #     upload_ver_str = cur.execute("SELECT MAX(version) FROM journal").fetchone()[0]
-    #     if upload_ver_str is None:
-    #         raise ValueError("ERROR: no previous upload found to amend.")
-    #     con.close()
-    # else:
-    #     # get the current datetime
-    #     upload_ver_str = strftime("%Y%m%d%H%M%S", gmtime())
-        
-    upload_ver_str = strftime("%Y%m%d%H%M%S", gmtime())   # use string for upload ver_str for readability
+    # ======== upload_dt_str should be constructed from the version string in the journal.
+    upload_dt_str = strftime("%Y%m%d%H%M%S", gmtime())   # use string for upload ver_str for readability
 
 
     #---------- upload files.    
@@ -417,6 +408,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     #     for future in concurrent.futures.as_completed(futures):
     #         (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
 
+    
+
     # finally, upload the journal.
     journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
     # Question - do we put journal in the dated target subdirectory?  YES for now
@@ -450,8 +443,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             elif state == sync_state.MATCHED:
                 # merge the updates for matched.
                 matched.add(fn2)
-                update_args.append((upload_ver_str, copy_time, verify_time, fid))
-                del_args += [(upload_ver_str, fid) for fid in del_list]
+                update_args.append((upload_dt_str, copy_time, verify_time, fid))
+                del_args += [(upload_dt_str, fid) for fid in del_list]
                 if len(del_list) > 0:
                     replaced.add(fn2)
             elif state == sync_state.MISMATCHED:
@@ -463,19 +456,21 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             
             # update the journal - likely not parallelizable.
             if len(update_args) >= step:
-                con = sqlite3.connect(databasename, check_same_thread=False)
-                cur = con.cursor()
-                try:        
-                    cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
-                    cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
-                except sqlite3.InterfaceError as e:
-                    print("ERROR: update ", e)
-                    print(update_args)
-                    
-                con.commit() 
-                con.close()
+                JournalDB.update(database_name = databasename, table_name = "journal",
+                                 sets = ["upload_dtstr=?", 
+                                         "upload_duration=?",
+                                         "verify_duration=?"],
+                                 params = update_args,
+                                 where_clause="file_id=?"
+                                 )
                 update_args = []
-                del_args = []
+            
+                if len(del_args) >= 0:
+                    JournalDB.update(database_name = databasename, table_name = "journal",
+                                     sets = ["upload_dtstr=?"],
+                                     params = del_args,
+                                     where_clause="file_id=?")
+                    del_args = []
 
                 # backup intermediate file into the dated dest path.
                 # journal_path.copy_file_to(journal_fn, dated_dest_path)
@@ -487,26 +482,29 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     modality_set = set(modalities)
    
     if len(update_args) > 0:
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
-        try:        
-            cur.executemany("UPDATE journal SET upload_dtstr=?, upload_duration=?, verify_duration=? WHERE file_id=?", update_args)
-            cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
-        except sqlite3.InterfaceError as e:
-            print("ERROR: update ", e)
-            print(update_args)
-            
-        con.commit() 
-        con.close()
+        JournalDB.update(database_name = databasename, table_name = "journal",
+                            sets = ["upload_dtstr=?", 
+                                    "upload_duration=?",
+                                    "verify_duration=?"],
+                            params = update_args,
+                            where_clause="file_id=?"
+                            )
         update_args = []
-        del_args = []
+    
+        if len(del_args) >= 0:
+            JournalDB.update(database_name = databasename, table_name = "journal",
+                                sets = ["upload_dtstr=?"],
+                                params = del_args,
+                                where_clause="file_id=?")
+            del_args = []
 
     # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-    # note that this is not the same list as the selected files since that one excludes deleted  
-    entries_in_version = cur.execute("Select file_id, filepath, modality from journal where time_invalid_us is not NULL AND upload_dtstr is NULL").fetchall()
-    con.close()
+    entries_in_version = JournalDB.query(database_name = databasename,
+                                table_name = "journal",
+                                columns = ["file_id", "filepath", "modality"],
+                                where_clause = "time_invalid_us is not NULL AND upload_dtstr is NULL",
+                                count = None)
+
 
     modality_set = set(modalities) 
     for (file_id, fn, modality) in entries_in_version:
@@ -515,32 +513,296 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             continue
         
         deleted.add(fn)
-        del_args.append((upload_ver_str, file_id))  # deleted
+        del_args.append((upload_dt_str, file_id))  # deleted
         
     if len(del_args) > 0:
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
-        try:        
-            cur.executemany("UPDATE journal SET upload_dtstr=? WHERE file_id=?", del_args)
-        except sqlite3.InterfaceError as e:
-            print("ERROR: update ", e)
-            print(update_args)
-        con.commit() 
-        con.close()
-
+        JournalDB.update(database_name = databasename, table_name = "journal",
+                         sets = ["upload_dtstr=?"],
+                         params = del_args,
+                         where_clause="file_id=?")
+        del_args = []
     
     perf.report()
     
     # create a versioned backup - AFTER updating the journal.
     # do not do backup the table - this will create really big files.
-    # backup_journal(databasename, suffix=upload_ver_str)
+    # backup_journal(databasename, suffix=upload_dt_str)
+    # just copy the journal file to the dated dest path as a backup, and locally sa well
+    journal_path.copy_file_to(journal_fn, dated_dest_path)
+    journal_path.copy_file_to(journal_fn, journal_path.root.joinpath("_".join([journal_fn, upload_dt_str]), src_path))
+
+    del perf
+    return upload_dt_str, remaining
+
+
+
+def _upload_and_verify_new(src_path : FileSystemHelper, 
+                       fn : str, info: dict,
+                       dated_dest_path : FileSystemHelper,
+                       all_deleted : dict):
+    state = sync_state.UNKNOWN
+    
+    # ======= copy.  parallelizable
+    start = time.time()
+    srcfile = src_path.root.joinpath(fn)
+    if srcfile.exists():
+        src_path.copy_file_to(fn, dated_dest_path) 
+    else:
+        # print("ERROR:  file not found ", srcfile)
+        state = sync_state.MISSING_SRC
+    copy_time = time.time() - start
+    verify_time = None
+    
+    # ======= read metadata from db.  May be parallelizable  
+    verified = False
+    
+    file_id = info['file_id']
+    size = info['size']
+    md5 = info['md5']
+
+    if (state == sync_state.UNKNOWN):
+
+        # get the dest file info.  Don't rely on cloud md5
+        start = time.time()
+        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True, local_md5 = md5)
+        # case 2 missing in cloud.  this is the missing case;
+        verify_time = time.time() - start
+        if dest_meta is None:
+            state = sync_state.MISSING_DEST
+            # print("ERROR:  missing file at destination", fn)
+    
+    if (state == sync_state.UNKNOWN):
+        
+        if (size == dest_meta['size']) and (md5 == dest_meta['md5']):
+            
+            # MD5 could be missing, set by uploader, or computed differently by cloud provider.  Can't rely on it.
+            # start = time.time()
+            # dest_md5 = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = False, with_md5 = True)['md5']
+            # verify_time = time.time() - start
+            # dest_md5 = dest_meta['md5']
+            
+            # if (md5 == dest_md5):
+            # case 3: matched
+            state = sync_state.MATCHED
+            verified = True
+            # fid_list.append(file_id)  # verified.  this may not be parallelizable.
+            # else:
+            # case 4: mismatched.
+            # state = sync_state.MISMATCHED
+            # entries are not updated because of mismatch.
+            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)            
+        else:
+            # case 4: mismatched.
+            state = sync_state.MISMATCHED
+            # entries are not updated because of mismatch.
+            # print("ERROR:  mismatched upload file ", fn, " upload failed? fileid ", file_id, ": cloud size ", dest_meta['size'], " journal size ", size)
+            # verify_time = 0
+
+    del_list = []
+    # if verified upload, then remove any old file
+    # ======= read metadata from db.  May be parallelizable
+    if verified:
+        del_list = list(all_deleted.get(fn, set()))
+
+    return (fn, state, del_list, copy_time, verify_time)
+
+
+
+# new version, pull list once.
+def upload_files_new(src_path : FileSystemHelper, dest_path : FileSystemHelper,
+                 modalities: list[str], databasename="journal.db",
+                 verbose: bool = False,
+                 max_num_files : int = None):
+    """
+    Uploads files from the source path to the destination path and updates the journal.
+    only allows uploaded new files and not reupload of previous upload.
+    note that journal is updated only when verified. 
+
+    Args:
+        src_path (FileSystemHelper): The source path from where the files will be uploaded.
+        dest_path (FileSystemHelper): The destination path where the files will be copied to.
+        databasename (str, optional): The name of the journal database file. Defaults to "journal.db".
+        upload_datetime_str (str, optional): The upload datetime string. Defaults to None.
+
+    Returns:
+        str: The upload version string.
+
+    Raises:
+        FileNotFoundError: If the journal database file does not exist.
+        AssertionError: If some uploaded files are not in the journal or if there are mismatched files.
+
+    """
+
+    if not os.path.exists(databasename):
+        # os.remove(pushdir_name + ".db")
+        print(f"ERROR: No journal exists for filename {databasename}")
+        return None, max_num_files
+    
+    # ======== upload_dt_str should be constructed from the version string in the journal.
+    upload_dt_str = strftime("%Y%m%d%H%M%S", gmtime())   # use string for upload ver_str for readability
+
+
+    #---------- upload files.    
+    # first get the list of files for the requested version
+    # files_to_upload is a filename to info mapping
+    # previously, it was a version to filename mapping.
+    _, files_to_upload, files_to_mark_deleted = list_files_with_info(databasename, version=None, modalities=modalities, verbose = False)
+    if (files_to_upload is None) or (len(files_to_upload) == 0):
+        print("INFO: no files copied.  Done")
+        return None, max_num_files
+    
+    if max_num_files is not None:
+        remaining = max_num_files
+        if len(files_to_upload) > remaining:
+            # keep the first remaining items in the dictionary
+            files_to_upload = dict(islice(files_to_upload.items(), remaining))
+            remaining = 0
+        else:
+            remaining -= len(files_to_upload)
+    else:
+        remaining = None
+
+    perf = perf_counter.PerformanceCounter(total_file_count = len(files_to_upload))
+    
+    # copy file, verify and update journal
+    update_args = []
+    del_args = []
+    missing_dest = set()
+    missing_src = set()
+    matched = set()
+    mismatched = set()
+    replaced = set()
+    deleted = set()
+
+    # NEW    
+    step = 100
+    
+    # nthreads = max(1, min(4, os.cpu_count() - 2))
+    # with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
+    #     futures = []
+    #     for version, files in files_to_upload.items():
+    #         dated_dest_path = FileSystemHelper(dest_path.root.joinpath(version))
+    #         for fn in files:
+    #             future = executor.submit(_upload_and_verify, src_path, fn, dated_dest_path, databasename)
+    #             futures.append(future)
+        
+    #     for future in concurrent.futures.as_completed(futures):
+    #         (fn2, state, fid, del_list, copy_time, verify_time) = future.result()
+
+    
+
+    # finally, upload the journal.
+    journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
+    # Question - do we put journal in the dated target subdirectory?  YES for now
+    # Question - do we leave the journal update time as NULL?  
+    # Question - do we copy the journal into the source directory? YES for now (in case of overwrite)
+    journal_fn = os.path.basename(databasename)
+
+    for fn, info in files_to_upload.items():  # only the active files.
+        # create a dated root directory to receive the files
+        dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
+        (fn2, state, del_list, copy_time, verify_time) = _upload_and_verify_new( src_path, fn, info, dated_dest_path, files_to_mark_deleted)
+        perf.add_file(info['size'])
+        
+        if verbose:
+            print("INFO:  copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
+        else:
+            print(".", end="", flush=True)
+            
+        if state == sync_state.MISSING_DEST:
+            missing_dest.add(fn2)
+            print("ERROR:  missing file at destination", fn2)
+        elif state == sync_state.MISSING_SRC:
+            print("ERROR:  file not found ", fn2)
+            missing_src.add(fn2)
+        elif state == sync_state.MATCHED:
+            # merge the updates for matched.
+            matched.add(fn2)
+            update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
+            if len(del_list) > 0:
+                del_args += [(upload_dt_str, fid) for fid in del_list]
+                replaced.add(fn2)
+        elif state == sync_state.MISMATCHED:
+            mismatched.add(fn2)
+            print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", info['file_id'])            
+
+        # elif state == sync_state.DELETED:
+        #     deleted.add(fn2)
+        
+        # update the journal - likely not parallelizable.
+        if len(update_args) >= step:
+            # handle additions and updates
+            JournalDB.update(database_name = databasename, table_name = "journal",
+                                sets = ["upload_dtstr=?", 
+                                        "upload_duration=?",
+                                        "verify_duration=?"],
+                                params = update_args,
+                                where_clause="file_id=?"
+                                )
+            update_args = []
+        
+            # don't need to delete the outdated files - mark all deleted as uploaded. 
+            # if len(del_args) >= 0:
+            #     JournalDB.update(database_name = databasename, table_name = "journal",
+            #                         sets = ["upload_dtstr=?"],
+            #                         params = del_args,
+            #                         where_clause="file_id=?")
+            #     del_args = []
+
+            # backup intermediate file into the dated dest path.
+            # journal_path.copy_file_to(journal_fn, dated_dest_path)
+            
+            perf.report()
+
+        
+    # # other cases are handled below.
+   
+    if len(update_args) > 0:
+        # handle additions and updates
+        JournalDB.update(database_name = databasename, table_name = "journal",
+                            sets = ["upload_dtstr=?", 
+                                    "upload_duration=?",
+                                    "verify_duration=?"],
+                            params = update_args,
+                            where_clause="file_id=?"
+                            )
+        update_args = []
+        
+        # don't need to delete the outdated files - mark all deleted as uploaded. 
+        # if len(del_args) >= 0:
+        #     JournalDB.update(database_name = databasename, table_name = "journal",
+        #                         sets = ["upload_dtstr=?"],
+        #                         params = del_args,
+        #                         where_clause="file_id=?")
+        #     del_args = []
+
+    # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
+    del_args = []
+    for fn, fids in files_to_mark_deleted:
+        deleted.add(fn)
+        for fid in fids:
+            del_args.append((upload_dt_str, fid))  # deleted
+    
+    # delete every thing in mark_deleted.
+    if len(del_args) > 0:
+        JournalDB.update(database_name = databasename, table_name = "journal",
+                         sets = ["upload_dtstr=?"],
+                         params = del_args,
+                         where_clause="file_id=?")
+        del_args = []
+    
+    perf.report()
+    
+    # create a versioned backup - AFTER updating the journal.
+    # do not do backup the table - this will create really big files.
+    # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
     journal_path.copy_file_to(journal_fn, dated_dest_path)
     dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_ver_str]))
     journal_path.copy_file_to(journal_fn, dest_fn)
     
     del perf
-    return upload_ver_str, remaining
+    return upload_dt_str, remaining
 
 def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
     
@@ -585,34 +847,26 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
         # os.remove(pushdir_name + ".db")
         print(f"ERROR: No journal exists for filename {databasename}")
         return
-
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-
-    # get the most recent version's datetime
-    dtstr = cur.execute("SELECT MAX(version) FROM journal").fetchone()[0] if version is None else version
+    
+    dtstr = version if version is not None else JournalDB.get_max_value(databasename, table_name="journal", column_name="version")
     
     if dtstr is None:
         print("INFO: no previous upload found.")
-        con.close()
         return
     
+    where_clause = f"version = '{dtstr}' AND time_invalid_us is NULL"
+    if (modalities is not None) and (len(modalities) > 0):
+        where_clause += " AND ("
+        where_2 = [f"MODALITY = '{modality}'" for modality in modalities]
+        where_clause += " OR ".join(where_2)
+        where_clause += ")"
     
-    # get the list of files, md5, size for upload_dtstr matching dtstr
-    if modalities is None:
-        files_to_verify = cur.execute(
-            "Select file_id, filepath, size, md5 from journal where version = '" +
-            dtstr + "' AND time_invalid_us is NULL").fetchall()
-    else:
-        files_to_verify = []
-        for modality in modalities:
-            files_to_verify += cur.execute(
-                "Select file_id, filepath, size, md5 from journal where version = '" + 
-                dtstr + "' AND time_invalid_us is NULL AND MODALITY = '" + 
-                modality + "'").fetchall()
+    files_to_verify = JournalDB.query(database_name = databasename,
+                                        table_name = "journal",
+                                        columns = ["file_id", "filepath", "size", "md5"],
+                                        where_clause = where_clause,
+                                        count = None)
         
-    con.close()
-    
     #---------- verify files.    
     # create a dated root directory to receive the files
     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr))
@@ -671,22 +925,16 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         print(f"ERROR: No journal exists for filename {databasename}")
         return
 
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-
-    if len(files) > 1:
-        # more than 1 file to check. 
-        # get the list of files, md5, size for unuploaded, active files
-        db_files = cur.execute(
-            "Select file_id, filepath, size, md5, version from journal " + 
-            "where upload_dtstr is NULL AND time_invalid_us is NULL").fetchall()
-    else:
-        db_files = cur.execute(
-            "Select file_id, filepath, size, md5, version from journal " + 
-            "where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '" + 
-            files[0] + "'").fetchall()
+    where_clause = "upload_dtstr is NULL AND time_invalid_us is NULL"
+    if len(files) == 1:
+        where_clause += f" AND filepath = '{files[0]}'"
         
-    con.close()
+    # get the list of files, md5, size for unuploaded, active files
+    db_files = JournalDB.query(database_name = databasename,
+                                table_name = "journal",
+                                columns = ["file_id", "filepath", "size", "md5", "version"],
+                                where_clause = where_clause,
+                                count = None)
     
     # make a hashtable
     db_files = {f[1]: f for f in db_files}
@@ -695,15 +943,11 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
     
     for f in files:
         
-        # con = sqlite3.connect(databasename, check_same_thread=False)
-        # cur = con.cursor()
-
-        # meta = cur.execute(
-        #     "Select file_id, filepath, size, md5, version from journal " + 
-        #     "where upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '" + 
-        #     f + "'").fetchall()
-            
-        # con.close()
+        # meta = JournalDB.query(database_name = databasename,
+        #                         table_name = "journal",
+        #                         columns = ["file_id", "filepath", "size", "md5", "version"],
+        #                         where_clause = f"upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '{f}'",
+        #                         count = None)
         
         # if meta is None or len(meta) == 0:
         #     print("ERROR: file ", f, " not found in journal.")
@@ -730,10 +974,11 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
             print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
 
     if len(matched) > 0:
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
-        cur.executemany(f"UPDATE journal SET upload_dtstr = '{version}' WHERE file_id = ?", matched)
-        con.commit()
-        con.close()
+        JournalDB.update(database_name = databasename, 
+                         table_name = "journal",
+                         sets = [f"upload_dtstr='{version}'"],
+                         params = matched,
+                         where_clause="file_id=?"
+                         )
     
     print("INFO:  marked ", len(matched), " files as uploaded.")

@@ -8,6 +8,7 @@ from chorus_upload.storage_helper import FileSystemHelper
 from pathlib import Path
 import concurrent.futures
 import chorus_upload.perf_counter as perf_counter
+from chorus_upload.journaldb_ops import JournalDB
 
 def update_journal(root : FileSystemHelper, modalities: list[str],
                   journaling_mode = "append",
@@ -15,15 +16,11 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
                    version: str = None,
                    amend: bool = False,
                    verbose: bool = False):
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
+    table_exists = JournalDB.table_exists(database_name = databasename,
+                                          table_name = "journal")
     
-    # check if journal table exists in sqlite
-    table_exists = cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone()
-    con.close()
-
     # check if journal table exists
-    if (table_exists is not None) and (table_exists[0] == "journal"):
+    if table_exists:
         return _update_journal(root, modalities, journaling_mode = journaling_mode, 
                                databasename = databasename, version = version, amend = amend, verbose= verbose)
     else:  # no amend possible since the file did not exist.
@@ -51,7 +48,7 @@ def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, cu
     
     mymd5 = meta['md5']  # if azure file, could be None.
                 
-    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, "ADDED", md5_time, version)
+    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time, version)
 
     return myargs
 
@@ -77,27 +74,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         
     perf = perf_counter.PerformanceCounter()
         
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-
-    cur.execute("CREATE TABLE IF NOT EXISTS journal(\
-                FILE_ID INTEGER PRIMARY KEY AUTOINCREMENT, \
-                PERSON_ID INTEGER, \
-                FILEPATH TEXT, \
-                MODALITY TEXT, \
-                SRC_MODTIME_us INTEGER, \
-                SIZE INTEGER, \
-                MD5 TEXT, \
-                TIME_VALID_us INTEGER, \
-                TIME_INVALID_us INTEGER, \
-                UPLOAD_DTSTR TEXT, \
-                VERSION TEXT, \
-                STATE TEXT, \
-                MD5_DURATION REAL, \
-                UPLOAD_DURATION REAL, \
-                VERIFY_DURATION REAL)")  # datetime string of the upload.
-    con.commit()
-    con.close()
+    JournalDB.create_journal_table(databasename)
     
     paths = []
     curtimestamp = int(math.floor(time.time() * 1e6))
@@ -116,8 +93,11 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         else:
             pattern = f"*/{modality}/**/*"
             
+        # paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
+        # # paths += paths1
+        # print("Get File List took ", time.time() - start)
         
-        nthreads = max(1, os.cpu_count() - 2)
+        nthreads = max(4, os.cpu_count() - 2)
         page_size = 1000
         total_count = 0
         with concurrent.futures.ThreadPoolExecutor() as executor:
@@ -144,29 +124,11 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                         
                     all_args.append(myargs)
 
-                con = sqlite3.connect(databasename, check_same_thread=False)
-                cur = con.cursor()
-
-                try:
-                    cur.executemany("INSERT INTO journal ( \
-                        PERSON_ID, \
-                        FILEPATH, \
-                        MODALITY, \
-                        SRC_MODTIME_us, \
-                        SIZE, \
-                        MD5, \
-                        TIME_VALID_us, \
-                        STATE, \
-                        MD5_DURATION, \
-                        VERSION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
-                except sqlite3.IntegrityError as e:
-                    print("ERROR: create ", e)
-                    print(all_args)
-                        
-                con.commit() 
-                con.close()
+                insert_count, last_row = JournalDB.insert_journal_entries(databasename, all_args)
+                
                 total_count += len(all_args)
-                print("INFO: Added ", total_count, " files to journal.db" )
+                print(f"INFO: inserted {insert_count} of {len(all_args)}.  added {total_count} files to journal.db of {last_row} rows" )
+
                 all_args = []
                 
                 perf.report()
@@ -174,79 +136,6 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         del perf
         print("INFO: Journal Update took ", time.time() - start, "s")
         
-        # paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
-        # # paths += paths1
-        # print("Get File List took ", time.time() - start)
-
-
-        # nthreads = max(1, os.cpu_count() - 2)
-        # with concurrent.futures.ThreadPoolExecutor() as executor:
-        #     futures = []
-        #     for relpath in paths:
-        #         if verbose:
-        #             print("INFO: scanning ", relpath)
-        #         future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp)
-        #         futures.append(future)
-            
-        #     for future in concurrent.futures.as_completed(futures):
-        #         myargs = future.result()
-        #         rlpath = myargs[1]
-        #         status = myargs[7]
-        #         if verbose and status == "ADDED":
-        #             print("INFO: ADDED ", rlpath)
-        #         else:
-        #             print(".", end="", flush=True)
-                    
-        #         all_args.append(myargs)
-
-        #         if len(all_args) >= 1000:
-        #             con = sqlite3.connect(databasename, check_same_thread=False)
-        #             cur = con.cursor()
-
-        #             try:
-        #                 cur.executemany("INSERT INTO journal ( \
-        #                     PERSON_ID, \
-        #                     FILEPATH, \
-        #                     MODALITY, \
-        #                     SRC_MODTIME_us, \
-        #                     SIZE, \
-        #                     MD5, \
-        #                     TIME_VALID_us, \
-        #                     STATE, \
-        #                     MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
-        #             except sqlite3.IntegrityError as e:
-        #                 print("ERROR: create ", e)
-        #                 print(all_args)
-                            
-        #             con.commit() 
-        #             con.close()
-        #             print("INFO: Added ", len(all_args), " files to journal.db" )
-        #             all_args = []
-
-
-        # start = time.time()
-        # if len(all_args) > 0:
-        #     con = sqlite3.connect(databasename, check_same_thread=False)
-        #     cur = con.cursor()
-
-        #     try:
-        #         cur.executemany("INSERT INTO journal ( \
-        #             PERSON_ID, \
-        #             FILEPATH, \
-        #             MODALITY, \
-        #             SRC_MODTIME_us, \
-        #             SIZE, \
-        #             MD5, \
-        #             TIME_VALID_us, \
-        #             STATE, \
-        #             MD5_DURATION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", all_args)
-        #     except sqlite3.IntegrityError as e:
-        #         print("ERROR: create ", e)
-        #         print(all_args)
-                    
-        #     con.commit() 
-        #     con.close()
-        # print("SQLITE insert took ", time.time() - start)
 
 def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict, version:str):
     # get information about the current file
@@ -354,10 +243,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     # if amend, get the last version, and add files to that version.
     # if not amend, create a new version - either with supplied version name, or with current time.
     if amend: # get the last version
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
-        last_version = cur.execute("SELECT MAX(VERSION) from journal").fetchone()[0]
-        con.close()
+        last_version = JournalDB.get_max_value(databasename, table_name="journal", column_name="VERSION")
         version = last_version if last_version is not None else version
     else:
         version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
@@ -383,13 +269,12 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             pattern = "[oO][mM][oO][pP]/**/*"
         else:
             pattern = f"*/{modality}/**/*"
-            
-
-        con = sqlite3.connect(databasename, check_same_thread=False)
-        cur = con.cursor()
-        # get all active files, these are active-pending-delete until the file is found in filesystem
-        activefiletuples = cur.execute(f"Select filepath, file_id, size, src_modtime_us, md5, upload_dtstr, version from journal where TIME_INVALID_us IS NULL and MODALITY = '{modality}'").fetchall()
-        con.close()
+        
+        # do one modality at a time for now - logic is tested.  doing multiple modalities may accidentally delete?
+        activefiletuples = JournalDB.query(databasename, table_name = "journal",
+                                           columns = ["FILEPATH", "FILE_ID", "SIZE", "SRC_MODTIME_us", "MD5", "UPLOAD_DTSTR", "VERSION"],
+                                           where_clause = f"TIME_INVALID_us IS NULL AND MODALITY = '{modality}'",
+                                           count = None)
 
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
         modality_files_to_inactivate = {}
@@ -440,30 +325,11 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     # backup_journal(databasename)
                     
                 # save to database
-                con = sqlite3.connect(databasename, check_same_thread=False)
-                cur = con.cursor()
-
-                try:
-                    cur.executemany("INSERT INTO journal (\
-                        PERSON_ID, \
-                        FILEPATH, \
-                        MODALITY, \
-                        SRC_MODTIME_us, \
-                        SIZE, \
-                        MD5, \
-                        TIME_VALID_us, \
-                        UPLOAD_DTSTR, \
-                        STATE, \
-                        MD5_DURATION, \
-                        VERSION) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)", all_insert_args)
-                except sqlite3.IntegrityError as e:
-                    print("ERROR: update ", e)
-                    print(all_insert_args)
-                    
-                con.commit() 
-                con.close()
+                update_count, last_row = JournalDB.insert_journal_entries(databasename, all_insert_args)
+                
                 total_count += len(all_insert_args)
-                print("INFO: Added ", total_count, " files to journal.db" )
+                print(f"INFO: inserted {update_count} of {len(all_insert_args)}.  added {total_count} files to journal.db of {last_row} rows" )
+
                 all_insert_args = []
                 
                 perf.report()
@@ -494,20 +360,13 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 # back up only on upload
                 # backup_journal(databasename)
                 
-                con = sqlite3.connect(databasename, check_same_thread=False)
-                cur = con.cursor()
-
-                try:
-                    if (len(all_del_args) > 0):
-                        cur.executemany(f"UPDATE journal SET TIME_INVALID_us={curtimestamp}, STATE=? WHERE file_id=?", all_del_args)
-                        
-                        print("Inactivated ", len(all_del_args), " from Journal")
-                except sqlite3.IntegrityError as e:
-                    print("ERROR: delete ", e)
-                    print(all_del_args)
-                        
-                con.commit() 
-                con.close()
+                deleted = JournalDB.inactivate_journal_entries(databasename, 
+                                                       "journal", 
+                                                       curtimestamp, 
+                                                       all_del_args)
+                
+                to_delete = len(all_del_args)
+                print(f"INFO: deleted/outdated {deleted} of {to_delete} from journal." )
             
         del perf
         print("INFO: Journal Update Elapsed time ", time.time() - start, "s")
@@ -526,10 +385,10 @@ def mark_files_as_deleted(files_to_remove:List[str],
         
     
     # find all files that are active
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-    activefiletuples = cur.execute(f"Select filepath, file_id from journal where {where_clause}").fetchall()
-    con.close()
+    activefiletuples = JournalDB.query(databasename, table_name = "journal",
+                                        columns = ["FILEPATH", "FILE_ID"],
+                                        where_clause = where_clause,
+                                        count = None)
     
     # convert filepath to dictionary with list of file_id for quick look up
     active_files = {}
@@ -554,27 +413,23 @@ def mark_files_as_deleted(files_to_remove:List[str],
         print("No files to delete")
         return
 
-    all_del_args = [(f,) for f in to_inactivate]
+    all_del_args = [("DELTED", f) for f in to_inactivate]
     # all_del_args = list(to_inactivate)
     
     # get the current timestamp
     curtimestamp = int(math.floor(time.time() * 1e6))
     
     # update the database
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-    try:
-        cur.executemany(f"UPDATE journal SET TIME_INVALID_us={curtimestamp}, STATE='DELETED' WHERE file_id=?", all_del_args)
-    except sqlite3.IntegrityError as e:
-        print("ERROR: delete ", e)
-        print(all_del_args)
-        
-    con.commit()
-    con.close()
+    deleted = JournalDB.inactivate_journal_entries(databasename,
+                                             "journal",
+                                             curtimestamp,
+                                             all_del_args)
     
-        
+    to_delete = len(all_del_args)
+    print(f"INFO: mark as deleted {deleted} of {to_delete} from journal." )
+
     
-    
+
 
 # all files to upload are marked with upload_dtstr = NULL. 
 # return list of files organized by version
@@ -595,13 +450,11 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     """
     # when listing files, looking for version match if specified, and upload_dtstr is NULL.
         
-        
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-
-    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone():
+    table_exists = JournalDB.table_exists(database_name = databasename,
+                                        table_name = "journal")
+    
+    if not table_exists:
         print(f"ERROR: table journal does not exist.")
-        con.close()
         return None
 
     # identify 3 subsets:   deleted, updated, and added.
@@ -616,17 +469,20 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     else:
         where_clause = f"upload_dtstr IS NULL AND version = '{version}'"
     
-    if (modalities is None) or (len(modalities) == 0):    
-        # select where upload_dtstr is NULL or time_invalid_us is NULL
-        files_to_update = cur.execute(f"Select filepath, time_invalid_us, version from journal where {where_clause}").fetchall()
-    else:
-        files_to_update = []
-        for modality in modalities:
-            files_to_update += cur.execute(f"Select filepath, time_invalid_us, version from journal where {where_clause} AND MODALITY = '{modality}'").fetchall()
-    # print(files_to_update)
-    # only need to add, not delete.  rely on journal to mark deletion.
-    con.close()
-    
+    if (modalities is not None) and (len(modalities) > 0):
+        where_clause += " AND ("
+        where_2 = [f"MODALITY = '{modality}'" for modality in modalities]
+        where_clause += " OR ".join(where_2)
+        where_clause += ")"
+        
+            
+    # select where upload_dtstr is NULL or time_invalid_us is NULL
+    files_to_update = JournalDB.query(database_name = databasename, 
+                                        table_name = "journal",
+                                        columns = ["FILEPATH", "TIME_INVALID_us", "VERSION"],
+                                        where_clause = where_clause,
+                                        count = None)
+        
     print("INFO: extracted files to upload for ", ("current" if version is None else version), " upload version and modalities =", 
           (",".join(modalities) if modalities is not None else "all"))
     
@@ -655,16 +511,16 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
             else:
                 inactive_files[version] = set([fn])
     
-    all_active_files = set()
-    all_inactive_files = set()
-    for k in active_files.keys():
-        all_active_files = set.union(all_active_files, active_files[k])
-    for k in inactive_files.keys():
-        all_inactive_files = set.union(all_inactive_files, inactive_files[k])
-    updates = all_active_files.intersection(all_inactive_files)
-    adds = all_active_files - updates
-    deletes = all_inactive_files - updates
     if verbose:
+        all_active_files = set()
+        all_inactive_files = set()
+        for k in active_files.keys():
+            all_active_files = set.union(all_active_files, active_files[k])
+        for k in inactive_files.keys():
+            all_inactive_files = set.union(all_inactive_files, inactive_files[k])
+        updates = all_active_files.intersection(all_inactive_files)
+        adds = all_active_files - updates
+        deletes = all_inactive_files - updates
         for f in adds:
             print("INFO: ADD ", f)
         for f in updates:
@@ -675,13 +531,125 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
     # sort the file-list
     # file_list.sort()
     
-    if len(all_active_files) == 0:
+    if len(active_files) == 0:
         print("INFO: No active files found")
     
     # do we need to delete files in central at all? NO.  journal will be updated.
     # we only need to add new files
                 
     return active_files
+
+
+# all files to upload are marked with upload_dtstr = NULL. 
+# return list of files organized by version
+def list_files_with_info(databasename="journal.db", version: Optional[str] = None, 
+                         modalities: list[str] = None,
+                         verbose:bool = False):
+    """
+    Selects the files to upload from the journal database.  Print to stdout if outfile is not specified, and return list.
+
+    Args:
+        databasename (str, optional): The name of the journal database. Defaults to "journal.db".
+        version (str, optional): The version of the upload, which is the datetime of an upload.  If None (default) the un-uploaded files are returned
+        outfilename (Optional[str], optional): The name of the output file to write the selected files. Defaults to None.
+        verbose (bool, optional): Whether to print verbose output. Defaults to False.
+
+    Returns:
+        dict: The dictionary of {version: list[filenames]}.
+    """
+    # when listing files, looking for version match if specified, and upload_dtstr is NULL.
+        
+    table_exists = JournalDB.table_exists(database_name = databasename,
+                                        table_name = "journal")
+    
+    if not table_exists:
+        print(f"ERROR: table journal does not exist.")
+        return None
+
+    # identify 3 subsets:   deleted, updated, and added.
+    # deleted:  file with invalid time stamp.  No additional valid time stamp
+    # added:  file with null invalid time stemp and no prior entry with non-null invalid time stamp
+    # modified:  file with null invalid time, and a prior entry with non-null invalid time stamp
+    # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_us from journal where upload_dtstr IS NULL").fetchall()
+    # to_remove = [ ]
+    
+    if version is None:
+        where_clause = "upload_dtstr IS NULL"
+    else:
+        where_clause = f"upload_dtstr IS NULL AND version = '{version}'"
+    
+    if (modalities is not None) and (len(modalities) > 0):
+        where_clause += " AND ("
+        where_2 = [f"MODALITY = '{modality}'" for modality in modalities]
+        where_clause += " OR ".join(where_2)
+        where_clause += ")"
+        
+            
+    # select where upload_dtstr is NULL or time_invalid_us is NULL
+    files_to_update = JournalDB.query(database_name = databasename, 
+                                        table_name = "journal",
+                                        columns = ["FILEPATH", "FILE_ID", "SIZE", "MD5", "TIME_INVALID_us", "VERSION"],
+                                        where_clause = where_clause,
+                                        count = None)
+        
+    print("INFO: extracted files to upload for ", ("current" if version is None else version), " upload version and modalities =", 
+          (",".join(modalities) if modalities is not None else "all"))
+    
+    # this is pulling back only files with changes during since the last upload.  an old file may be inactivated but is in a previous upload
+    # so we only see the "new" part, which would look like an add.
+    # any deletion would be updating entries in a previous upload batch, so would not see deletion
+    # only update we would see is if a file is added, then updated between 2 uploads.   Not thta add/delete/add would show as moved or updated.
+    
+    # deleted or overwritten files would still be in old version of the cloud.  so we don't need to delete.
+    
+    # first get the set of active and inactive files.  these are hashtables for quick lookups.
+    # should not have same active file in multiple versions -  older one would be invalidated so should go to inactive files.
+    active_files_by_version = {}
+    active_files = {}  # file path should be unique.
+    inactive_files = {}  # file path to file id mapping is not unique
+    for (fn, fid, size, md5, invalidtime, version) in files_to_update:
+        if invalidtime is None:
+            # updated files or added files.  should be in the most recent version.
+            if (fn in active_files.keys()):
+                print(f"ERROR: Inconsistent Journal.  Multiple active files with path {fn}", flush=True)
+            else:
+                active_files[fn] = {'file_id': fid, 'size': size, 'md5': md5, 'version': version}
+                
+            if (version in active_files_by_version.keys()):
+                active_files_by_version[version].add(fn)
+            else:
+                active_files_by_version[version] = set([fn])
+        else:
+            # old files or deleted files
+            if (fid in inactive_files.keys()):
+                inactive_files[fn].append(fid)
+            else:
+                inactive_files[fn] = set([fid])
+    
+    # figure out the deleted ones 
+    if verbose:
+        all_active_files = set(active_files.keys())
+        all_inactive_files = set(inactive_files.keys())
+        updates = all_active_files.intersection(all_inactive_files)
+        adds = all_active_files - updates
+        deletes = all_inactive_files - updates
+        for f in adds:
+            print("INFO: ADD ", f)
+        for f in updates:
+            print("INFO: UPDATE ", f)
+        for f in deletes:
+            print("INFO: DELETE ", f)
+            
+    # sort the file-list
+    # file_list.sort()
+    
+    if len(active_files) == 0:
+        print("INFO: No active files found")
+    
+    # do we need to delete files in central at all? NO.  journal will be updated.
+    # we only need to add new files
+                
+    return active_files_by_version, active_files, inactive_files
 
 def list_versions(databasename="journal.db"):
     """
@@ -702,12 +670,10 @@ def list_versions(databasename="journal.db"):
         print(f"ERROR: No journal exists for filename {databasename}")
         return None
     
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
     
     # List unique values in upload_dtstr column in journal table
-    versions = [u[0] for u in cur.execute("SELECT DISTINCT version FROM journal;").fetchall()]
-    con.close()
+    res = JournalDB.get_unique_values(databasename, "journal", "VERSION", count = None)
+    versions = [u[0] for u in res]
     
     if (versions is not None) and (len(versions) > 0):
         print("INFO: upload records in the database:")
@@ -719,42 +685,42 @@ def list_versions(databasename="journal.db"):
     return versions
 
 
-def list_journals(databasename="journal.db"):
-    """
-    Lists the tables in the SQLite database specified by the given database name.
+# def list_journals(databasename="journal.db"):
+#     """
+#     Lists the tables in the SQLite database specified by the given database name.
 
-    Args:
-        databasename (str): The name of the SQLite database file. Defaults to "journal.db".
+#     Args:
+#         databasename (str): The name of the SQLite database file. Defaults to "journal.db".
 
-    Returns:
-        list: A list of tables in the database.
+#     Returns:
+#         list: A list of tables in the database.
 
-    Raises:
-        None
+#     Raises:
+#         None
 
-    """
+#     """
     
-    if not Path(databasename).exists():
-        print(f"ERROR: No journal exists for filename {databasename}")
-        return None
+#     if not Path(databasename).exists():
+#         print(f"ERROR: No journal exists for filename {databasename}")
+#         return None
     
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
+#     con = sqlite3.connect(databasename, check_same_thread=False)
+#     cur = con.cursor()
     
-    # List tables in the SQLite database
-    tables = [c[0] for c in cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
+#     # List tables in the SQLite database
+#     tables = [c[0] for c in cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
     
-    if tables:
-        print("INFO: Journals in the database:")
-        for table in tables:
-            if table.startswith("journal"):
-                print("INFO:  ", table)
-    else:
-        print("INFO: No tables found in the database.")
+#     if tables:
+#         print("INFO: Journals in the database:")
+#         for table in tables:
+#             if table.startswith("journal"):
+#                 print("INFO:  ", table)
+#     else:
+#         print("INFO: No tables found in the database.")
     
-    con.close()
+#     con.close()
 
-    return tables
+#     return tables
 
 
 # def delete_journal(databasename="journal.db", suffix:str = None):
@@ -783,46 +749,46 @@ def list_journals(databasename="journal.db"):
 
 
     
-# this should only be called when an upload is initiated.
-def backup_journal(databasename="journal.db", suffix:str = None):
-    """
-    Backs up the database journal table to a new table with a given suffix.
+# # this should only be called when an upload is initiated.
+# def backup_journal(databasename="journal.db", suffix:str = None):
+#     """
+#     Backs up the database journal table to a new table with a given suffix.
 
-    Args:
-        databasename (str): The name of the database file. Defaults to "journal.db".
-        suffix (str, optional): The suffix to be added to the backup table name. Defaults to None.
+#     Args:
+#         databasename (str): The name of the database file. Defaults to "journal.db".
+#         suffix (str, optional): The suffix to be added to the backup table name. Defaults to None.
 
-    Returns:
-        str: The name of the backup table.
+#     Returns:
+#         str: The name of the backup table.
 
-    Raises:
-        None
+#     Raises:
+#         None
 
-    """
-    if not Path(databasename).exists():
-        # os.remove(pushdir_name + ".db")
-        print(f"ERROR: No journal exists for filename {databasename}")
-        return None
+#     """
+#     if not Path(databasename).exists():
+#         # os.remove(pushdir_name + ".db")
+#         print(f"ERROR: No journal exists for filename {databasename}")
+#         return None
 
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
+#     con = sqlite3.connect(databasename, check_same_thread=False)
+#     cur = con.cursor()
     
-    if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone():
-        print(f"ERROR: table journal does not exist to backup.")
-        con.close()
-        return None
+#     if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone():
+#         print(f"ERROR: table journal does not exist to backup.")
+#         con.close()
+#         return None
 
-    suff = suffix if suffix is not None else strftime("%Y%m%d%H%M%S", gmtime())
+#     suff = suffix if suffix is not None else strftime("%Y%m%d%H%M%S", gmtime())
 
-    filesbackup = "journal_" + suff
-    cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
-    cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM journal")
+#     filesbackup = "journal_" + suff
+#     cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
+#     cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM journal")
 
-    print("INFO: backed up database journal to ", filesbackup)
+#     print("INFO: backed up database journal to ", filesbackup)
 
-    con.close()
+#     con.close()
 
-    return filesbackup
+#     return filesbackup
 
     
 # this should only be called when an upload is initiated.

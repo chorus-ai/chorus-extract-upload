@@ -672,13 +672,13 @@ def _upload_files(args, config, journal_fn):
         remaining = max_upload_count
         for mod, mod_config in mod_configs.items():
             sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-            _, remaining = upload_ops.upload_files(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose, max_num_files = remaining)
+            _, remaining = upload_ops.upload_files_new(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose, max_num_files = remaining)
             if remaining <= 0:
                 break        
     else:
         for mod, mod_config in mod_configs.items():
             sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-            upload_ops.upload_files(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose)
+            upload_ops.upload_files_new(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose)
     
 # helper to report file verification
 def _verify_files(args, config, journal_fn):
@@ -697,8 +697,8 @@ def _verify_files(args, config, journal_fn):
 def _list_versions(args, config, journal_fn):
     print("INFO: Uploads known in current journal: ")
     local_ops.list_versions(journal_fn)
-    print("INFO: Backed up journals: ")
-    local_ops.list_journals(journal_fn)
+    # print("INFO: Backed up journals: ")
+    # local_ops.list_journals(journal_fn)
 
 
 if __name__ == "__main__":

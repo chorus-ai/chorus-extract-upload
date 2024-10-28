@@ -2,6 +2,7 @@ import sqlite3
 import time
 import chorus_upload.config_helper as config_helper
 import json
+from chorus_upload.journaldb_ops import JournalDB
 
 def _strip_account_info(args):
     filtered_args = {}
@@ -90,32 +91,13 @@ def save_command_history(common_params:str, cmd:str, parameters:str,
     - databasename (str): The name of the SQLite database file. Default is "journal.db".
     """
     
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-    
     curtimestamp = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
     # curtimestamp = int(math.floor(time.time() * 1e6))
 
-    cur.execute("CREATE TABLE IF NOT EXISTS command_history (\
-                        COMMAND_ID INTEGER PRIMARY KEY AUTOINCREMENT, \
-                        DATETIME TEXT, \
-                        COMMON_PARAMS TEXT, \
-                        COMMAND TEXT, \
-                        PARAMS TEXT, \
-                        SRC_PATHS TEXT, \
-                        DEST_PATH TEXT, \
-                        Duration TEXT)")  # datetime string of the upload.
+    JournalDB.create_command_history_table(databasename)
  
-    cur.execute("INSERT INTO command_history ( \
-        DATETIME, COMMON_PARAMS, COMMAND, PARAMS, SRC_PATHS, DEST_PATH \
-        ) VALUES(?, ?, ?, ?, ?, ?)",
-        (curtimestamp, common_params, cmd, parameters, src_paths, dest_path))
-    con.commit()
-    
-    # get the inserted record id
-    command_id = cur.lastrowid
-    
-    con.close()
+    _, command_id = JournalDB.insert_command_history_entry(databasename,
+                                             (curtimestamp, common_params, cmd, parameters, src_paths, dest_path))
     
     return command_id
 
@@ -128,15 +110,13 @@ def update_command_completion(command_id:int, duration:float, databasename="jour
     - duration (float): The new duration of the command.
     - databasename (str): The name of the database file to connect to. Default is "journal.db".
     """
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-
-    cur.execute("UPDATE command_history SET DURATION=? WHERE COMMAND_ID=?", 
-                (duration, command_id))
-    con.commit()
     
-    con.close()    
-    
+    return JournalDB.update1(database_name = databasename, 
+                     table_name = "command_history",
+                     sets = [f"DURATION = {duration}"],
+                     where_clause = "COMMAND_ID = command_id"
+                    )
+        
     
 def show_command_history(databasename="journal.db"):
     """
@@ -148,15 +128,15 @@ def show_command_history(databasename="journal.db"):
     Returns:
     None
     """
-    con = sqlite3.connect(databasename, check_same_thread=False)
-    cur = con.cursor()
-
-    # get all the commands
-    commands = cur.execute("SELECT * FROM command_history").fetchall()
-    con.close()
+    
+    commands = JournalDB.query(database_name = databasename,
+                               table_name = "command_history",
+                               columns = None,
+                               where_clause = None,
+                               count = None)
     
     for (id, timestamp, common_params, cmd, params, src_paths, dest_path, duration) in commands:
         # convert microsecond timestamp to datetime
         # dt = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime(int(timestamp/1e6)))
-        print(f"  {id}\t{timestamp}:\t{common_params} {cmd} {params}.  {src_paths}->{dest_path}.  elapse {duration}s")
+        print(f"  {id}\t{timestamp}:\t{common_params} {cmd} {params}.  {src_paths}->{dest_path}.  elapsed {duration}s")
 
