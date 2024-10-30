@@ -5,6 +5,10 @@ import shutil
 import numpy as np
 import glob
 
+minfileSizeInLog2Bytes = 4
+maxfileSizeInLog2Bytes = 20
+
+
 def generateFirstFiles():
     # need: folder for test data
     rootfolder = "TestData"
@@ -30,6 +34,7 @@ def generateFirstFiles():
     unix0_2023 = 1672549200
     unix0_2024 = 1704085200
 
+
     # waveform directory
     for modality in ["Waveforms", "Images"]:
 
@@ -49,7 +54,7 @@ def generateFirstFiles():
                 interval_end = intervalpts[2*(filenum)+1]
                 interval_dur = interval_end - interval_st
                 datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
-                fileSizeInBytes = 2**random.randint(8, 28)
+                fileSizeInBytes = 2**random.randint(minfileSizeInLog2Bytes, maxfileSizeInLog2Bytes)
                 # outputfilename = str(id) +  "_" + str(random.randint(10000,20000)) + "_"
                 outputfilename = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm"))
                 outputfilepath = os.path.join(personwfdir, outputfilename)
@@ -61,7 +66,7 @@ def generateFirstFiles():
     os.makedirs(personwfdir, exist_ok=True)
     
     for filenum in range(14):
-        fileSizeInBytes = 2**random.randint(8, 28)
+        fileSizeInBytes = 2**random.randint(minfileSizeInLog2Bytes, maxfileSizeInLog2Bytes)
         outputfilename = str(filenum) + ".csv"
         outputfilepath = os.path.join(personwfdir, outputfilename)
         with open(outputfilepath, 'wb') as fout:
@@ -122,7 +127,7 @@ def generateUpdate():
                 dest_dir = os.path.dirname(dest_path)
                 os.makedirs(dest_dir, exist_ok=True)
                 
-                fileSizeInBytes = 2**random.randint(8, 28)
+                fileSizeInBytes = 2**random.randint(minfileSizeInLog2Bytes, maxfileSizeInLog2Bytes)
                 # copy as is
                 if option == 0:
                     shutil.copy(origpath, dest_path)
@@ -172,7 +177,7 @@ def generateUpdate():
                     interval_end = intervalpts[2*(filenum)+1]
                     interval_dur = interval_end - interval_st
                     datestr = datetime.fromtimestamp(interval_st).strftime("%Y%m%d_%H%M%S")
-                    fileSizeInBytes = 2**random.randint(8, 28)
+                    fileSizeInBytes = 2**random.randint(minfileSizeInLog2Bytes, maxfileSizeInLog2Bytes)
                     # outputfilename = str(id) +  "_" + str(random.randint(10000,20000)) + "_"
                     outputfilename = str(id) +  "_" + datestr + "_" + ((str(interval_dur) + ".dat") if modality == "Waveforms" else ("CT_01_" + str(filenum) + ".dcm")) 
                     outputfilepath = os.path.join(personwfdir, outputfilename)
@@ -184,7 +189,7 @@ def generateUpdate():
     os.makedirs(personwfdir, exist_ok=True)
     print("Updating OMOP")
     for filenum in range(14):
-        fileSizeInBytes = 2**random.randint(8, 28)
+        fileSizeInBytes = 2**random.randint(minfileSizeInLog2Bytes, maxfileSizeInLog2Bytes)
         outputfilename = str(filenum) + ".csv"
         outputfilepath = os.path.join(personwfdir, outputfilename)
         with open(outputfilepath, 'wb') as fout:

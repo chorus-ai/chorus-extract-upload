@@ -1,7 +1,7 @@
 import os
 import shutil
 
-from create_test_data.generate_file_structure import generateFirstFiles, generateUpdate
+from chorus_upload.create_test_data.generate_file_structure import generateFirstFiles, generateUpdate
 
 if __name__ == "__main__":
     if os.path.exists("TestData"):
