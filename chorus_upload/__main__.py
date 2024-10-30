@@ -48,6 +48,12 @@ import re
 #       journal update, list
 #       file mark_as_deleted, upload, marked_as_uploaded_central, verify
 #    workaround - if azcli is only transport, specify the journal file as local. last line in azcopy uploads journal directory.
+# TODO: DONE performance improvement - review database query call patterns.  minimize number of calls.
+# TODO: DONE abstract sqlite calls.
+# TODO: parallelize upload support?
+# TODO: DONE additional parameters in config.toml for page_size and num_threads (not functional)
+# TODO: add param in config.toml for local journal path
+# TODO: journaling_mode "append" would have multiple 
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -99,6 +105,9 @@ def _update_journal(args, config, journal_fn):
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
     journaling_mode = config_helper.get_journaling_mode(config)
 
+    nthreads = config_helper.get_config(config).get('nthreads', 1)
+    page_size = config_helper.get_config(config).get('page_size', 1000)
+
     # for each modality, create the file system help and process
     first = True
     for mod, mod_config in mod_configs.items():        
@@ -106,10 +115,11 @@ def _update_journal(args, config, journal_fn):
         datafs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
 
         print("Update journal ", journal_fn, " for ", mod)
-        update_journal(datafs, modalities = [mod], journaling_mode = journaling_mode,
+        update_journal(datafs, modalities = [mod], 
                        databasename = journal_fn, 
+                       journaling_mode = journaling_mode,
                        version = version, amend = (args.amend if first else True), 
-                       verbose = args.verbose)
+                       verbose = args.verbose, num_threads = nthreads, page_size = page_size)
         first = False
             
 # helper to revert to a previous journal
@@ -151,16 +161,19 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     journal_transport = kwargs.get('journal_transport', 'builtin')
     pattern = re.compile(r"az://[^/]+/(.+)")
     cloud_journal = kwargs.get('cloud_journal', "journal.db")
+    
     matches = pattern.match(cloud_journal)
     if matches:
-        cloud_journal_path = matches.groups()[0]
+        cloud_journal = matches.groups()[0]
+        local_journal = kwargs.get('local_journal', cloud_journal.split("/")[-1])
+        journal_is_local = False
     else:
         # if not storing journal in azure, then don't use azcli for journal transport.
+        journal_is_local = True
         journal_transport = "builtin"
-        cloud_journal_path = "journal.db"
-    
-    local_journal = cloud_journal.split("/")[-1]
-    
+        # cloud_journal = cloud_journal
+        local_journal = kwargs.get('local_journal', cloud_journal)    
+        
     max_upload_count = int(args.max_num_files) if ("max_num_files" in vars(args)) and (args.max_num_files is not None) else None 
     if (not dest_config['path'].startswith("az://")):
         print("WARNING: Destination is not an azure path.  cannot generate azcli script, but can genearete a list of source files")
@@ -253,8 +266,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             f.write(eol)
                         
             # check to see if cloud_journal is a cloud path
-            if not cloud_journal.startswith("az://"):
-                local_journal = cloud_journal
+            if journal_is_local:
                 if is_windows:
                     f.write(set_var + "\"local_journal=" + local_journal + "\"" + eol)
                 else:
@@ -264,10 +276,10 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                 f.write(comment + " Checkout the journal" + eol)
                 if is_windows:
                     f.write(set_var + "\"local_journal=" + local_journal + "\"" + eol)
-                    f.write(set_var + "\"cloud_journal=" + cloud_journal_path + "\"" + eol)
+                    f.write(set_var + "\"cloud_journal=" + cloud_journal + "\"" + eol)
                 else:
                     f.write(set_var + "local_journal=\"" + local_journal + "\"" + eol)
-                    f.write(set_var + "cloud_journal=\"" + cloud_journal_path + "\"" + eol)
+                    f.write(set_var + "cloud_journal=\"" + cloud_journal + "\"" + eol)
                     
                 if (journal_transport == "builtin"):
                     f.write(testme + "python chorus_upload -c " + config_fn + 
@@ -449,7 +461,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                                 f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
                             f.write(eol)
                             count = 0
-                        if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count > max_upload_count):
+                        if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count >= max_upload_count):
                             break
                               
                     if count > 0:
@@ -471,7 +483,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                             f.write("fi" + eol)
                             f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
 
-                    if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count > max_upload_count):
+                    if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count >= max_upload_count):
                         break
                             
             f.write(comment + " TEST checkin the journal" + eol)
@@ -486,7 +498,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                         var_start+"container"+var_end + " --name \"" + var_start+"ver"+var_end + "/journal.db\"" + 
                         " --file \"" + var_start+"local_journal"+var_end + "\" --overwrite --only-show-errors --output none" + testme_end + eol) 
             
-            if cloud_journal.startswith("az://"):
+            if not journal_is_local:
                 if (journal_transport == "builtin"):
                     f.write(testme + "python chorus_upload -c " + config_fn + 
                             " journal checkin --local-journal \"" + var_start+"local_journal"+var_end + "\"" + testme_end + eol)
@@ -510,7 +522,7 @@ def _select_files(args, config, journal_fn):
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     # do one modality at a time
-    upload_datetime = args.version if args.version else time.strftime("%Y%m%d%H%M%S")
+    ver = args.version if ('version' in vars(args)) and (args.version is not None) else time.strftime("%Y%m%d%H%M%S")
 
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
@@ -529,119 +541,123 @@ def _select_files(args, config, journal_fn):
 
             file_list[mod] = (mod_config, mod_files)
     
-        _write_files(file_list, upload_datetime, filename = args.output_file, 
-                     out_type = args.output_type, dest_config = central, 
-                     config_fn = args.config, max_num_files = args.max_num_files,
+        _write_files(file_list, ver, 
+                     filename = args.output_file, 
+                     out_type = args.output_type, 
+                     dest_config = central, 
+                     config_fn = args.config, 
+                     max_num_files = int(args.max_num_files) if ("max_num_files" in vars(args)) and (args.max_num_files is not None) else None,
                      journal_transport = config_helper.get_journal_config(config).get('upload_method', 'builtin'),
-                     cloud_journal = config_helper.get_journal_config(config).get('path', 'journal.db'))
+                     cloud_journal = config_helper.get_journal_path(config),
+                     local_journal = journal_fn)
     
     
 def _mark_as_uploaded(args, config, journal_fn):
-    upload_datetime = args.upload_datetime
-    file = args.file
-    filelist = args.file_list
+    upload_datetime = args.upload_datetime if 'upload_datetime' in vars(args) else time.strftime("%Y%m%d%H%M%S")
+    file = args.file if 'file' in vars(args) else None
+    filelist = args.file_list if 'file_list' in vars(args) else None
     central_config = config_helper.get_central_config(config)
     centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
     
+    
+    journal_f = args.local_journal if args.local_journal else journal_fn
+    
+        
     journal_f = args.local_journal if args.local_journal else journal_fn
     
     if (filelist is not None):
         with open(filelist, 'r') as f:
             files = [fn.strip() for fn in f.readlines()]
-            upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, files, verbose = args.verbose)
+            upload_ops.mark_as_uploaded(centralfs, journal_fn, upload_datetime, files, verbose = args.verbose)
     else:
-        upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, [file], verbose = args.verbose)
+        upload_ops.mark_as_uploaded(centralfs, journal_fn, upload_datetime, [file], verbose = args.verbose)
         
         
 def _mark_as_deleted(args, config, journal_fn):
-    version = args.version
-    file = args.file
-    filelist = args.file_list
-    central_config = config_helper.get_central_config(config)
-    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
-    
-    journal_f = args.local_journal if args.local_journal else journal_fn
+    version = args.version if 'version' in vars(args) else None
+    file = args.file if 'file' in vars(args) else None
+    filelist = args.file_list if 'file_list' in vars(args) else None
     
     if (filelist is not None):
         with open(filelist, 'r') as f:
             files = [fn.strip() for fn in f.readlines()]
-            local_ops.mark_files_as_deleted(files, databasename = journal_f, version = version, verbose = args.verbose)
+            local_ops.mark_files_as_deleted(files, databasename = journal_fn, version = version, verbose = args.verbose)
+    elif (file is not None):
+        local_ops.mark_files_as_deleted([file], databasename = journal_fn, version = version, verbose = args.verbose)
     else:
-        local_ops.mark_files_as_deleted([file], databasename = journal_f, version = version, verbose = args.verbose)
-        
+        print("ERROR: must provide either --file or --file-list")
 
-def _checkout_journal(args, config, journal_fn):
-    local_fn = args.local_journal if args.local_journal else "journal.db"
-    journal_upload_method = config.get('journal_upload_method', 'builtin')
-    
+# def _checkout_journal(args, config, journal_fn):
+#     local_fn = args.local_journal if args.local_journal else "journal.db"
+#     journal_upload_method = config.get('journal_upload_method', 'builtin')
 
-    # if local_fn exists, make a backup.
-    if Path(local_fn).exists():
-        backup_fn = local_fn + ".bak_" + time.strftime("%Y%m%d%H%M%S")
-        print("INFO: Using local journal ", local_fn, " backup at ", backup_fn)
-        shutil.copy(local_fn, backup_fn)
+#     # if local_fn exists, make a backup.
+#     if Path(local_fn).exists():
+#         backup_fn = local_fn + ".bak_" + time.strftime("%Y%m%d%H%M%S")
+#         print("INFO: Using local journal ", local_fn, " backup at ", backup_fn)
+#         shutil.copy(local_fn, backup_fn)
     
-    if journal_fn.startswith("az://") or journal_fn.startswith("s3://") or journal_fn.startswith("gs://"):
-        # central journal
-        # now download the journal file
-        journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config, local_fn)
-        if not Path(local_fn).exists():
-            if journal_md5 is not None:
-                raise ValueError("ERROR: journal file not properly checked out: ", local_fn)
-            # else - original journal does not exist.
-        else:
-            shutil.copy(local_fn, local_fn + ".bak")  # used for md5.
-        print("INFO: checked out ", journal_path, " to ", local_path, " with md5 ", journal_md5, " locked at ", locked_path)
+#     if journal_fn.startswith("az://") or journal_fn.startswith("s3://") or journal_fn.startswith("gs://"):
+#         # central journal
+#         # now download the journal file
+#         journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config, local_fn)
+#         if not Path(local_fn).exists():
+#             if journal_md5 is not None:
+#                 raise ValueError("ERROR: journal file not properly checked out: ", local_fn)
+#             # else - original journal does not exist.
+#         else:
+#             shutil.copy(local_fn, local_fn + ".bak")  # used for md5.
+#         print("INFO: checked out ", journal_path, " to ", local_path, " with md5 ", journal_md5, " locked at ", locked_path)
                 
-    else:
-        # if local_fn and journal_fn are same, do nothing.
-        if local_fn != journal_fn:
-            if Path(journal_fn).exists():            
-                # make a copy
-                shutil.copy(journal_fn, local_fn)
-            print("INFO: copied ", journal_fn, " to ", local_fn)
-        else:
-            # else if local_fn and journal_fn are same, do nothing.
-            print("INFO: journal file is already local.")    
+#     else:
+#         # if local_fn and journal_fn are same, do nothing.
+#         if local_fn != journal_fn:
+#             if Path(journal_fn).exists():            
+#                 # make a copy
+#                 shutil.copy(journal_fn, local_fn)
+#             print("INFO: copied ", journal_fn, " to ", local_fn)
+#         else:
+#             # else if local_fn and journal_fn are same, do nothing.
+#             print("INFO: journal file is already local.")    
         
 
 
-def _checkin_journal(args, config, journal_fn):
-    local_fn = args.local_journal if args.local_journal else "journal.db"
-    journal_upload_method = config.get('journal_upload_method', 'builtin')
+# def _checkin_journal(args, config, journal_fn):
+#     local_fn = args.local_journal if args.local_journal else "journal.db"
+#     journal_upload_method = config.get('journal_upload_method', 'builtin')
 
     
-    if journal_fn.startswith("az://") or journal_fn.startswith("s3://") or journal_fn.startswith("gs://"):
-        # if cloud journal
-        client = storage_helper._make_client(config_helper.get_journal_config(config))
+#     if journal_fn.startswith("az://") or journal_fn.startswith("s3://") or journal_fn.startswith("gs://"):
+#         # if cloud journal
+#         client = storage_helper._make_client(config_helper.get_journal_config(config))
         
-        # compute the lock path and md5
-        orig_md5 = FileSystemHelper.get_metadata(path=Path(local_fn + ".bak"), with_md5=True)['md5']
-        # generate the lock file name
-        journal_path = FileSystemHelper(journal_fn, client = client)
+#         # compute the lock path and md5
+#         orig_md5 = FileSystemHelper.get_metadata(path=Path(local_fn + ".bak"), with_md5=True)['md5']
+#         # generate the lock file name
+#         journal_path = FileSystemHelper(journal_fn, client = client)
                 
-        local_file = FileSystemHelper(local_fn)
-        # check in to central.
-        upload_ops.checkin_journal(journal_path, local_file, orig_md5)
+#         local_file = FileSystemHelper(local_fn)
+#         # check in to central.
+#         upload_ops.checkin_journal(journal_path, local_file, orig_md5)
  
-        print("INFO: checked in ", local_fn, " to ", journal_fn, " with original md5 ", orig_md5)
+#         print("INFO: checked in ", local_fn, " to ", journal_fn, " with original md5 ", orig_md5)
     
-    else:
-        # local journal
-        if journal_fn != local_fn:
-            # back up journal_fn
-            backup_fn = journal_fn + ".bak_" + time.strftime("%Y%m%d%H%M%S")
-            if Path(journal_fn).exists():            
-                shutil.copy(journal_fn, backup_fn)
+#     else:
+#         # local journal
+#         if journal_fn != local_fn:
+#             # back up journal_fn
+#             backup_fn = journal_fn + ".bak_" + time.strftime("%Y%m%d%H%M%S")
+#             if Path(journal_fn).exists():            
+#                 shutil.copy(journal_fn, backup_fn)
 
-            # and copy local_fn back/
-            if Path(local_fn).exist():
-                shutil.copy(local_fn, journal_fn)
-            else:
-                print("ERROR:  no local file ", local_file, "to copy to ", journal_fn)            
-        else:
-            # else if local_fn and journal_fn are same, do nothing.
-            print("INFO: journal file is already local.")    
+#             # and copy local_fn back/
+#             if Path(local_fn).exist():
+#                 shutil.copy(local_fn, journal_fn)
+#             else:
+#                 print("ERROR:  no local file ", local_file, "to copy to ", journal_fn)            
+#         else:
+#             # else if local_fn and journal_fn are same, do nothing.
+#             print("INFO: journal file is already local.")    
     
 
     
@@ -659,24 +675,16 @@ def _upload_files(args, config, journal_fn):
     central_config = config_helper.get_central_config(config)
     centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
     
-    # if (args.site_path is None):
-    #     raise ValueError("site path is required")
+    nthreads = config_helper.get_config(config).get('nthreads', 1)
+    page_size = config_helper.get_config(config).get('page_size', 1000)
     
-    # if (args.central_path is None):
-    #     raise ValueError("central path is required")
-    # subsequent modalities in this call always amend.
-    
-    if max_upload_count is not None:
-        remaining = max_upload_count
-        for mod, mod_config in mod_configs.items():
-            sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-            _, remaining = upload_ops.upload_files_new(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose, max_num_files = remaining)
-            if remaining <= 0:
-                break        
-    else:
-        for mod, mod_config in mod_configs.items():
-            sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
-            upload_ops.upload_files_new(sitefs, centralfs, modalities = [mod], databasename = journal_fn, verbose = args.verbose)
+    remaining = max_upload_count
+    for mod, mod_config in mod_configs.items():
+        sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
+        _, remaining = upload_ops.upload_files_new(sitefs, centralfs, modalities = [mod], databasename = journal_fn, max_num_files = remaining, 
+                                                    verbose = args.verbose, num_threads = nthreads, page_size = page_size)
+        if (remaining is not None) and (remaining <= 0):
+            break        
     
 # helper to report file verification
 def _verify_files(args, config, journal_fn):
@@ -690,7 +698,12 @@ def _verify_files(args, config, journal_fn):
     central_config = config_helper.get_central_config(config)
     centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
     
-    upload_ops.verify_files(centralfs, journal_fn, version = args.version, modalities = mods, verbose = args.verbose)
+    nthreads = config_helper.get_config(config).get('nthreads', 1)
+    page_size = config_helper.get_config(config).get('page_size', 1000)
+    
+    upload_ops.verify_files(centralfs, journal_fn, version = args.version, modalities = mods,
+                            verbose = args.verbose, num_threads = nthreads, page_size = page_size)
+    
     
 def _list_versions(args, config, journal_fn):
     print("INFO: Uploads known in current journal: ")
@@ -746,14 +759,14 @@ if __name__ == "__main__":
     
     parser_checkout = journal_subparsers.add_parser("checkout", help = "checkout a cloud journal file and create a local copy named journal.db")
     parser_checkout.add_argument("--local-journal", help="local filename for the journal file", required=False)
-    parser_checkout.set_defaults(func = _checkout_journal)
+    # parser_checkout.set_defaults(func = _checkout_journal)
     
     parser_checkin = journal_subparsers.add_parser("checkin", help = "check in a cloud journal file from local copy")
     parser_checkin.add_argument("--local-journal", help="local filename for the journal file", required=False)
-    parser_checkin.set_defaults(func = _checkin_journal)
+    # parser_checkin.set_defaults(func = _checkin_journal)
     
     parser_unlock = journal_subparsers.add_parser("unlock", help = "unlock a cloud journal file")
-    parser_unlock.set_defaults(func = upload_ops.unlock_journal)
+    # parser_unlock.set_defaults(func = upload_ops.unlock_journal)
         
 
     
@@ -839,7 +852,7 @@ if __name__ == "__main__":
     if (args.command in ["config-help", "usage"]):
         # call the subcommand function.
         args.func(args, None, None)
-        
+    
     else:
         if (not Path(config_fn).exists()):
             raise ValueError("Config file does not exist: ", 
@@ -849,60 +862,60 @@ if __name__ == "__main__":
         
         print("INFO: Using config file: ", config_fn)
         config = config_helper.load_config(config_fn)
-        upload_method = config_helper.get_upload_methods(config)
+        
+        local_journal_fn_override = args.local_journal if ('local_journal' in vars(args)) and (args.local_journal is not None) else None
+        journal_path, lock_path, local_path = upload_ops.get_journal_paths(config, 
+                                                                           local_fn_override = local_journal_fn_override)
+        
+        if ((args.command in ["journal"]) and (args.journal_command in ["unlock"])):
 
-        if ((args.command in ["journal"]) and (args.journal_command in ["unlock", "checkout", "checkin"])):
-            # if unlock, do it in the cloud only. for checkout and checkin, the argfunc handles the checkin and checkout.
-            # TODO: merge this later.
-            skip_history = True
-            skip_checkout = True
-            skip_checkin = True
-            # journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config, simulate = skip_checkout)
-            # journal_fn = str(journal_path.root)
-            journal_fn = config_helper.get_journal_config(config)["path"]
-        elif ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"])):
-            # purely local operation on the local file.
-            skip_history = False
-            skip_checkout = True
-            skip_checkin = True
-            journal_fn = args.local_journal if args.local_journal else "journal.db"
-        # elif ((args.command in ["file"]) and (args.file_command in ["upload"]) and ("resume" in vars(args)) and (args.resume)):
-        #     # resume an upload means no checkout is needed
-        #     skip_history = False
-        #     skip_checkout = True
-        #     skip_checkin = False
-        #     journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config, simulate = skip_checkout)
-        #     journal_fn = str(local_path.root)
-        else:
-            # normal path - checkout, compute, checkin.
-            skip_history = False
-            skip_checkout = False
-            skip_checkin = False
-            journal_path, locked_path, local_path, journal_md5 = upload_ops.checkout_journal(config)
-            journal_fn = str(local_path.root)
+            upload_ops.unlock_journal(journal_path, lock_path)
+
+        elif ((args.command in ["journal"]) and (args.journal_command in ["checkout"])):
+            # for checkout and checkin, the argfunc handles the checkin and checkout.
+            upload_ops.checkout_journal(journal_path, lock_path, local_path)
+
+        elif ((args.command in ["journal"]) and (args.journal_command in ["checkin"])):
+            # for checkout and checkin, the argfunc handles the checkin and checkout.
+            upload_ops.checkin_journal(journal_path, lock_path, local_path)
             
-        # === save command history
-        if not skip_history:
+        else:
+            if ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"])):
+                # purely local operation on the local file.
+                skip_checkout = True
+                skip_checkin = True
+
+            else:
+                # normal path - checkout, compute, checkin.
+                skip_checkout = False
+                skip_checkin = False
+                            
+            local_journal_fn = str(local_path.root)
+            
+            if not skip_checkout:
+                # checkout the journal
+                upload_ops.checkout_journal(journal_path, lock_path, local_path)
+                            
+            # === save command history
             args_dict = history_ops._strip_account_info(args)
             if ("config" not in args_dict.keys()) or (args_dict["config"] is None):
                 args_dict["config"] = config_fn
             command_id = history_ops.save_command_history(*(history_ops._recreate_params(args_dict)),
-                                                        *(history_ops._get_paths_for_history(args, config)), journal_fn)
+                                                        *(history_ops._get_paths_for_history(args, config)), local_journal_fn)
 
-        # call the subcommand function.
-        start = time.time()
-        args.func(args, config, journal_fn)
-        end = time.time()
-        elapsed = end - start
-        print(f"Command Completed in {elapsed:.2f} seconds.")
+            # call the subcommand function.
+            start = time.time()
+            args.func(args, config, local_journal_fn)
+            end = time.time()
+            elapsed = end - start
+            print(f"Command Completed in {elapsed:.2f} seconds.")
 
-        # save history runtime
-        if not skip_history:
-            history_ops.update_command_completion(command_id, elapsed, journal_fn)
-            
-        # and check in.
-        if not skip_checkin:
-            # push journal up.
-            upload_ops.checkin_journal(journal_path, local_path, journal_md5)
-            
+            # save history runtime
+            history_ops.update_command_completion(command_id, elapsed, local_journal_fn)
+                
+            # and check in.
+            if not skip_checkin:
+                # push journal up.
+                upload_ops.checkin_journal(journal_path, lock_path, local_path)
+                
     

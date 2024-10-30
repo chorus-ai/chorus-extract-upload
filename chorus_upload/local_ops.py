@@ -9,21 +9,27 @@ import concurrent.futures
 import chorus_upload.perf_counter as perf_counter
 from chorus_upload.journaldb_ops import JournalDB
 
+# Futures ThreadPoolExecutor may not work since python has a global interpreter lock (GIL) that prevents thread based parallelism, at least until 3.13 (optional)
+# alternative: use asyncio?
+
 def update_journal(root : FileSystemHelper, modalities: list[str],
-                  journaling_mode = "append",
-                   databasename="journal.db", 
+                   databasename: str,
+                   journaling_mode = "append",
                    version: str = None,
                    amend: bool = False,
-                   verbose: bool = False):
+                   **kwargs):
+    
+    
     table_exists = JournalDB.table_exists(database_name = databasename,
                                           table_name = "journal")
     
     # check if journal table exists
     if table_exists:
-        return _update_journal(root, modalities, journaling_mode = journaling_mode, 
-                               databasename = databasename, version = version, amend = amend, verbose= verbose)
+        return _update_journal(root, modalities, databasename = databasename, 
+                               journaling_mode = journaling_mode, 
+                               version = version, amend = amend, kwargs = kwargs)
     else:  # no amend possible since the file did not exist.
-        return _gen_journal(root, modalities, databasename, version = version, verbose = verbose)
+        return _gen_journal(root, modalities, databasename, version = version, kwargs = kwargs)
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path
@@ -54,9 +60,9 @@ def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, cu
 
 
 def _gen_journal(root : FileSystemHelper, modalities: list[str], 
-                  databasename="journal.db", 
+                  databasename: str, 
                   version:str = None, 
-                  verbose: bool = False):
+                  **kwargs):
     """
     Generate a journal for the given root directory and subdirectories.
 
@@ -68,6 +74,8 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     """
     print("INFO: Creating journal. NOTE: this may take a while for md5 computation.", flush=True)
     
+    verbose = kwargs.get("verbose", False)
+
     # TODO: set the version to either the supplied version name, or with current time.
     new_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
         
@@ -79,6 +87,9 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     curtimestamp = int(math.floor(time.time() * 1e6))
     all_args = []
     
+    page_size = kwargs.get("page_size", 1000)
+    n_cores = kwargs.get("num_threads", 1)
+    nthreads = min(n_cores, min(4, os.cpu_count()))
     
     for modality in modalities:
         start = time.time()
@@ -96,10 +107,8 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         # # paths += paths1
         # print("Get File List took ", time.time() - start)
         
-        nthreads = max(4, os.cpu_count() - 2)
-        page_size = 1000
         total_count = 0
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
 
             for paths in root.get_files_iter(pattern, page_size = page_size):
                 # list of relative paths in posix format and in string form.
@@ -222,11 +231,11 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
 def _update_journal(root: FileSystemHelper, modalities: list[str],
+                    databasename : str,
                     journaling_mode = "append",
-                     databasename="journal.db", 
                      version: str = None,
                      amend:bool = False, 
-                     verbose: bool = False):
+                     **kwargs):
     """
     Update the journal database with the files found in the specified root directory.
 
@@ -236,23 +245,27 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
         databasename (str, optional): The name of the journal database. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
+    
+    verbose = kwargs.get("verbose", False)
+
     print("INFO: Updating journal...", databasename, flush=True)
 
     # TODO:  
     # if amend, get the last version, and add files to that version.
     # if not amend, create a new version - either with supplied version name, or with current time.
+    version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
     if amend: # get the last version
-        last_version = JournalDB.get_max_value(databasename, table_name="journal", column_name="VERSION")
-        version = last_version if last_version is not None else version
-    else:
-        version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
+        version = JournalDB.get_max_value(databasename, table_name="journal", column_name="VERSION")
     
     perf = perf_counter.PerformanceCounter()
     
     # check if journal table exists.
     curtimestamp = int(math.floor(time.time() * 1e6))
     
-    page_size = 1000
+    page_size = kwargs.get("page_size", 1000)
+    n_cores = kwargs.get("num_threads", 1)
+    nthreads = min(n_cores, min(4, os.cpu_count()))
+
     paths = []
     all_insert_args = []
     all_del_args = []
@@ -284,8 +297,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             else:
                 modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5], i[6]))
 
-        nthreads = max(1, os.cpu_count() - 2)
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             
             for paths in root.get_files_iter(pattern, page_size = page_size ):  # list of relative paths in posix format and in string form.
                 futures = []
@@ -341,21 +353,20 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 # if so, print out the path
                 if not (relpath.isalnum() or relpath.isascii()):
                     print("INFO: Path contains non-alphanumeric characters:", relpath)
-                if verbose:
-                    if (relpath in paths):
-                        print("INFO: OUTDATED  ", relpath)
-                    elif (journaling_mode == "snapshot"):
-                        print("INFO: DELETED  ", relpath)
-                state = "OUTDATED" if (relpath in paths) else "DELETED"
+
                 for v in vals:
                     if (relpath in paths):
                         all_del_args.append(("OUTDATED", v[0]))
+                        if verbose:
+                            print("INFO: OUTDATED  ", relpath)
                     elif (journaling_mode == "snapshot"):
                         all_del_args.append(("DELETED", v[0]))
+                        if verbose:
+                            print("INFO: DELETED  ", relpath)
             # print("SQLITE update arguments ", all_del_args)
             if (total_count == 0) and len(all_del_args) == 0:
                 print("INFO: Nothing to change in journal for modality ", modality)
-            elif (len(all_del_args) > 0) and (journaling_mode == "snapshot"):
+            elif (len(all_del_args) > 0):
                 # back up only on upload
                 # backup_journal(databasename)
                 
@@ -373,7 +384,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
 # explicitly mark files as deleted.  This is best used when the journaling mode is "append"        
 def mark_files_as_deleted(files_to_remove:List[str], 
-                          databasename="journal.db", 
+                          databasename: str, 
                           version: str = None, 
                           verbose:bool = False):
     
@@ -432,7 +443,7 @@ def mark_files_as_deleted(files_to_remove:List[str],
 
 # all files to upload are marked with upload_dtstr = NULL. 
 # return list of files organized by version
-def list_files(databasename="journal.db", version: Optional[str] = None, 
+def list_files(databasename: str, version: Optional[str] = None, 
                          modalities: list[str] = None,
                          verbose:bool = False):
     """
@@ -546,7 +557,7 @@ def list_files(databasename="journal.db", version: Optional[str] = None,
 
 # all files to upload are marked with upload_dtstr = NULL. 
 # return list of files organized by version
-def list_files_with_info(databasename="journal.db", version: Optional[str] = None, 
+def list_files_with_info(databasename: str, version: Optional[str] = None, 
                          modalities: list[str] = None,
                          verbose:bool = False):
     """
@@ -628,10 +639,12 @@ def list_files_with_info(databasename="journal.db", version: Optional[str] = Non
             if (fid in inactive_files.keys()):
                 inactive_files[fn].append(fid)
             else:
-                inactive_files[fn] = set([fid])
+                inactive_files[fn] = [fid]
     
     for version in active_files_by_version.keys():
         active_files_by_version[version] = set(active_files_by_version[version])
+    for fn in inactive_files.keys():
+        inactive_files[fn] = set(inactive_files[fn])    
     
     # figure out the deleted ones 
     if verbose:
@@ -658,7 +671,7 @@ def list_files_with_info(databasename="journal.db", version: Optional[str] = Non
                 
     return active_files_by_version, active_files, inactive_files
 
-def list_versions(databasename="journal.db"):
+def list_versions(databasename: str):
     """
     Retrieve a list of unique upload dates from the journal database.
 
@@ -692,7 +705,7 @@ def list_versions(databasename="journal.db"):
     return versions
 
 
-# def list_journals(databasename="journal.db"):
+# def list_journals(databasename: str):
 #     """
 #     Lists the tables in the SQLite database specified by the given database name.
 
@@ -730,7 +743,7 @@ def list_versions(databasename="journal.db"):
 #     return tables
 
 
-# def delete_journal(databasename="journal.db", suffix:str = None):
+# def delete_journal(databasename: str, suffix:str = None):
 #     if (suffix is None) or (suffix == "") :
 #         print("ERROR: you must specify a suffix for the 'journal' table.")
 #         return None
@@ -757,7 +770,7 @@ def list_versions(databasename="journal.db"):
 
     
 # # this should only be called when an upload is initiated.
-# def backup_journal(databasename="journal.db", suffix:str = None):
+# def backup_journal(databasename: str, suffix:str = None):
 #     """
 #     Backs up the database journal table to a new table with a given suffix.
 
@@ -799,7 +812,7 @@ def list_versions(databasename="journal.db"):
 
     
 # this should only be called when an upload is initiated.
-# def restore_journal(databasename="journal.db", suffix:str = None):
+# def restore_journal(databasename: str, suffix:str = None):
 #     """
 #     Restores the database journal from a backup table.
 

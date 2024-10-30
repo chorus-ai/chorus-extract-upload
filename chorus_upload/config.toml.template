@@ -18,14 +18,24 @@ upload_method = "builtin"
 # in append mode, the source data is assumed to be new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  To delete a file, "file delete" has to be called.
 journaling_mode = "snapshot"
 
+# file processing page size. database is updated after each page. default is 1000
+page_size = 1000
+
+# number of threads to use.  Note that this currently does not do anything as python Global Interpretor Lock is preventing multithreading.
+# num_threads = 1
+
 [journal]
 path = "journal.db"   # specify the journal file name. defaults to cloud storage
 # example:  "az://container/path/to/journal.db"
 # example:  "/home/user/journal.db"
 # azure_account_name = "account_name"
 # azure_sas_token = "sastoken"
+
 # if "builtin" then azcli script will use chorus_upload.  else it would use azcli to upload.
 upload_method = "builtin"
+
+# local path for downloaded journal file.  default is "journal.db"
+local_path = "journal.db"
 
 [central_path]
 # specify the central (target) container/path, to which files are uploaded.  

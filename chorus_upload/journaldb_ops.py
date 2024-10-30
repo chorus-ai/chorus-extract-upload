@@ -140,6 +140,8 @@ class JournalDB:
         if (params is None) or (len(params) == 0):
             return 0
         
+        print("INFO: JournalDB updating ", table_name, " rows ", len(params))
+        
         set_str = ', '.join(sets)
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
         count = 0

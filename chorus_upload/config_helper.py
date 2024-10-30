@@ -42,29 +42,38 @@ def get_journal_config(config: dict):
 def get_central_config(config: dict):
     return config['central_path']
 
+def get_config(config: dict):
+    return config['configuration']
+
 def get_modalities(config: dict):
     subconfig = config['configuration']
-    return subconfig['supported_modalities'].split(',') if 'supported_modalities' in subconfig.keys() else ['OMOP','Waveforms','Images']
+    return subconfig.get('supported_modalities', "OMOP,Waveforms,Images").split(',')
+
+def get_journal_path(config: dict):
+    subconfig = config['journal']
+    return subconfig.get('path', "journal.db")
+
+def get_journal_local_path(config: dict):
+    cloud_path = config['journal'].get('path', "journal.db")
+    is_cloud = cloud_path.startswith("s3://") or cloud_path.startswith("az://") or cloud_path.startswith("gs://")
+    cloud_derived = cloud_path.split("/")[-1]
+    # if local_path defined, use it.  else if path is cloud, use the file name, else use cloud_path.
+    return config['journal'].get('local_path', cloud_derived if is_cloud else cloud_path)
 
 def get_upload_methods(config: dict):
     subconfig = config['configuration']
-    return subconfig['upload_methods'] if 'upload_methods' in subconfig.keys() else 'builtin'
+    return subconfig.get('upload_methods', 'builtin')
 
 def get_journaling_mode(config: dict):
     subconfig = config['configuration']
-    return subconfig['journaling_mode'] if 'journaling_mode' in subconfig.keys() else 'append'
+    return subconfig.get('journaling_mode', 'append')
 
 def get_site_config(config: dict, modality: str):
     subconfig = config['site_path']
-    if (modality in subconfig.keys()):
-        return subconfig[modality]
-    elif "default" in subconfig.keys():
-        return subconfig["default"]
-    else:
+    out = subconfig.get(modality, subconfig.get('default', None))
+    if out is None:
         raise ValueError("No site path for modality not found in config file")
+    return out
 
 def get_auth_param(config: dict, key: str):
-    if key in config.keys():
-        return config[key]
-    else:
-        return None
+    return config.get(key, None)

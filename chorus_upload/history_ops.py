@@ -80,7 +80,7 @@ def _get_paths_for_history(args, config):
 
 def save_command_history(common_params:str, cmd:str, parameters:str, 
                          src_paths:str, dest_path:str,
-                         databasename="journal.db"):
+                         databasename:str):
     """
     Saves the command history to a SQLite database.
 
@@ -101,7 +101,7 @@ def save_command_history(common_params:str, cmd:str, parameters:str,
     return command_id
 
 
-def update_command_completion(command_id:int, duration:float, databasename="journal.db"):
+def update_command_completion(command_id:int, duration:float, databasename: str):
     """
     Update the duration of a command in the command history.
     Parameters:
@@ -117,7 +117,7 @@ def update_command_completion(command_id:int, duration:float, databasename="jour
                     )
         
     
-def show_command_history(databasename="journal.db"):
+def show_command_history(databasename: str):
     """
     Retrieve and display the command history from the specified SQLite database.
 
