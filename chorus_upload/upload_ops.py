@@ -482,6 +482,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         #                         params = del_args,
         #                         where_clause="file_id=?")
         #     del_args = []
+        perf.report()
 
     # # other cases are handled below.
 
@@ -501,22 +502,24 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     
     # delete every thing in mark_deleted.
     if len(del_args) > 0:
-        print("INFO: MArking as deleted: ", len(del_args))
+        print("INFO: Marking as deleted: ", len(del_args))
         JournalDB.update(database_name = databasename, table_name = "journal",
                          sets = ["upload_dtstr=?"],
                          params = del_args,
                          where_clause="file_id=?")
         del_args = []
     
-    perf.report()
+        perf.report()
     
     # create a versioned backup - AFTER updating the journal.
     # do not do backup the table - this will create really big files.
     # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
+    print("INFO: UPLOAD: backing up journal")
     journal_path.copy_file_to(journal_fn, dated_dest_path)
     dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
     journal_path.copy_file_to(journal_fn, dest_fn)
+    perf.report()
     
     del perf
     return upload_dt_str, remaining  # if max_num_files is None, remaining is None, meaning no limit.
@@ -700,6 +703,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
             #                         params = del_args,
             #                         where_clause="file_id=?")
             #     del_args = []
+            perf.report()
 
     # # other cases are handled below.
 
@@ -726,15 +730,17 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
                          where_clause="file_id=?")
         del_args = []
     
-    perf.report()
+        perf.report()
     
     # create a versioned backup - AFTER updating the journal.
     # do not do backup the table - this will create really big files.
     # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
+    print("INFO: UPLOAD: backing up journal")
     journal_path.copy_file_to(journal_fn, dated_dest_path)
     dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
     journal_path.copy_file_to(journal_fn, dest_fn)
+    perf.report()
     
     del perf
     return upload_dt_str, remaining  # if max_num_files is None, remaining is None, meaning no limit.
