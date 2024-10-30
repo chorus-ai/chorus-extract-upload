@@ -88,9 +88,10 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     all_args = []
     
     page_size = kwargs.get("page_size", 1000)
-    n_cores = kwargs.get("num_threads", 1)
-    nthreads = min(n_cores, min(4, os.cpu_count()))
-    
+    n_cores = kwargs.get("n_cores", 32)
+    nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
+    print("INFO: Using ", nthreads, " threads")
+
     for modality in modalities:
         start = time.time()
         # pattern = f"{modality}/**/*" if modality == "OMOP" else f"*/{modality}/**/*"
@@ -263,8 +264,10 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     curtimestamp = int(math.floor(time.time() * 1e6))
     
     page_size = kwargs.get("page_size", 1000)
-    n_cores = kwargs.get("num_threads", 1)
-    nthreads = min(n_cores, min(4, os.cpu_count()))
+    
+    n_cores = kwargs.get("n_cores", 32)
+    nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
+    print("INFO: Using ", nthreads, " threads")
 
     paths = []
     all_insert_args = []
