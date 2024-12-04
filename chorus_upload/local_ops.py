@@ -362,7 +362,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                         all_del_args.append(("OUTDATED", v[0]))
                         if verbose:
                             print("INFO: OUTDATED  ", relpath)
-                    elif (journaling_mode == "full"):
+                    elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
                         all_del_args.append(("DELETED", v[0]))
                         if verbose:
                             print("INFO: DELETED  ", relpath)
