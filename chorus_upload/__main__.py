@@ -41,19 +41,19 @@ import re
 #           This is to address a interrupted "file upload", where journal has been checked out but not checked in
 #           the central site then has a lock file that is old, and local journal contains updates.
 # TODO: DONE use local MD5 instead of computing MD5 by downloading.  with HTTPs, each rest call should be computing MD5 for the block on transit.
-# TODO: add support for snapshot vs append modes for journal update
-# TODO: add support for marking files as deleted.
+# TODO: DONE add support for full vs append modes for journal update
+# TODO: DONE add support for marking files as deleted.
 
-# TODO: handle the case where the journal has to be uploaded by azcli because of security review.
+# TODO: DONE handle the case where the journal has to be uploaded by azcli because of security review.
 #       journal update, list
 #       file mark_as_deleted, upload, marked_as_uploaded_central, verify
 #    workaround - if azcli is only transport, specify the journal file as local. last line in azcopy uploads journal directory.
 # TODO: DONE performance improvement - review database query call patterns.  minimize number of calls.
 # TODO: DONE abstract sqlite calls.
-# TODO: parallelize upload support?
-# TODO: DONE additional parameters in config.toml for page_size and num_threads (not functional)
-# TODO: add param in config.toml for local journal path
-# TODO: journaling_mode "append" would have multiple 
+# TODO: DONE parallelize upload support?
+# TODO: DONE additional parameters in config.toml for page_size and num_threads
+# TODO: DONE add param in config.toml for local journal path
+# TODO: journaling_mode "append" would have one directory per submission.  how should these be managed?
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
