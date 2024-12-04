@@ -21,7 +21,7 @@ journaling_mode = "full"
 # file processing page size. database is updated after each page. default is 1000
 page_size = 1000
 
-# number of threads to use.  Note that this currently does not do anything as python Global Interpretor Lock is preventing multithreading.
+# number of threads to use.  default is min of cores + 4, 32, or the number specified here.  Recommend not setting the number of threads.
 # num_threads = 1
 
 [journal]
