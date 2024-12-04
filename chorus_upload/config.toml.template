@@ -1,7 +1,7 @@
 # each section below indicates a path.
 # each of the paths can be specified as a local or a cloud path
 # cloud paths are specified as "az://container/path" or "s3://container/path"
-# supported cloud crendentials are below.  parentheses indicate required pairing.
+# supported cloud credentials are below.  parentheses indicate required pairing.
 # (azure_account_name, azure_sas_token), (azure_account_name, azure_account_key), azure_connection_string, azure_account_url
 # (aws_access_key_id, aws_secret_access_key), aws_session_token, aws_profile
 # fallbacks are environment variables for these.
@@ -13,10 +13,10 @@ supported_modalities = "OMOP,Images,Waveforms"
 # upload method can be one of "azcli" or "builtin"
 upload_method = "builtin"
 
-# journaling mode can be either "snapshot" or "append". 
-# in snapshot mode, the source data is assumed to be a full repo and journal is taking a snapshot.  Previous version file that are missing in the current file system are considered as deleted
+# journaling mode can be either "full" or "append". 
+# in full mode, the source data is assumed to be a full repo and journal is taking a snapshot.  Previous version file that are missing in the current file system are considered as deleted
 # in append mode, the source data is assumed to be new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  To delete a file, "file delete" has to be called.
-journaling_mode = "snapshot"
+journaling_mode = "full"
 
 # file processing page size. database is updated after each page. default is 1000
 page_size = 1000
