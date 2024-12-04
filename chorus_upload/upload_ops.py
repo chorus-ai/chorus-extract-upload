@@ -618,7 +618,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
     print("INFO: UPLOAD using ", nthreads, " threads")
-    with concurrent.futures.ProcessPoolExecutor(max_workers=nthreads) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
 
         futures = []
         for fn, info in files_to_upload.items():
@@ -827,7 +827,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
     print("INFO: Using ", nthreads, " threads")
-    with concurrent.futures.ProcessPoolExecutor(max_workers=nthreads) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
         futures = []
         for file_info in files_to_verify:
             future = executor.submit(_get_file_info, dated_dest_path, file_info )
