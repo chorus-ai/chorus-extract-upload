@@ -34,8 +34,10 @@ def _recreate_params(filtered_args: dict):
         
     exclude_params = ["command", "verbose", "config"]
     if (command in ["journal", "file"]):    
-        command = command + " " + filtered_args[command + "_command"]
-        exclude_params.append(command + "_command")
+        full_command = command + " " + filtered_args[command + "_command"] # concate command and subcommand
+        exclude_params.append(command + "_command")  # fixed bug where command was previously concate of command and subcommand.
+            
+    # print("DEBUG: exclude commands", exclude_params, "filtered args", filtered_args)
             
     # cat the rest
     for arg, val in filtered_args.items():
@@ -49,8 +51,8 @@ def _recreate_params(filtered_args: dict):
     
     params = params.strip()
     common_params = common_params.strip()
-    print(common_params, command, params) 
-    return (common_params, command, params)
+    print(common_params, full_command, params) 
+    return (common_params, full_command, params)
 
 def _get_paths_for_history(args, config):
     command = args.command
