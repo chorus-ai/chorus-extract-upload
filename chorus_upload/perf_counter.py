@@ -4,11 +4,11 @@ import time
 class PerformanceCounter:
     def __print_total(self):
         elapsed = time.time() - self.start_time
-        if elapsed > 0:
+        if (elapsed > 0) and (self.total_file_count > 0):
             size = self.file_size / (1024 * 1024)
             size_throughput = size / elapsed
             file_throughput = self.file_count / elapsed
-            if self.has_total:
+            if (self.has_total) and (self.file_count > 0):
                 percent_files = (self.file_count / self.total_file_count) * 100
                 remaining_time = (elapsed / self.file_count) * (self.total_file_count - self.file_count) 
                 print("Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and ".format(
