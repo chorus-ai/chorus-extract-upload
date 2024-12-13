@@ -51,7 +51,6 @@ def _recreate_params(filtered_args: dict):
     
     params = params.strip()
     common_params = common_params.strip()
-    print(common_params, full_command, params) 
     return (common_params, full_command, params)
 
 def _get_paths_for_history(args, config):
