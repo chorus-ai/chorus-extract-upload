@@ -4,22 +4,22 @@ import time
 class PerformanceCounter:
     def __print_total(self):
         elapsed = time.time() - self.start_time
-        if (elapsed > 0) and (self.total_file_count > 0):
+        if (elapsed > 0):
             size = self.file_size / (1024 * 1024)
             size_throughput = size / elapsed
             file_throughput = self.file_count / elapsed
-            if (self.has_total) and (self.file_count > 0):
+            if (self.has_total) and (self.total_file_count > 0) and (self.file_count > 0):
                 percent_files = (self.file_count / self.total_file_count) * 100
                 remaining_time = (elapsed / self.file_count) * (self.total_file_count - self.file_count) 
-                print("Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and ".format(
+                print("TIMING: Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and ".format(
                     elapsed, self.file_count, file_throughput) + \
                     " {:.2f} MB ({:.2f} MB/s). {:.2f}% files and Estimated remaining time: {:.2f} seconds".format(
                     size, size_throughput, percent_files, remaining_time))
             else:
-                print("Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and {:.2f} MB ({:.2f} MB/s).".format(
+                print("TIMING: Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and {:.2f} MB ({:.2f} MB/s).".format(
                     elapsed, self.file_count, file_throughput, size, size_throughput))
         else:
-            print("Warning: total elapsed time is 0")
+            print("TIMING: Warning: total elapsed time is 0")
             
     def __print_session(self):
         elapsed = time.time() - self.session_start_time
@@ -27,10 +27,10 @@ class PerformanceCounter:
             size = float(self.session_file_size) / (1024 * 1024)
             size_throughput = size / elapsed
             file_throughput = float(self.session_file_count) / elapsed
-            print("Session elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and {:.2f} MB ({:.2f} MB/s)".format(
+            print("TIMING: Session elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and {:.2f} MB ({:.2f} MB/s)".format(
                 elapsed, self.session_file_count, file_throughput, size, size_throughput))
         else:
-            print("Warning: session elapsed time is 0")        
+            print("TIMING: Warning: session elapsed time is 0")        
 
     
     def __init__(self, total_file_count: int = None):
