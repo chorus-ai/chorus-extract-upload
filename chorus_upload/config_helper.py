@@ -37,42 +37,44 @@ def load_config(configifle: str):
     return config
 
 def get_journal_config(config: dict):
-    return config['journal']
+    return config.get('journal', {})
 
 def get_central_config(config: dict):
-    return config['central_path']
+    return config.get('central_path', {})
 
 def get_config(config: dict):
-    return config['configuration']
+    return config.get('configuration', {})
 
 def get_modalities(config: dict):
-    subconfig = config['configuration']
+    subconfig = config.get('configuration', {})
     return subconfig.get('supported_modalities', "OMOP,Waveforms,Images").split(',')
 
 def get_journal_path(config: dict):
-    subconfig = config['journal']
+    subconfig = config.get('journal', {})
     return subconfig.get('path', "journal.db")
 
 def get_journal_local_path(config: dict):
-    cloud_path = config['journal'].get('path', "journal.db")
+    cloud_path = config.get('journal', {}).get('path', "journal.db")
     is_cloud = cloud_path.startswith("s3://") or cloud_path.startswith("az://") or cloud_path.startswith("gs://")
     cloud_derived = cloud_path.split("/")[-1]
     # if local_path defined, use it.  else if path is cloud, use the file name, else use cloud_path.
-    return config['journal'].get('local_path', cloud_derived if is_cloud else cloud_path)
+    return config.get('journal', {}).get('local_path', cloud_derived if is_cloud else cloud_path)
 
 def get_upload_methods(config: dict):
-    subconfig = config['configuration']
+    subconfig = config.get('configuration', {})
     return subconfig.get('upload_methods', 'builtin')
 
 def get_journaling_mode(config: dict):
-    subconfig = config['configuration']
+    subconfig = config.get('configuration', {})
     return subconfig.get('journaling_mode', 'append')
 
 def get_site_config(config: dict, modality: str):
-    subconfig = config['site_path']
+    subconfig = config.get('site_path', None)
+    if subconfig is None:
+        raise ValueError("No site path section in config file") 
     out = subconfig.get(modality, subconfig.get('default', None))
     if out is None:
-        raise ValueError("No site path for modality not found in config file")
+        raise ValueError(f"Site path for modality {modality} not found in config file")
     return out
 
 def get_auth_param(config: dict, key: str):
