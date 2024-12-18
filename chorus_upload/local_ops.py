@@ -6,11 +6,17 @@ from typing import Optional, List
 from chorus_upload.storage_helper import FileSystemHelper
 from pathlib import Path
 import concurrent.futures
+import threading
 import chorus_upload.perf_counter as perf_counter
 from chorus_upload.journaldb_ops import JournalDB
 
+import parse
+
 # Futures ThreadPoolExecutor may not work since python has a global interpreter lock (GIL) that prevents thread based parallelism, at least until 3.13 (optional)
 # alternative: use asyncio?
+
+# NOTE: ALL RELPATHs in the journal db are local paths in posix format.  Mapping to central path is via filename pattern matching.
+# TODO: use specified file pattern.  if version is embedded, parse it out as well.
 
 def update_journal(root : FileSystemHelper, modalities: list[str],
                    databasename: str,
@@ -22,41 +28,37 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
     
     table_exists = JournalDB.table_exists(database_name = databasename,
                                           table_name = "journal")
-    
+
     # check if journal table exists
     if table_exists:
         return _update_journal(root, modalities, databasename = databasename, 
                                journaling_mode = journaling_mode, 
-                               version = version, amend = amend, kwargs = kwargs)
+                               version = version, amend = amend, **kwargs)
     else:  # no amend possible since the file did not exist.
-        return _gen_journal(root, modalities, databasename, version = version, kwargs = kwargs)
+        return _gen_journal(root, modalities, databasename, version = version, **kwargs)
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path
-PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images)/.*", re.IGNORECASE)
+# PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images|OMOP)/.*", re.IGNORECASE)
 
-def _gen_journal_one_file(root : FileSystemHelper, relpath:str, modality:str, curtimestamp:int, version:str):
-    # print(i_path, relpath)
-    start = time.time()
-    meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata=True, with_md5=True)
-    # first item is personid.
-    md5_time = time.time() - start
-    
-    # extract personid using regex
-    matched = PERSONID_REGEX.match(relpath)
-    personid = matched.group(1) if matched else None
-    # p = AnyPath(relpath)
-    # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
-    
-    filesize = meta['size']
-    modtimestamp = meta['modify_time_us']
-    
-    mymd5 = meta['md5']  # if azure file, could be None.
-                
-    myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time, version)
-
-    return myargs
-
+# get the file pattern from the modality config or use default
+def _get_modality_pattern(modality:str, modality_configs:dict):
+    modality_config = modality_configs.get(modality, {})
+    pattern = modality_config.get("pattern", None)
+    if pattern is None:
+        if (modality.lower() == "waveforms"):
+            pattern = "{patient_id:w}/Waveforms/{filepath}"
+        elif (modality.lower() == "images"):
+            pattern = "{patient_id:w}/Images/{filepath}"
+        elif (modality.lower() == "omop"):
+            omop_per_patient = modality_config.get("omop_per_patient", False)
+            if omop_per_patient:
+                pattern = "{patient_id:w}/OMOP/{filepath}"
+            else:
+                pattern = "OMOP/{filepath}"
+        else:
+            pattern = "{patient_id:w}/" + modality + "/{filepath}"
+    return pattern
 
 
 def _gen_journal(root : FileSystemHelper, modalities: list[str], 
@@ -94,23 +96,19 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
 
     for modality in modalities:
         start = time.time()
-        # pattern = f"{modality}/**/*" if modality == "OMOP" else f"*/{modality}/**/*"
-        if (modality.lower() == "waveforms"):
-            pattern = "*/[wW][aA][vV][eE][fF][oO][rR][mM][sS]/**/*"
-        elif (modality.lower() == "images"):
-            pattern = "*/[iI][mM][aA][gG][eE][sS]/**/*"
-        elif (modality.lower() == "omop"):
-            pattern = "[oO][mM][oO][pP]/**/*"
-        else:
-            pattern = f"*/{modality}/**/*"
             
         # paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
         # # paths += paths1
         # print("Get File List took ", time.time() - start)
         
+        pattern = _get_modality_pattern(modality, kwargs.get("modality_configs", {}))
+        version_in_pattern = ("{version:w}" in pattern) or ("{version}" in pattern)
+        compiled_pattern = parse.compile(pattern)
+        
         total_count = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-
+            lock = threading.Lock()
+            
             for paths in root.get_files_iter(pattern, page_size = page_size):
                 # list of relative paths in posix format and in string form.
                 futures = []
@@ -118,7 +116,9 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                 for relpath in paths:
                     if verbose:
                         print("INFO: scanning ", relpath)
-                    future = executor.submit(_gen_journal_one_file, root, relpath, modality, curtimestamp, new_version)
+                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
+                                             {}, 
+                                             compiled_pattern, None if version_in_pattern else new_version, kwargs = {'lock': lock})
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -146,21 +146,21 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         print("INFO: Journal Update took ", time.time() - start, "s")
         
 
-def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, modality_files_to_inactivate:dict, version:str):
-    # get information about the current file
-    meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False)
-    # root.get_file_metadata(relpath)
+def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, 
+                             modality_files_to_inactivate:dict, compiled_pattern:parse.Parser, version:str = None, 
+                             **kwargs):
     
     # TODO need to handle version vs old version.
+    lock = kwargs.get("lock", None)
     
     # first item is personid.
-    matched = PERSONID_REGEX.match(relpath)
-    personid = matched.group(1) if matched else None
-    # p = AnyPath(relpath)
-    # personid = p.parts[0] if ("Waveforms" in p.parts) or ("Images" in p.parts) else None
+    parsed = compiled_pattern.parse(relpath)
+    personid = parsed.named.get("patient_id", None)
+    version = version if version is not None else parsed.named.get("version", None)
+
+    # matched = PERSONID_REGEX.match(relpath)
+    # personid = matched.group(1) if matched else None
     
-    filesize = meta['size']
-    modtimestamp = meta['modify_time_us']
     # 
 
     # get information about the old file
@@ -171,38 +171,43 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     # results = filecheckrow.fetchall()
     if relpath in modality_files_to_inactivate.keys():
         results = modality_files_to_inactivate[relpath]
+        
         # There should only be 1 active file according to the path in a well-formed 
         if (len(results) > 1):
             # print("ERROR: Multiple active files with that path - journal is not consistent")
-            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR1", None, None)
+            return (personid, relpath, modality, None, None, None, curtimestamp, None, "ERROR1", None, None)
         if (len(results) == 0):
             # print("ERROR: File found but no metadata.", relpath)
-            return (personid, relpath, modality, modtimestamp, None, None, curtimestamp, None, "ERROR2", None, None)
+            return (personid, relpath, modality, None, None, None, curtimestamp, None, "ERROR2", None, None)
         
         if len(results) == 1:
             (oldfileid, oldsize, oldmtime, oldmd5, oldsync, oldversion) = results[0]
+            
+            # get information about the current file
+            meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False, **kwargs)
+            filesize = meta['size']
+            modtimestamp = meta['modify_time_us']
             
             # if old size and new size, old mtime and new mtime are same (name is already matched)
             # then same file, skip rest.
             if (oldmtime == modtimestamp):
                 if (oldsize == filesize):
                     # files are very likely the same because of size and modtime match
-                    keep_file = relpath
+                    
                     # del modality_files_to_inactivate[relpath]  # do not mark file as inactive.
                     # print("SAME ", relpath )
-                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "KEEP", None, oldversion)
+                    return (personid, relpath, modality, oldmtime, oldsize, oldmd5, curtimestamp, oldsync, "KEEP", None, oldversion)
                 else:
                     #time stamp same but file size is different?
                     # print("ERROR: File size is different but modtime is the same.", relpath)
-                    return (personid, relpath, modality, modtimestamp, oldsize, oldmd5, curtimestamp, oldsync, "ERROR3", None, oldversion)
+                    return (personid, relpath, modality, oldmtime, oldsize, oldmd5, curtimestamp, oldsync, "ERROR3", None, oldversion)
                 
             else:
                 # timestamp changed. we need to compute md5 to check, or to update.
                 start = time.time()
-                mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
+                mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True,  **kwargs)['md5']
                 md5_time = time.time() - start
 
-                keep_file = None
                 # files are extremely likely the same just moved.
                 # set the old entry as invalid and add a new one that's essentially a copy except for modtime..
                 # choosing not to change SYNC_TIME
@@ -221,7 +226,10 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     else:
         # if DNE, add new file
         start = time.time()
-        mymd5 = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = False, with_md5 = True)['md5']
+        meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = True,  **kwargs)
+        filesize = meta['size']
+        modtimestamp = meta['modify_time_us']
+        mymd5 = meta['md5']
         md5_time = time.time() - start
 
         myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "ADDED", md5_time, version)
@@ -234,9 +242,9 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
 def _update_journal(root: FileSystemHelper, modalities: list[str],
                     databasename : str,
                     journaling_mode = "append",
-                     version: str = None,
-                     amend:bool = False, 
-                     **kwargs):
+                    version: str = None,
+                    amend:bool = False, 
+                    **kwargs):
     """
     Update the journal database with the files found in the specified root directory.
 
@@ -254,9 +262,9 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     # TODO:  
     # if amend, get the last version, and add files to that version.
     # if not amend, create a new version - either with supplied version name, or with current time.
-    version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
+    journal_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
     if amend: # get the last version
-        version = JournalDB.get_max_value(databasename, table_name="journal", column_name="VERSION")
+        journal_version = JournalDB.get_max_value(databasename, table_name="journal", column_name="VERSION")
     
     perf = perf_counter.PerformanceCounter()
     
@@ -276,14 +284,11 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     for modality in modalities:
         start = time.time()
         
-        if (modality.lower() == "waveforms"):
-            pattern = "*/[wW][aA][vV][eE][fF][oO][rR][mM][sS]/**/*"
-        elif (modality.lower() == "images"):
-            pattern = "*/[iI][mM][aA][gG][eE][sS]/**/*"
-        elif (modality.lower() == "omop"):
-            pattern = "[oO][mM][oO][pP]/**/*"
-        else:
-            pattern = f"*/{modality}/**/*"
+        pattern = _get_modality_pattern(modality, kwargs.get("modality_configs", {}))
+        # if version is in the file name, then use that.
+        version_in_pattern = ("{version:w}" in pattern) or ("{version}" in pattern)
+        # compile the pattern
+        compiled_pattern = parse.compile(pattern)
         
         # do one modality at a time for now - logic is tested.  doing multiple modalities may accidentally delete?
         activefiletuples = JournalDB.query(databasename, table_name = "journal",
@@ -301,14 +306,16 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5], i[6]))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-            
+            lock = threading.Lock()
             for paths in root.get_files_iter(pattern, page_size = page_size ):  # list of relative paths in posix format and in string form.
                 futures = []
 
                 for relpath in paths:
                     if verbose:
                         print("INFO: scanning ", relpath)
-                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, modality_files_to_inactivate, version)
+                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
+                                             modality_files_to_inactivate, 
+                                             compiled_pattern, journal_version if not version_in_pattern else None, kwargs = {'lock': lock})
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -385,7 +392,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
         print("INFO: Journal Update Elapsed time ", time.time() - start, "s")
 
 
-# explicitly mark files as deleted.  This is best used when the journaling mode is "append"        
+# explicitly mark files as deleted.  This is best used when the journaling mode is "append"
+# files_to_remove is in local format.
 def mark_files_as_deleted(files_to_remove:List[str], 
                           databasename: str, 
                           version: str = None, 
@@ -446,123 +454,10 @@ def mark_files_as_deleted(files_to_remove:List[str],
 
 # all files to upload are marked with upload_dtstr = NULL. 
 # return list of files organized by version
-def list_files(databasename: str, version: Optional[str] = None, 
-                         modalities: list[str] = None,
-                         verbose:bool = False):
-    """
-    Selects the files to upload from the journal database.  Print to stdout if outfile is not specified, and return list.
-
-    Args:
-        databasename (str, optional): The name of the journal database. Defaults to "journal.db".
-        version (str, optional): The version of the upload, which is the datetime of an upload.  If None (default) the un-uploaded files are returned
-        outfilename (Optional[str], optional): The name of the output file to write the selected files. Defaults to None.
-        verbose (bool, optional): Whether to print verbose output. Defaults to False.
-
-    Returns:
-        dict: The dictionary of {version: list[filenames]}.
-    """
-    # when listing files, looking for version match if specified, and upload_dtstr is NULL.
-        
-    table_exists = JournalDB.table_exists(database_name = databasename,
-                                        table_name = "journal")
-    
-    if not table_exists:
-        print(f"ERROR: table journal does not exist.")
-        return None
-
-    # identify 3 subsets:   deleted, updated, and added.
-    # deleted:  file with invalid time stamp.  No additional valid time stamp
-    # added:  file with null invalid time stemp and no prior entry with non-null invalid time stamp
-    # modified:  file with null invalid time, and a prior entry with non-null invalid time stamp
-    # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_us from journal where upload_dtstr IS NULL").fetchall()
-    # to_remove = [ ]
-    
-    if version is None:
-        where_clause = "upload_dtstr IS NULL"
-    else:
-        where_clause = f"upload_dtstr IS NULL AND version = '{version}'"
-    
-    if (modalities is not None) and (len(modalities) > 0):
-        where_clause += " AND ("
-        where_2 = [f"MODALITY = '{modality}'" for modality in modalities]
-        where_clause += " OR ".join(where_2)
-        where_clause += ")"
-        
-            
-    # select where upload_dtstr is NULL or time_invalid_us is NULL
-    files_to_update = JournalDB.query(database_name = databasename, 
-                                        table_name = "journal",
-                                        columns = ["FILEPATH", "TIME_INVALID_us", "VERSION"],
-                                        where_clause = where_clause,
-                                        count = None)
-        
-    print("INFO: extracted files to upload for ", ("current" if version is None else version), " upload version and modalities =", 
-          (",".join(modalities) if modalities is not None else "all"))
-    
-    # this is pulling back only files with changes during since the last upload.  an old file may be inactivated but is in a previous upload
-    # so we only see the "new" part, which would look like an add.
-    # any deletion would be updating entries in a previous upload batch, so would not see deletion
-    # only update we would see is if a file is added, then updated between 2 uploads.   Not thta add/delete/add would show as moved or updated.
-    
-    # deleted or overwritten files would still be in old version of the cloud.  so we don't need to delete.
-    
-    # first get the set of active and inactive files.  these are hashtables for quick lookups.
-    # should not have same active file in multiple versions -  older one would be invalidated so should go to inactive files.
-    active_files = {}
-    inactive_files = {}
-    for (fn, invalidtime, version) in files_to_update:
-        if invalidtime is None:
-            # current files or added files
-            if (version in active_files.keys()):
-                active_files[version].append(fn)
-            else:
-                active_files[version] = [fn]
-        else:
-             # old files or deleted files
-            if (version in inactive_files.keys()):
-                inactive_files[version].append(fn)
-            else:
-                inactive_files[version] = [fn]
-                
-    for version in active_files.keys():
-        active_files[version] = set(active_files[version])
-    for version in inactive_files.keys():
-        inactive_files[version] = set(inactive_files[version])
-    
-    if verbose:
-        all_active_files = set()
-        all_inactive_files = set()
-        for k in active_files.keys():
-            all_active_files = set.union(all_active_files, active_files[k])
-        for k in inactive_files.keys():
-            all_inactive_files = set.union(all_inactive_files, inactive_files[k])
-        updates = all_active_files.intersection(all_inactive_files)
-        adds = all_active_files - updates
-        deletes = all_inactive_files - updates
-        for f in adds:
-            print("INFO: ADD ", f)
-        for f in updates:
-            print("INFO: UPDATE ", f)
-        for f in deletes:
-            print("INFO: DELETE ", f)
-            
-    # sort the file-list
-    # file_list.sort()
-    
-    if len(active_files) == 0:
-        print("INFO: No active files found")
-    
-    # do we need to delete files in central at all? NO.  journal will be updated.
-    # we only need to add new files
-                
-    return active_files
-
-
-# all files to upload are marked with upload_dtstr = NULL. 
-# return list of files organized by version
 def list_files_with_info(databasename: str, version: Optional[str] = None, 
                          modalities: list[str] = None,
-                         verbose:bool = False):
+                         verbose:bool = False,
+                         **kwargs):
     """
     Selects the files to upload from the journal database.  Print to stdout if outfile is not specified, and return list.
 
@@ -579,6 +474,11 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
         
     table_exists = JournalDB.table_exists(database_name = databasename,
                                         table_name = "journal")
+    
+    modality_configs = kwargs.get("modality_configs", {})
+    compiled_patterns = {}
+    for mod in modalities:
+        compiled_patterns[mod] = parse.compile(_get_modality_pattern(mod, modality_configs))
     
     if not table_exists:
         print(f"ERROR: table journal does not exist.")
@@ -606,7 +506,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     # select where upload_dtstr is NULL or time_invalid_us is NULL
     files_to_update = JournalDB.query(database_name = databasename, 
                                         table_name = "journal",
-                                        columns = ["FILEPATH", "FILE_ID", "SIZE", "MD5", "TIME_INVALID_us", "VERSION"],
+                                        columns = ["FILEPATH", "FILE_ID", "SIZE", "MD5", "TIME_INVALID_us", "VERSION", "MODALITY"],
                                         where_clause = where_clause,
                                         count = None)
         
@@ -625,13 +525,18 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     active_files_by_version = {}
     active_files = {}  # file path should be unique.
     inactive_files = {}  # file path to file id mapping is not unique
-    for (fn, fid, size, md5, invalidtime, version) in files_to_update:
+    
+    
+    for (fn, fid, size, md5, invalidtime, version, modality) in files_to_update:
         if invalidtime is None:
             # updated files or added files.  should be in the most recent version.
             if (fn in active_files.keys()):
                 print(f"ERROR: Inconsistent Journal.  Multiple active files with path {fn}", flush=True)
             else:
-                active_files[fn] = {'file_id': fid, 'size': size, 'md5': md5, 'version': version}
+                central_fn = convert_local_to_central_path(fn, in_compiled_pattern = compiled_patterns.get(modality, None), 
+                                                           modality = modality,
+                                                           omop_per_patient = modality_configs.get(modality, {}).get("omop_per_patient", False))
+                active_files[fn] = {'file_id': fid, 'size': size, 'md5': md5, 'version': version, 'central_path': central_fn}
                 
             if (version in active_files_by_version.keys()):
                 active_files_by_version[version].append(fn)
@@ -673,6 +578,42 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     # we only need to add new files
                 
     return active_files_by_version, active_files, inactive_files
+
+# if version is specified, then it has priority over what's in the local_path string.
+def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Parser, modality:str, 
+                                    omop_per_patient:bool = False):
+    """
+    Convert a local path to a central path using the pattern.
+
+    Args:
+        local_path (str): The local path to convert.
+        pattern (str): The pattern to use for the conversion.
+        omop_per_patient (bool, optional): Whether the OMOP data is stored per patient. Defaults to False.
+
+    Returns:
+        str: The central path, including version.
+
+    """
+    if modality.lower() == "waveforms":
+        out_pattern = "{patient_id}/Waveforms/{filepath}"
+    elif modality.lower() == "images":
+        out_pattern = "{patient_id}/Images/{filepath}"
+    elif modality.lower() == "omop":
+        if omop_per_patient:
+            out_pattern = "{patient_id}/OMOP/{filepath}"
+        else:
+            out_pattern = "OMOP/{filepath}"
+    
+    parsed = in_compiled_pattern.parse(local_path)
+    if parsed is None:
+        raise ValueError(f"ERROR: Invalid local path {local_path}, pattern {in_compiled_pattern}")
+    
+    patient_id = parsed.named.get('patient_id', None)
+    filepath = parsed.named.get('filepath', None)
+    
+    # convert the local path to a central path
+    return out_pattern.format(patient_id = patient_id, filepath = filepath)
+
 
 def list_versions(databasename: str):
     """

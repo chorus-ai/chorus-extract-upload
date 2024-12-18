@@ -60,9 +60,28 @@ azure_sas_token = "sastoken"
   path = "/mnt/data/site"
 
   # each can have its own access credentials
+
   [site_path.OMOP]
   # optional:  specific root paths for omop data
   path = "/mnt/data/site"
+  # path = "/mnt/data/site/pitts"
+
+  # if true, OMOP is a subdirectory of patient directory:  "{patient_id}/OMOP/*.csv"
+  # if false, OMOP is a sibling directory of patients:  "OMOP/*.csv"
+  # this will influence the central repo's content
+  # default is false
+  omop_per_patient = false
+
+  # indicates if the relative path is in a dated directory
+  versioned = false
+
+  # default pattern for omop files.
+  pattern = "OMOP/{filepath}"
+  # pattern = "{patient_id:d}/OMOP_tables/{filepath}"
+  # if omop_per_patient == true
+  # pattern = "{patient_id:d}/OMOP/{filepath}"
+  # pattern = "{version:d}/{patient_id:d}/OMOP_tables/{filepath}"
+  
 
   [site_path.Images]
   # optional:  specific root paths for images
@@ -74,6 +93,24 @@ azure_sas_token = "sastoken"
   # aws_session_token = "session_token"
   # aws_profile = "profile"
 
+  # indicates if the relative path is in a dated directory
+  versioned = false
+
+  # pattern for the files.  defaults to {patient_id:d}/Images/{filepath}
+  # :d indicates that only numeric id are supported.
+  pattern = "{patient_id:d}/Images/{filepath}"
+  # pattern = "Person{patient_id:d}/Images/{filepath}"
+  # pattern = "{version:d}/{patient_id:d}/Images/{filepath}"
+
   [site_path.Waveforms]
+  # this is the path of the source directory for waveforms
   path = "/mnt/another_datadir/site"
 
+  # indicates if the relative path is in a dated directory
+  versioned = false
+
+  # pattern for the files.  defaults to {patient_id:d}/Waveforms/{filepath}
+  # :d indicates that only numeric id are supported.
+  pattern = "{patient_id:d}/Waveforms/{filepath}"
+  # pattern = "Person{patient_id:d}/Waveforms/{filepath}"
+  # pattern = "{version:d}/{patient_id:d}/Waveforms/{filepath}"

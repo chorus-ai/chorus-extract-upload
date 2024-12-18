@@ -3,7 +3,7 @@ import shutil
 import time
 import argparse
 
-from chorus_upload.local_ops import update_journal, list_files_with_info
+from chorus_upload.local_ops import update_journal, list_files_with_info, _get_modality_pattern
 # from chorus_upload.generate_journal import restore_journal, list_uploads, list_journals
 # from chorus_upload.upload_ops_builtin import upload_files, verify_files, list_files
 from chorus_upload import history_ops 
@@ -15,6 +15,7 @@ from chorus_upload import local_ops
 import chorus_upload.storage_helper as storage_helper
 import re
 
+import parse
 
 
 # TODO: DONE need to support folder for different file types being located at different places.
@@ -53,7 +54,8 @@ import re
 # TODO: DONE parallelize upload support?
 # TODO: DONE additional parameters in config.toml for page_size and num_threads
 # TODO: DONE add param in config.toml for local journal path
-# TODO: journaling_mode "append" would have one directory per submission.  how should these be managed?
+# TODO: journaling_mode "append" would have one src directory per submission.  how should these be managed or tracked?
+# TODO: handling different paths.
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -97,7 +99,7 @@ def _print_usage(args, config, journal_fn):
         
 # helper to call update journal
 def _update_journal(args, config, journal_fn):
-    version = args.version
+    journal_version = args.version
     amend = args.amend
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
@@ -118,8 +120,9 @@ def _update_journal(args, config, journal_fn):
         update_journal(datafs, modalities = [mod], 
                        databasename = journal_fn, 
                        journaling_mode = journaling_mode,
-                       version = version, amend = (args.amend if first else True), 
-                       verbose = args.verbose, num_threads = nthreads, page_size = page_size)
+                       version = journal_version, amend = (amend if first else True), 
+                       verbose = args.verbose, num_threads = nthreads, page_size = page_size,
+                       modality_configs = {mod: mod_config})
         first = False
             
 # helper to revert to a previous journal
@@ -154,13 +157,15 @@ LINUX_STRINGS = {
 }
     
 # only works with azure dest for now.
-# file_list is a dictionary of structure {modality: (config, {version: [files]})}
+# OLD: file_list is a dictionary of structure {modality: (config, {version: [files]})}
+# file_list is a dictionary of structure {modality: (config, {fn: {version: .., central_path:..}}})}
 def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
     dest_config = kwargs.get('dest_config', {})
     journal_transport = kwargs.get('journal_transport', 'builtin')
     pattern = re.compile(r"az://[^/]+/(.+)")
     cloud_journal = kwargs.get('cloud_journal', "journal.db")
+    page_size = kwargs.get('page_size', 1000)
     
     matches = pattern.match(cloud_journal)
     if matches:
@@ -224,17 +229,16 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
         # if windows, use double backslash
         
         if (out_type != "azcli") and (out_type != "azcopy"):
-            for mod, (config, flists) in file_list.items():
-                for version, flist in flists.items():
-                    root = config["path"]            
-                    filenames = ["/".join([root, fn]) for fn in flist]
-                    if is_windows:
-                        fns = [fn.replace("/", "\\") for fn in filenames]
-                    else:
-                        fns = filenames
-                        
-                    f.write(eol.join(fns))
-                    f.write(eol)
+            for _, (config, fninfos) in file_list.items():
+                root = config["path"]            
+                filenames = ["/".join([root, fn]) for fn in fninfos.keys()]
+                if is_windows:
+                    fns = [fn.replace("/", "\\") for fn in filenames]
+                else:
+                    fns = filenames
+                    
+                f.write(eol.join(fns))
+                f.write(eol)
         
         else:
             
@@ -360,7 +364,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             
             # then we iterate over the files, and decide based on out_type.
             upload_count = 0
-            for mod, (config, flists) in file_list.items():
+            for mod, (config, fnInfos) in file_list.items():
                 root = config['path']
                 
                 f.write(eol)
@@ -394,85 +398,64 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                     f.write(export_var + " AWS_SECRET_ACCESS_KEY=\"" + mod_local_SECRET_KEY + "\"" + eol)
                     f.write(eol)
 
-                for version, flist in flists.items():
-                    f.write(eol)
-                    f.write(set_var + "ver=" + version + "" + eol)                    
+                f.write(eol)
+                # f.write(set_var + "ver=" + version + "" + eol)                    
+                count = 0
+                step = page_size
+                for fn, info in fnInfos.items():
+                    submit_version = info['version']
                     
-                    count = 0
-                    step = 100
-                    for fn in flist:
-                        if is_windows:
-                            local_file = "\\".join([root, fn])
-                            local_file = local_file.replace("/", "\\")
-                        else:
-                            local_file = "/".join([root, fn])
+                    if is_windows:
+                        local_fn = "\\".join([root, fn])
+                        local_fn = local_fn.replace("/", "\\")
+                    else:
+                        local_fn = "/".join([root, fn])
+                        
+                    central_fn = info['central_path']
                             
-                        
-                        if (out_type == "azcli"):
-                            f.write(testme + "" + cmd_proc + "az storage blob upload --account-name " + var_start+"account"+var_end + 
-                                    " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
-                                    var_start+"container"+var_end + " --name \"" + var_start+"ver"+var_end + "/" + 
-                                    fn + "\" --file \"" + local_file + "\" --overwrite --only-show-errors --output none" + testme_end + eol)     
-                        elif (out_type == "azcopy"):
-                            if (root.startswith("az://")):
-                                f.write(testme + "" + cmd_proc + "azcopy copy \"https://" + var_start+"mod_local_account"+var_end + 
-                                        ".blob.core.windows.net/" + var_start+"mod_local_container"+var_end + "/" + 
-                                        fn + "?" + var_start+"mod_local_sas_token"+var_end + "\" \"https://" + 
-                                        var_start+"account"+var_end + ".blob.core.windows.net/" + 
-                                        var_start+"container"+var_end + "/" + var_start+"ver"+var_end + 
-                                        "/" + fn + "?" + var_start+"sas_token"+var_end + "\"" + testme_end + eol )
-                            elif (root.startswith("s3://")):
-                                f.write(testme + "" + cmd_proc + "azcopy copy \"https://s3.amazonaws.com/" + 
-                                        var_start+"mod_local_container"+var_end + "/" + fn + "\" \"https://" + 
-                                        var_start+"account"+var_end + ".blob.core.windows.net/" + 
-                                        var_start+"container"+var_end + "/" + var_start+"ver"+var_end + 
-                                        "/" + fn + "?" + var_start+"sas_token"+var_end + "\"" + testme_end + eol )
-                            # elif (root.startswith("gs://")):
-                            #     ...
-                            else:
-                                f.write(testme + "" + cmd_proc + "azcopy copy \"" + local_file + "\" \"https://" + 
-                                        var_start+"account"+var_end + ".blob.core.windows.net/" + 
-                                        var_start+"container"+var_end + "/" + var_start+"ver"+var_end + 
-                                        "/" + fn + "?" + var_start+"sas_token"+var_end + "\"" + testme_end + eol )
-                                
-                        f.write("echo " + fn + " >> files_" + var_start+"dt"+var_end + ".txt" + eol)
-                        f.write(eol)
-                        
-                        count += 1
-                        upload_count += 1
-                        
-                        if (count >= step):
-                            # last part is again the same.
-                            f.write(eol)
-                            f.write(testme + "python chorus_upload -c " + config_fn + 
-                                    " file mark_as_uploaded_local --local-journal \"" + var_start+"local_journal"+var_end + "\"" +
-                                    " --file-list files_" + var_start+"dt"+var_end + ".txt --upload-datetime " + 
-                                    var_start+"dt"+var_end + testme_end + eol)
-
-                            f.write(eol)
-                            if is_windows:
-                                f.write("if exist files_" + var_start+"dt"+var_end + ".txt del files_" + 
-                                        var_start+"dt"+var_end + ".txt" + eol)
-                                f.write("type nul > files_" + var_start+"dt"+var_end + ".txt" + eol)
-                            else:
-                                f.write("if [ -e files_" + var_start+"dt"+var_end + ".txt ]; then" + eol)
-                                f.write("    rm files_" + var_start+"dt"+var_end + ".txt" + eol)
-                                f.write("fi" + eol)
-                                f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
-                            f.write(eol)
-                            count = 0
-                        if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count >= max_upload_count):
-                            break
-                              
-                    if count > 0:
+                    # upload files
+                    if (out_type == "azcli"):
+                        f.write(testme + "" + cmd_proc + "az storage blob upload --account-name " + var_start+"account"+var_end + 
+                                " --sas-token \"" + var_start+"sas_token"+var_end + "\" --container-name " + 
+                                var_start+"container"+var_end + " --name \"" + submit_version + "/" + central_fn + 
+                                "\" --file \"" + local_fn + "\" --overwrite --only-show-errors --output none" + testme_end + eol)
+                    elif (out_type == "azcopy"):
+                        if (root.startswith("az://")):
+                            f.write(testme + "" + cmd_proc + "azcopy copy \"https://" + var_start+"mod_local_account"+var_end + 
+                                    ".blob.core.windows.net/" + var_start+"mod_local_container"+var_end + "/" + 
+                                    fn + "?" + var_start+"mod_local_sas_token"+var_end + "\" \"https://" + 
+                                    var_start+"account"+var_end + ".blob.core.windows.net/" + 
+                                    var_start+"container"+var_end + "/" + submit_version + "/" + central_fn +
+                                    "?" + var_start+"sas_token"+var_end + "\"" + testme_end + eol )
+                        elif (root.startswith("s3://")):
+                            f.write(testme + "" + cmd_proc + "azcopy copy \"https://s3.amazonaws.com/" + 
+                                    var_start+"mod_local_container"+var_end + "/" + fn + "\" \"https://" + 
+                                    var_start+"account"+var_end + ".blob.core.windows.net/" + 
+                                    var_start+"container"+var_end + "/" + submit_version + "/" + central_fn +
+                                    "?" + var_start+"sas_token"+var_end + "\"" + testme_end + eol )
+                        # elif (root.startswith("gs://")):
+                        #     ...
+                        else:
+                            f.write(testme + "" + cmd_proc + "azcopy copy \"" + local_fn + "\" \"https://" + 
+                                    var_start+"account"+var_end + ".blob.core.windows.net/" + 
+                                    var_start+"container"+var_end + "/" + submit_version + "/" + central_fn +
+                                    "?" + var_start+"sas_token"+var_end + "\"" + testme_end + eol )
+                            
+                    f.write("echo " + fn + " >> files_" + var_start+"dt"+var_end + ".txt" + eol)
+                    f.write(eol)
+                    
+                    count += 1
+                    upload_count += 1
+                    
+                    if (count >= step):
                         # last part is again the same.
                         f.write(eol)
                         f.write(testme + "python chorus_upload -c " + config_fn + 
                                 " file mark_as_uploaded_local --local-journal \"" + var_start+"local_journal"+var_end + "\"" +
                                 " --file-list files_" + var_start+"dt"+var_end + ".txt --upload-datetime " + 
                                 var_start+"dt"+var_end + testme_end + eol)
+
                         f.write(eol)
-                        
                         if is_windows:
                             f.write("if exist files_" + var_start+"dt"+var_end + ".txt del files_" + 
                                     var_start+"dt"+var_end + ".txt" + eol)
@@ -482,9 +465,32 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
                             f.write("    rm files_" + var_start+"dt"+var_end + ".txt" + eol)
                             f.write("fi" + eol)
                             f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
-
+                        f.write(eol)
+                        count = 0
                     if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count >= max_upload_count):
                         break
+                              
+                if count > 0:
+                    # last part is again the same.
+                    f.write(eol)
+                    f.write(testme + "python chorus_upload -c " + config_fn + 
+                            " file mark_as_uploaded_local --local-journal \"" + var_start+"local_journal"+var_end + "\"" +
+                            " --file-list files_" + var_start+"dt"+var_end + ".txt --upload-datetime " + 
+                            var_start+"dt"+var_end + testme_end + eol)
+                    f.write(eol)
+                    
+                    if is_windows:
+                        f.write("if exist files_" + var_start+"dt"+var_end + ".txt del files_" + 
+                                var_start+"dt"+var_end + ".txt" + eol)
+                        f.write("type nul > files_" + var_start+"dt"+var_end + ".txt" + eol)
+                    else:
+                        f.write("if [ -e files_" + var_start+"dt"+var_end + ".txt ]; then" + eol)
+                        f.write("    rm files_" + var_start+"dt"+var_end + ".txt" + eol)
+                        f.write("fi" + eol)
+                        f.write("touch files_" + var_start+"dt"+var_end + ".txt" + eol)
+
+                if (max_upload_count is not None) and (max_upload_count > 0) and (upload_count >= max_upload_count):
+                    break
                             
             f.write(comment + " TEST checkin the journal" + eol)
             f.write(testme + "" + cmd_proc + "az storage blob list --account-name " + var_start+"account"+var_end + 
@@ -521,12 +527,15 @@ def _select_files(args, config, journal_fn):
     # get the local path and central path and credentials
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
+    modality_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
     # do one modality at a time
     ver = args.version if ('version' in vars(args)) and (args.version is not None) else time.strftime("%Y%m%d%H%M%S")
+    page_size = config_helper.get_config(config).get('page_size', 1000)
 
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
-            mod_files, _, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
+            mod_files, _, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod],
+                                                   verbose=args.verbose, modality_configs = modality_configs)
             mod_config = config_helper.get_site_config(config, mod)
 
             for (version, files) in mod_files.items():
@@ -536,10 +545,11 @@ def _select_files(args, config, journal_fn):
         central = config_helper.get_central_config(config)
         file_list = {}
         for mod in mods:
-            mod_files, _, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod], verbose=args.verbose)
+            _, active_files, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod], 
+                                                   verbose=args.verbose, modality_configs = modality_configs)
             mod_config = config_helper.get_site_config(config, mod)
 
-            file_list[mod] = (mod_config, mod_files)
+            file_list[mod] = (mod_config, active_files)
     
         _write_files(file_list, ver, 
                      filename = args.output_file, 
@@ -549,9 +559,12 @@ def _select_files(args, config, journal_fn):
                      max_num_files = int(args.max_num_files) if ("max_num_files" in vars(args)) and (args.max_num_files is not None) else None,
                      journal_transport = config_helper.get_journal_config(config).get('upload_method', 'builtin'),
                      cloud_journal = config_helper.get_journal_path(config),
-                     local_journal = journal_fn)
+                     local_journal = journal_fn,
+                     page_size = page_size)
     
     
+# file or filelist should be local relative paths.
+# journal_fn is always local.
 def _mark_as_uploaded(args, config, journal_fn):
     upload_datetime = args.upload_datetime if 'upload_datetime' in vars(args) else time.strftime("%Y%m%d%H%M%S")
     file = args.file if 'file' in vars(args) else None
@@ -559,20 +572,22 @@ def _mark_as_uploaded(args, config, journal_fn):
     central_config = config_helper.get_central_config(config)
     centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
     
+    journal_f = args.local_journal if 'local_journal' in vars(args) else journal_fn
     
-    journal_f = args.local_journal if args.local_journal else journal_fn
-    
-        
-    journal_f = args.local_journal if args.local_journal else journal_fn
-    
+    mods = config_helper.get_modalities(config)
+    # get the config path for each modality.  if not matched, use default.
+    mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }    
+    compiled_patterns = { mod: parse.compile(_get_modality_pattern(mod, mod_configs))  for mod in mods }
+
     if (filelist is not None):
         with open(filelist, 'r') as f:
             files = [fn.strip() for fn in f.readlines()]
-            upload_ops.mark_as_uploaded(centralfs, journal_fn, upload_datetime, files, verbose = args.verbose)
+            upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, files, **{'verbose' : args.verbose, 'modality_configs': mod_configs, 'compiled_patterns': compiled_patterns})
     else:
-        upload_ops.mark_as_uploaded(centralfs, journal_fn, upload_datetime, [file], verbose = args.verbose)
+        upload_ops.mark_as_uploaded(centralfs, journal_f, upload_datetime, [file], **{'verbose' : args.verbose, 'modality_configs': mod_configs, 'compiled_patterns': compiled_patterns})
         
         
+# file or filelist should be local relative paths.
 def _mark_as_deleted(args, config, journal_fn):
     version = args.version if 'version' in vars(args) else None
     file = args.file if 'file' in vars(args) else None
@@ -608,7 +623,7 @@ def _upload_files(args, config, journal_fn):
     for mod, mod_config in mod_configs.items():
         sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
         _, remaining = upload_ops.upload_files_parallel(sitefs, centralfs, modalities = [mod], databasename = journal_fn, max_num_files = remaining, 
-                                                    verbose = args.verbose, num_threads = nthreads, page_size = page_size)
+                                                    verbose = args.verbose, num_threads = nthreads, page_size = page_size, modality_configs = mod_configs)
         if (remaining is not None) and (remaining <= 0):
             break        
     
@@ -619,7 +634,8 @@ def _verify_files(args, config, journal_fn):
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     # get the config path for each modality.  if not matched, use default.
-    mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
+    mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }  
+    compiled_patterns = { mod: parse.compile(_get_modality_pattern(mod, mod_configs)) for mod in mods }      
 
     central_config = config_helper.get_central_config(config)
     centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
@@ -628,7 +644,7 @@ def _verify_files(args, config, journal_fn):
     page_size = config_helper.get_config(config).get('page_size', 1000)
     
     upload_ops.verify_files(centralfs, journal_fn, version = args.version, modalities = mods,
-                            verbose = args.verbose, num_threads = nthreads, page_size = page_size)
+                            **{'num_threads': nthreads, 'page_size': page_size, 'verbose' : args.verbose, 'modality_configs': mod_configs, 'compiled_patterns': compiled_patterns})
     
     
 def _list_versions(args, config, journal_fn):

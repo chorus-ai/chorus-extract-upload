@@ -166,7 +166,7 @@ if __name__ == "__main__":
     config = config_helper.load_config(config_fn)
     
     # get the journal file  (download from cloud to local)
-    journal_fn = config_helper.get_journal_config(config)["path"]
+    journal_fn = config_helper.get_journal_path(config)
     
     # # === save command history
     # args_dict = _strip_account_info(args)

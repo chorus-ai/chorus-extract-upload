@@ -12,13 +12,17 @@ readme = "README.md"
 license = {file = "LICENSE"}
 classifiers = ["License :: OSI Approved :: MIT License"]
 dynamic = ["version", "description"]
-requires-python = ">=3.10"
+# python 3.12 is needed for pathlib.Path.glob with case_sensitive=False
+requires-python = ">=3.12"
+# cloudpathlib 0.18 is needed as 0.20 has problems with constructing paths with cloud credentials leading to
+# "azure.core.exceptions.ClientAuthenticationError: Server failed to authenticate the request. Make sure the value of Authorization header is formed correctly including the signature."
 dependencies = [
     "numpy",
     "pandas",
     "cloudpathlib == 0.18.1",
     "cloudpathlib[azure] == 0.18.1",
-    "tomli"
+    "tomli",
+    "parse"
 ]
 
 [project.optional-dependencies]

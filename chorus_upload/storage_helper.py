@@ -352,18 +352,22 @@ class FileSystemHelper:
                      path: Union[CloudPath, Path] = None,
                      with_metadata: bool = True,
                      with_md5: bool = False,
-                     local_md5: str = None) -> dict:
+                     local_md5: str = None,
+                     **kwargs) -> dict:
         """
         Get the metadata of a file or directory.
 
         Args:
-            path (Union[str, CloudPath, Path]): The path to the file or directory.
+            root (Union[CloudPath, Path]): The root directory of the file or directory.
+            path (Union[CloudPath, Path]): The path to the file or directory.
             client (Optional[Client]): An optional client object for accessing the storage location. Defaults to None.
             local_md5 (str) : if a local md5 string is supplied, will use if if the r
 
         Returns:
             dict: A dictionary containing the metadata of the file or directory.
         """
+        lock = kwargs.get("lock", None)
+        
         metadata = {'md5': None, 'size': None, 'create_time_us': None, 'modify_time_us': None, 'path': None}
         if path is None and root is None:
             return metadata
@@ -416,8 +420,11 @@ class FileSystemHelper:
                         content_settings.content_md5 = base64.b64encode(bytes.fromhex(local_md5))
                         blob_client.set_http_headers(content_settings = content_settings)
                         md5_str = local_md5
-                        print("NOTE: setting MD5 for ", curr, " to local md5 ", content_settings.content_md5.hex())
-
+                        if lock is not None:
+                            with lock:
+                                print("NOTE: get_metadata: setting MD5 for ", curr, " to local md5 ", content_settings.content_md5.hex())
+                        else:
+                            print("NOTE: get_metadata (no lock): setting MD5 for ", curr, " to local md5 ", content_settings.content_md5.hex())
                     else:
                         md5 = FileSystemHelper._calc_file_md5(curr)  # have to calculate
                         # then set the content md5 to whatever we calculated
@@ -429,11 +436,18 @@ class FileSystemHelper:
                             blob_client.set_http_headers(content_settings = content_settings)
                             md5_str = md5.hexdigest()
                             # print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5, " hex ", content_settings.content_md5.hex(), " hex digtest ", md5_str)
-                            print("NOTE: computed MD5 for ", curr, " to ", content_settings.content_md5.hex())
-
+                            if lock is not None:
+                                with lock:
+                                    print("NOTE: get_metadata: computed MD5 for ", curr, " to ", content_settings.content_md5.hex())
+                            else:
+                                print("NOTE: get_metadata (no lock): computed MD5 for ", curr, " to ", content_settings.content_md5.hex())
                         else:
                             md5_str = None
-                            print("NOTE: computed MD5 for ", curr, " but is none ")
+                            if lock is not None:
+                                with lock:
+                                    print("NOTE: get_metadata: computed MD5 for ", curr, " but is none ")
+                            else:
+                                print("NOTE: get_metadata (no lock): computed MD5 for ", curr, " but is none ")
 
             elif isinstance(curr, GSPath):
                 # likely not reliable, like S3 or AzureBlob
@@ -446,13 +460,13 @@ class FileSystemHelper:
         return metadata
     
     
-    
+    # not used.
     def get_files(self, pattern : str = None ) -> list[str]:
         """
         Returns a list of file paths within the specified subpath.
 
         Args:
-            pattern (str, optional): The subpath within the root directory to search for files. Defaults to None.  can prefix with "*/" or "**/" for more levels of recursion.
+            pattern (str, optional): The subpath within the root directory to search for files. Defaults to None.  should be of the form "{patient_id:w}/Images/{filepath}", specified in config.toml file.
 
         Returns:
             list[str]: A list of file paths relative to the root directory.
@@ -462,12 +476,16 @@ class FileSystemHelper:
         # all pathlib and cloudpathlib paths can use "/"
         
         pattern = pattern if pattern is not None else "**/*"
+        # convert pattern from "parse" package format to glob format.
+        pattern = pattern.replace("{filepath}", "**/*")
+        pattern = pattern.replace("{patient_id:d}", "*").replace("{patient_id:w}", "*").replace("{patient_id}", "*")
+        pattern = pattern.replace("{version:d}", "*").replace("{version:w}", "*").replace("{version}", "*")
         # convert pattern to be case insensitive
         print("INFO: getting list of files for ", pattern)
         # not using rglob as it does too much matching.
         # case_sensitive is a pathlib 3.12+ feature.
         count = 0
-        for f in self.root.glob(pattern):  # this may be inconsistently implemented in different clouds.
+        for f in self.root.glob(pattern, case_sensitive = False ):  # this may be inconsistently implemented in different clouds.
             if not f.is_file():
                 continue
             
@@ -477,11 +495,10 @@ class FileSystemHelper:
                 print("Found ", count, " files", flush=True)
             
         print(".", flush=True)
-        print("INFO: completed retrieveing files.")
+        print("INFO: completed retrieving files.")
         # return relative path
         return paths
     
-
 
     def get_files_iter(self, pattern: str = None, page_size: int = 1000):
         """
@@ -494,11 +511,14 @@ class FileSystemHelper:
             str: A file path relative to the root directory.
         """
 
-        pattern = pattern if pattern is not None else "**/*"
-        print("INFO: getting list of files for ", pattern)
+        glob_pattern = pattern if pattern is not None else "**/*"
+        glob_pattern = glob_pattern.replace("{filepath}", "**/*")
+        glob_pattern = glob_pattern.replace("{patient_id:d}", "*").replace("{patient_id:w}", "*").replace("{patient_id}", "*")
+        glob_pattern = glob_pattern.replace("{version:d}", "*").replace("{version:w}", "*").replace("{version}", "*")
+        print("INFO: getting list of files for ", pattern, "converted to", glob_pattern)
         paths = []
         count = 0
-        for f in self.root.glob(pattern):
+        for f in self.root.glob(glob_pattern, case_sensitive = False):  # this may be inconsistently implemented in different clouds.
             if not f.is_file():
                 continue
             
@@ -517,13 +537,13 @@ class FileSystemHelper:
 
 
     # copy 1 file from one location to another.
-    def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False):
+    def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False, **kwargs):
         """
         Copy a file from the current storage path to the destination path.
 
         Args:
             paths (Union[str, tuple]): a relative path to the root dir, or None if the root is a file.
-            dest_path (Union[Self, Path, CloudPath]): The destination path, either a directory or a path
+            dest_path (Union[Self, Path, CloudPath]): The destination path, either a directory or a file path
 
         Returns:
             None
@@ -538,12 +558,17 @@ class FileSystemHelper:
         dest = FileSystemHelper._make_path(dest_path) if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
         dest_is_cloud = isinstance(dest, CloudPath)
         src_is_cloud = self.is_cloud
+        
+        lock = kwargs.get("lock", None)
                 
-        if relpath is None:
+        if relpath is None: 
+            # relpath is not specified, treat both src and dest as file paths.
             src_file = self.root
+            # dest is a file.
             dest_file = dest
         else:
-            # relpath is specified, so src and dest are directories            
+            # relpath is specified, so src and dest are directories
+            # if relpath is a tuple, then we have src and dest.
             src_file = self.root.joinpath(relpath[0] if isinstance(relpath, tuple) else relpath)
             dest_file = dest.joinpath(relpath[1] if isinstance(relpath, tuple) else relpath)
 
@@ -562,8 +587,8 @@ class FileSystemHelper:
                     shutil.copy2(str(src_file), str(dest_file))
                 except shutil.SameFileError:
                     pass
-                except PermissionError:
-                    print("ERROR: permission issue copying file ", src_file, " to ", dest_file)
+                except PermissionError as e:
+                    print("ERROR: permission issue copying file ", src_file, " to ", dest_file, " exception ", e)
                 except Exception as e:
                     print("ERROR: issue copying file ", src_file, " to ", dest_file, " exception ", e)
         # start = time.time()

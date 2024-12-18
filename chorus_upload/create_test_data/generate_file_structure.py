@@ -36,7 +36,7 @@ def generateFirstFiles():
 
 
     # waveform directory
-    for modality in ["Waveforms", "Images"]:
+    for modality in ["Waveforms", "Images", "OMOP"]:
 
         for id in personids:
             subdir = str(random.randint(10000,20000)) if modality == "Waveforms" else os.path.join(str(random.randint(10000,20000)),str(random.randint(10000,20000)))
@@ -100,7 +100,7 @@ def generateUpdate():
     numfiles = 10
     
     # waveforms
-    for modality in ["Waveforms", "Images"]:
+    for modality in ["Waveforms", "Images", "OMOP"]:
         for id in personids:
             personwfdir_1 = os.path.join(initpushdir, str(id), modality)
             
