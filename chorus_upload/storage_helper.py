@@ -396,37 +396,55 @@ class FileSystemHelper:
             # metadata["modify_time_ns"] = math.floor(info.st_mtime_ns / 1000) if info.st_mtime_ns else None
 
         if (with_md5):
-                            
+            set_md5 = False  
             if isinstance(curr, S3Path):
                 # Get the MD5 hash from the ETag. multipart upload has ETAG that is not md5.  if object is encrypted with KMS also not md5.
                 # https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html
                 # can set content-md5 but we are already storing in db.
                 md5_str = curr.etag.strip('"')
             elif isinstance(curr, AzureBlobPath):
-                # md5 is not calculated for large data files (>100MB)
+                # md5 is not calculated for large data files (>10MB)
                 # https://learn.microsoft.com/en-us/answers/questions/282572/md5-hash-calculation-for-large-files
                 # can set content-md5 but we are already storing in db.
-                if (curr.md5 is not None):
-                    md5_str = curr.md5.hex()
-                    print("DEBUG: md5 from azure blob ", md5_str)
-                else:
+                
+                # cases:  no md5, if has local_md5, use it.  if not, compute it.
+                #     has md5, but no local_md5 supplied.  keep md5.
+                #     has md5, and local_md5 supplied, but they are the same.  keep md5
+                #     has md5, and local_md5 supplied, but they are different.  if b64decode(md5) == local_md5, set md5 to local_md5.  else keep md5 and ignore local_md5.
+                if (curr.md5 is None):                        
                     if local_md5 is None:
                         md5 = FileSystemHelper._calc_file_md5(curr)
-                        local_md5 = md5.hexdigest() if md5 else None
-                        print("NOTE: computed MD5 for ", curr, " to ", local_md5)
-                    
-                    if local_md5 is not None:
-                        blob_serv_client = curr.client.service_client
-                        blob_client = blob_serv_client.get_blob_client(container = curr.container, blob = curr.blob)
-                        content_settings = blob_client.get_blob_properties().content_settings
-                        content_settings.content_md5 = bytes.fromhex(local_md5)
-                        blob_client.set_http_headers(content_settings = content_settings)
-                        md5_str = local_md5
-                        print("NOTE: setting MD5 for ", curr, " to local md5 ", md5_str, " base64 encoded ", base64.b64encode(content_settings.content_md5))
-
+                        md5_str = md5.hexdigest() if md5 else None
+                        print("NOTE: Missing md5 for ", curr, ". setting with computed MD5. hex=", md5_str)
                     else:
-                        md5_str = None
-                        print("NOTE: computed MD5 for ", curr, " but is none ")
+                        md5_str = local_md5
+                        print("NOTE: Missing md5 for ", curr, ". setting with supplied MD5. hex=", md5_str)
+                        
+                    set_md5 = True
+                        
+                else:
+                    md5_str = curr.md5.hex()
+                    # has cloud md5.
+                    if local_md5 is not None:
+                        if (md5_str != local_md5):
+                            # cloud and local md5s are different
+                            
+                            if (base64.b64decode(curr.md5).hex() == local_md5):
+                                print("WARNING: cloud md5 is doubly b64encoded. fixing ", curr, " with md5 ", md5_str, ", local ", local_md5, ". b64decoded cloud ", base64.b64decode(curr.md5).hex())
+                                md5_str = local_md5
+                                set_md5 = True
+                            else:
+                                print("NOTE: cloud and supplied local md5 are different for ", curr, " cloud ", md5_str, ", local ", local_md5)
+                        # else md5 matches.  no action needed.
+                    
+                    # else no local_md5, no action needed.
+                
+                if set_md5:
+                    blob_serv_client = curr.client.service_client
+                    blob_client = blob_serv_client.get_blob_client(container = curr.container, blob = curr.blob)
+                    content_settings = blob_client.get_blob_properties().content_settings
+                    content_settings.content_md5 = bytes.fromhex(md5_str)
+                    blob_client.set_http_headers(content_settings = content_settings)
 
             elif isinstance(curr, GSPath):
                 # likely not reliable, like S3 or AzureBlob

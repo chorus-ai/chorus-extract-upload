@@ -616,7 +616,7 @@ def _upload_files(args, config, journal_fn):
     
 # helper to report file verification
 def _verify_files(args, config, journal_fn):
-    print("NOTE: This will download files to verify md5.  It will take a while and can take significant disk space.")
+    print("NOTE: This will NOT download files to verify md5.  It relies on file size and previously saved md5.")
     
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities

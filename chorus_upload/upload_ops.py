@@ -750,7 +750,7 @@ def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple):
     fid, fn, size, md5 = file_info
     
     # this would actually compute the md5
-    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True)
+    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = fn, with_metadata = True, with_md5 = True, local_md5 = md5)
     dest_md5 = dest_meta['md5'] if (dest_meta is not None) else None
 
     return (dest_meta, dest_md5, fid, fn, size, md5)
@@ -836,7 +836,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
         for future in concurrent.futures.as_completed(futures):
             (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
 
-            if dest_meta is None:
+            if (dest_meta is None) or (dest_meta['size'] is None):
                 missing.append(fn)
                 print("ERROR:  missing file ", fn)
                 continue
