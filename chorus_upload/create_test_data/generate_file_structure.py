@@ -6,7 +6,7 @@ import numpy as np
 import glob
 
 minfileSizeInLog2Bytes = 4
-maxfileSizeInLog2Bytes = 20
+maxfileSizeInLog2Bytes = 25
 
 
 def generateFirstFiles():
