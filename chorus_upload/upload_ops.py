@@ -464,7 +464,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     if len(update_args) > 0:
         print("INFO: UPLOAD updating journal update last batch ", len(update_args))
-        print(update_args)
+        # print(update_args)
         # handle additions and updates
         JournalDB.update(database_name = databasename, table_name = "journal",
                             sets = ["upload_dtstr=?", 
@@ -685,7 +685,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     
         if len(update_args) > 0:
             print("INFO: UPLOAD updating journal update last batch ", len(update_args))
-            print(update_args)
+            # print(update_args)
             # handle additions and updates
             JournalDB.update(database_name = databasename, table_name = "journal",
                                 sets = ["upload_dtstr=?", 

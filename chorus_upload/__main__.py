@@ -54,6 +54,8 @@ import re
 # TODO: DONE additional parameters in config.toml for page_size and num_threads
 # TODO: DONE add param in config.toml for local journal path
 # TODO: journaling_mode "append" would have one directory per submission.  how should these be managed?
+# TODO: fix cloud md5.  azure blob md5 is in content-md5 header - automatically base64 encoded.   Need to fix all cloud files where md5 are doubly base64 encoded.
+# TODO: add support to upload files in the root directory, e.g. SUBMISSION.md
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
