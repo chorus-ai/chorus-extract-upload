@@ -408,32 +408,25 @@ class FileSystemHelper:
                 # can set content-md5 but we are already storing in db.
                 if (curr.md5 is not None):
                     md5_str = curr.md5.hex()
+                    print("DEBUG: md5 from azure blob ", md5_str)
                 else:
+                    if local_md5 is None:
+                        md5 = FileSystemHelper._calc_file_md5(curr)
+                        local_md5 = md5.hexdigest() if md5 else None
+                        print("NOTE: computed MD5 for ", curr, " to ", local_md5)
+                    
                     if local_md5 is not None:
                         blob_serv_client = curr.client.service_client
                         blob_client = blob_serv_client.get_blob_client(container = curr.container, blob = curr.blob)
                         content_settings = blob_client.get_blob_properties().content_settings
-                        content_settings.content_md5 = base64.b64encode(bytes.fromhex(local_md5))
+                        content_settings.content_md5 = bytes.fromhex(local_md5)
                         blob_client.set_http_headers(content_settings = content_settings)
                         md5_str = local_md5
-                        print("NOTE: setting MD5 for ", curr, " to local md5 ", content_settings.content_md5.hex())
+                        print("NOTE: setting MD5 for ", curr, " to local md5 ", md5_str, " base64 encoded ", base64.b64encode(content_settings.content_md5))
 
                     else:
-                        md5 = FileSystemHelper._calc_file_md5(curr)  # have to calculate
-                        # then set the content md5 to whatever we calculated
-                        if (md5 is not None):
-                            blob_serv_client = curr.client.service_client
-                            blob_client = blob_serv_client.get_blob_client(container = curr.container, blob = curr.blob)
-                            content_settings = blob_client.get_blob_properties().content_settings
-                            content_settings.content_md5 = md5.digest()
-                            blob_client.set_http_headers(content_settings = content_settings)
-                            md5_str = md5.hexdigest()
-                            # print("NOTE: setting MD5 for ", curr, " to ", content_settings.content_md5, " hex ", content_settings.content_md5.hex(), " hex digtest ", md5_str)
-                            print("NOTE: computed MD5 for ", curr, " to ", content_settings.content_md5.hex())
-
-                        else:
-                            md5_str = None
-                            print("NOTE: computed MD5 for ", curr, " but is none ")
+                        md5_str = None
+                        print("NOTE: computed MD5 for ", curr, " but is none ")
 
             elif isinstance(curr, GSPath):
                 # likely not reliable, like S3 or AzureBlob
