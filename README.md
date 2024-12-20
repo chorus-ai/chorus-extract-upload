@@ -23,7 +23,7 @@ Scripts and tools for organizing uploads to the CHoRUS central data repository
 
 ### Installation
 
-The `chorus-upload` tool is a Python package.  The package can be installed using pip.  The package requires Python 3.7 or later.  A virtual environment (venv or conda) is strongly recommended.
+The `chorus-upload` tool is a Python package.  The package can be installed using pip.  The package requires Python 3.7 or later.  A virtual environment (venv or conda) is strongly recommended.  Either Python 3.10 or 3.12 works but the next version will use 3.12.
 
 1. Create and configure a conda environment: 
 ```
