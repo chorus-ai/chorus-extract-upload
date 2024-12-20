@@ -187,8 +187,9 @@ The `-h` parameter will display help information for the tool or each subcommand
 Different `config.toml` files can be specified by using the `-c` parameter
 
 
-### UPLOAD PROCESS
-There are 2 steps:  1. create/update Journal, and 2. perform actual upload.
+### Upload Process
+
+THERE ARE 2 STEPS:
 
 ### 1. Create or Update Jounral
 To create or an update journal, the following command can be run.  
