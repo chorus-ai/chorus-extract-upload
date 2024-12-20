@@ -164,7 +164,7 @@ azure_sas_token = "{sastoken}"
 ```
 
 
-### Usage
+### General Usage
 
 First activate the python virtual environment:
 ```
