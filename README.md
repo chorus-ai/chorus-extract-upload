@@ -41,6 +41,8 @@ source {venv_directory}/bin/activate
 
 pip install flit
 ```
+> **Note**: on Windows, the command to activate python virtual environmnet is `{venv_directory}\Scripts\activate.bat`
+
 
 2. Get the software:
 ```
@@ -84,10 +86,11 @@ ErrorCode:AuthorizationFailure
 
 On windows, the `/etc/hosts` file equivalent `C:\Windows\system32\drivers\etc\hosts`.   Administrator privilege is needed to edit this file.
 
-5. AZ CLI installation (only when using `chorus-upload` generated azcli scripts):
-You can configure the tool to use AZ CLI to upload files to the CHoRUS central cloud, or alternatively use the built in azure library for upload.   If you will be using AZ CLI, please install AZ CLI according to Microsoft instructions:
-
-[Install Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
+> **Optional**
+> 5. AZ CLI installation (only when using `chorus-upload` generated azcli scripts):
+> You can configure the tool to use AZ CLI to upload files to the CHoRUS central cloud, or alternatively use the built in azure library for upload.   If you will be using AZ CLI, please install AZ CLI according to Microsoft instructions:
+>
+> [Install Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
 
 
 6. Setting environment variables:
