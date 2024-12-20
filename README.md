@@ -139,6 +139,7 @@ local_path = "journal.db"
 # specify the central (target) container/path, to which files are uploaded.  
 # This is also the default location for the journal file
 path = "az://{DGS_CONTAINER}/"
+azure_container = "{DGS_CONTAINER}"
 azure_account_name = "choruspilotstorage"
 azure_sas_token = "{sastoken}"
 
