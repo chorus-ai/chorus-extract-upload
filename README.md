@@ -50,6 +50,8 @@ git clone https://github.com/chorus-ai/chorus-extract-upload
 cd chorus-extract-upload
 ```
 
+> **Alternative** If you do not have git on the system, you can download the source code as a zip file and decompress it into the `chorus-extrat-upload` directory.
+
 3. Install the software and dependencies:
 ```
 cd chorus-extract-upload
