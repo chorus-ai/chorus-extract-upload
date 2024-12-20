@@ -175,7 +175,7 @@ or
 source {venv_directory}/bin/activate
 ```
 
-The `chorus-upload` tool can be run from its source directory as
+The `chorus-upload` tool can be run from its source directory FOLLOWING THE GENERAL PATTERN as
 
 ```
 cd chorus-extract-upload
@@ -186,10 +186,11 @@ The `-h` parameter will display help information for the tool or each subcommand
 
 Different `config.toml` files can be specified by using the `-c` parameter
 
-The general process is 1. create/update journal, and 2. upload files
 
+### UPLOAD PROCESS
+There are 2 steps:  1. create/update Journal, and 2. perform actual upload.
 
-### Create or Update Manifest
+### 1. Create or Update Jounral
 To create or an update journal, the following command can be run.  
 ```
 python chorus_upload -c config.toml journal update
@@ -210,7 +211,7 @@ The types of data (`OMOP`, `Images`, `Waveforms`) can be specified to restrict u
 python chorus_upload -c config.toml journal update --modalities OMOP,Images
 ```
 
-### Upload files
+### 2. Upload files
 
 Files can be uploaded using either the integrated, multithreading file upload logic, or via a generated az-cli script.  Only files that have been added or modified since the last submission will be added.  
 
