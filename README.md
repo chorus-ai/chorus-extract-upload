@@ -23,7 +23,7 @@ Scripts and tools for organizing uploads to the CHoRUS central data repository
 
 ### Installation
 
-The `chorus-upload` tool is a Python package.  The package can be installed using pip.  The package requires Python 3.7 or later.  A virtual environment (venv or conda) is strongly recommended.
+The `chorus-upload` tool is a Python package.  The package can be installed using pip.  The package requires Python 3.7 or later.  A virtual environment (venv or conda) is strongly recommended.  Either Python 3.10 or 3.12 works but the next version will use 3.12.
 
 1. Create and configure a conda environment: 
 ```
@@ -41,12 +41,16 @@ source {venv_directory}/bin/activate
 
 pip install flit
 ```
+> **Note**: on Windows, the command to activate python virtual environmnet is `{venv_directory}\Scripts\activate.bat`
+
 
 2. Get the software:
 ```
 git clone https://github.com/chorus-ai/chorus-extract-upload
 cd chorus-extract-upload
 ```
+
+> **Alternative** If you do not have git on the system, you can download the source code as a zip file and decompress it into the `chorus-extrat-upload` directory.
 
 3. Install the software and dependencies:
 ```
@@ -84,10 +88,11 @@ ErrorCode:AuthorizationFailure
 
 On windows, the `/etc/hosts` file equivalent `C:\Windows\system32\drivers\etc\hosts`.   Administrator privilege is needed to edit this file.
 
-5. AZ CLI installation (only when using `chorus-upload` generated azcli scripts):
-You can configure the tool to use AZ CLI to upload files to the CHoRUS central cloud, or alternatively use the built in azure library for upload.   If you will be using AZ CLI, please install AZ CLI according to Microsoft instructions:
-
-[Install Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
+> **Optional**
+> 5. AZ CLI installation (only when using `chorus-upload` generated azcli scripts):
+> You can configure the tool to use AZ CLI to upload files to the CHoRUS central cloud, or alternatively use the built in azure library for upload.   If you will be using AZ CLI, please install AZ CLI according to Microsoft instructions:
+>
+> [Install Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
 
 
 6. Setting environment variables:
@@ -139,6 +144,7 @@ local_path = "journal.db"
 # specify the central (target) container/path, to which files are uploaded.  
 # This is also the default location for the journal file
 path = "az://{DGS_CONTAINER}/"
+azure_container = "{DGS_CONTAINER}"
 azure_account_name = "choruspilotstorage"
 azure_sas_token = "{sastoken}"
 
@@ -163,7 +169,7 @@ azure_sas_token = "{sastoken}"
 ```
 
 
-### Usage
+### General Usage
 
 First activate the python virtual environment:
 ```
@@ -174,7 +180,7 @@ or
 source {venv_directory}/bin/activate
 ```
 
-The `chorus-upload` tool can be run from its source directory as
+The `chorus-upload` tool can be run from its source directory FOLLOWING THE GENERAL PATTERN as
 
 ```
 cd chorus-extract-upload
@@ -185,10 +191,12 @@ The `-h` parameter will display help information for the tool or each subcommand
 
 Different `config.toml` files can be specified by using the `-c` parameter
 
-The general process is 1. create/update journal, and 2. upload files
 
+### Upload Process
 
-### Create or Update Manifest
+THERE ARE 2 STEPS:
+
+### 1. Create or Update Jounral
 To create or an update journal, the following command can be run.  
 ```
 python chorus_upload -c config.toml journal update
@@ -209,7 +217,7 @@ The types of data (`OMOP`, `Images`, `Waveforms`) can be specified to restrict u
 python chorus_upload -c config.toml journal update --modalities OMOP,Images
 ```
 
-### Upload files
+### 2. Upload files
 
 Files can be uploaded using either the integrated, multithreading file upload logic, or via a generated az-cli script.  Only files that have been added or modified since the last submission will be added.  
 
