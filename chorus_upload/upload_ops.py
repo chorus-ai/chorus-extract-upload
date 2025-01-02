@@ -649,7 +649,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
         for future in concurrent.futures.as_completed(futures):
             (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
 
-            if dest_meta is None:
+            if (dest_meta is None) or (dest_meta['size'] is None):
                 missing.append(fn)
                 print("ERROR:  missing file ", fn)
                 continue

@@ -25,11 +25,10 @@ page_size = 1000
 # num_threads = 1
 
 [journal]
-path = "journal.db"   # specify the journal file name. defaults to cloud storage
-# example:  "az://container/path/to/journal.db"
-# example:  "/home/user/journal.db"
-# azure_account_name = "account_name"
-# azure_sas_token = "sastoken"
+#path = "journal.db"   # specify the journal file name. defaults to cloud storage
+path = "az://container/journal.db"
+azure_account_name = "account_name"
+azure_sas_token = "sastoken"
 
 # if "builtin" then azcli script will use chorus_upload.  else it would use azcli to upload.
 upload_method = "builtin"
@@ -42,8 +41,8 @@ local_path = "journal.db"
 # This is also the default location for the journal file
 
 # example:  "az://container/path"
-path = "az://test/"
-azure_container = "test"
+path = "az://container/"
+azure_container = "container"
 # azure account credentials are specified as one or more of the following.
 azure_account_name = "account_name"
 azure_sas_token = "sastoken"
@@ -85,10 +84,11 @@ azure_sas_token = "sastoken"
 
   [site_path.Images]
   # optional:  specific root paths for images
-  path = "s3://container/path"
-  s3_container = "container"
-  aws_access_key_id = "access_key_id"
-  aws_secret_access_key = "secret_access"
+  path = "/mnt/data/site"
+  # path = "s3://container/path"
+  # s3_container = "container"
+  # aws_access_key_id = "access_key_id"
+  # aws_secret_access_key = "secret_access"
   # can also specify aws session token, or profile.
   # aws_session_token = "session_token"
   # aws_profile = "profile"

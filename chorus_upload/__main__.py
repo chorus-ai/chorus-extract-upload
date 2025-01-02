@@ -54,8 +54,10 @@ import parse
 # TODO: DONE parallelize upload support?
 # TODO: DONE additional parameters in config.toml for page_size and num_threads
 # TODO: DONE add param in config.toml for local journal path
-# TODO: journaling_mode "append" would have one src directory per submission.  how should these be managed or tracked?
-# TODO: handling different paths.
+# TODO: journaling_mode "append" would have one directory per submission.  how should these be managed?
+# TODO: DONE support different path patterns per modality path
+# TODO: DONE fix cloud md5.  azure blob md5 is in content-md5 header - automatically base64 encoded.   Need to fix all cloud files where md5 are doubly base64 encoded.
+# TODO: add support to upload files in the root directory, e.g. SUBMISSION.md
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -629,7 +631,7 @@ def _upload_files(args, config, journal_fn):
     
 # helper to report file verification
 def _verify_files(args, config, journal_fn):
-    print("NOTE: This will download files to verify md5.  It will take a while and can take significant disk space.")
+    print("NOTE: This will NOT download files to verify md5.  It relies on file size and previously saved md5.")
     
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
