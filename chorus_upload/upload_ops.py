@@ -17,6 +17,8 @@ import chorus_upload.perf_counter as perf_counter
 
 from chorus_upload.journaldb_ops import JournalDB
 
+import azure
+
 # TODO: DONE - Remove registry
 # TODO: DONE - Change schema of files to include modtime, filesize
 # TODO: DONE - Change matching to look at all three (name, time, size) 
@@ -264,7 +266,15 @@ def _upload_and_verify(src_path : FileSystemHelper,
     lock = kwargs.get("lock", None)
         
     if srcfile.exists():
-        src_path.copy_file_to((fn, destfn), dated_dest_path, kwargs = {'lock': lock}) 
+        try:
+            src_path.copy_file_to((fn, destfn), dated_dest_path, kwargs = {'lock': lock})
+        except azure.core.exceptions.ServiceResponseError as e:
+            try:
+                print("WARNING:  copy failed ", fn, ", retrying")
+                src_path.copy_file_to((fn, destfn), dated_dest_path, kwargs = {'lock': lock})
+            except azure.core.exceptions.ServiceResponseError as e:                
+                print("ERROR:  copy failed ", fn, ", due to ", str(e), ". Please rerun 'file upload' when connectivity improves.")
+                state = sync_state.MISSING_DEST
     else:
         # print("ERROR:  file not found ", srcfile)
         state = sync_state.MISSING_SRC
@@ -325,6 +335,71 @@ def _upload_and_verify(src_path : FileSystemHelper,
     return (fn, info, state, del_list, copy_time, verify_time)
 
 
+
+def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
+                     files_to_upload, files_to_mark_deleted, 
+                     databasename, upload_dt_str, update_args, del_args, step,
+                     missing_dest, missing_src, matched, mismatched, replaced,
+                     perf, nthreads, verbose = False):
+    dated_dest_paths = set()
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
+        lock = threading.Lock()
+        
+        futures = []
+        for fn, info in files_to_upload.items():
+            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
+            future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, files_to_mark_deleted, kwargs = {"lock": lock})
+            futures.append(future)
+    
+        for future in concurrent.futures.as_completed(futures):
+            (fn2, info, state, del_list, copy_time, verify_time) = future.result()
+            
+            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
+            dated_dest_paths.add(dated_dest_path)
+            perf.add_file(info['size'])
+            
+            if verbose:
+                print("INFO:  copied ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
+            else:
+                print(".", end="", flush=True)
+                
+            if state == sync_state.MISSING_DEST:
+                missing_dest.append(fn2)
+                print("ERROR:  missing file at destination", fn2)
+            elif state == sync_state.MISSING_SRC:
+                print("ERROR:  file not found ", fn2)
+                missing_src.append(fn2)
+            elif state == sync_state.MATCHED:
+                # merge the updates for matched.
+                matched.append(fn2)
+                update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
+                if len(del_list) > 0:
+                    del_args += [(upload_dt_str, fid) for fid in del_list]
+                    replaced.append(fn2)
+            elif state == sync_state.MISMATCHED:
+                mismatched.append(fn2)
+                print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", info['file_id'])            
+            
+            # update the journal - likely not parallelizable.
+            if len(update_args) >= step:
+                if verbose:
+                    print("INFO: UPLOAD updating journal ", len(update_args))
+                # handle additions and updates
+                JournalDB.update(database_name = databasename, table_name = "journal",
+                                    sets = ["upload_dtstr=?", 
+                                            "upload_duration=?",
+                                            "verify_duration=?"],
+                                    params = update_args,
+                                    where_clause="file_id=?"
+                                    )
+                update_args = []
+            
+                # backup intermediate file into the dated dest path.
+                # journal_path.copy_file_to(journal_fn, dated_dest_path)
+                
+                perf.report()
+                
+    return (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_dest_paths)
 
 # new version, pull list once.
 def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHelper,
@@ -399,6 +474,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     mismatched = []
     replaced = []
     deleted = []
+    dated_dest_paths = set()
 
     # NEW    
     step = kwargs.get("page_size", 1000)
@@ -415,98 +491,66 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     #     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
     #     (fn2, info, state, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, info, dated_dest_path, files_to_mark_deleted)
 
-    # procssPoolExecutor seems to work better with remote files.e
+    # split set to small and large files by AZURE block size.
+    small_files = { fn: info for fn, info in files_to_upload.items() if info['size'] <= storage_helper.AZURE_MAX_BLOCK_SIZE }
+    large_files = { fn: info for fn, info in files_to_upload.items() if info['size'] > storage_helper.AZURE_MAX_BLOCK_SIZE }  # 4MB, above which azure sdk handles parallelization.
+
+    # handle small files first
+    # choosing max 32 threads as block size of 1MB * 32 == 32MB, 32 being the default max thread count..
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    print("INFO: UPLOAD using ", nthreads, " threads")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-        lock = threading.Lock()
-
-        futures = []
-        for fn, info in files_to_upload.items():
-            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
-            future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, files_to_mark_deleted, kwargs = {"lock": lock})
-            futures.append(future)
+    print("INFO: UPLOAD ", len(small_files), "files <= 4MB using ", nthreads, " threads")
+    (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = _parallel_upload(src_path, dest_path,
+                                                                                                                        small_files, files_to_mark_deleted,
+                                                                                                                        databasename, upload_dt_str, update_args, del_args, step,
+                                                                                                                        missing_dest, missing_src, matched, mismatched, replaced,
+                                                                                                                        perf, nthreads, verbose)
+    dated_dest_paths.update(dated_paths)
     
-        for future in concurrent.futures.as_completed(futures):
-            (fn2, info, state, del_list, copy_time, verify_time) = future.result()
-
-            perf.add_file(info['size'])
-            
-            if verbose:
-                print("INFO: copying ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
-            else:
-                print(".", end="", flush=True)
-                
-            if state == sync_state.MISSING_DEST:
-                missing_dest.append(fn2)
-                print("ERROR:  missing file at destination", fn2)
-            elif state == sync_state.MISSING_SRC:
-                print("ERROR:  file not found ", fn2)
-                missing_src.append(fn2)
-            elif state == sync_state.MATCHED:
-                # merge the updates for matched.
-                matched.append(fn2)
-                update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
-                if len(del_list) > 0:
-                    del_args += [(upload_dt_str, fid) for fid in del_list]
-                    replaced.append(fn2)
-            elif state == sync_state.MISMATCHED:
-                mismatched.append(fn2)
-                print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", info['file_id'])            
-
-            # elif state == sync_state.DELETED:
-            #     deleted.append(fn2)
-            
-            # update the journal - likely not parallelizable.
-            if len(update_args) >= step:
-                if verbose:
-                    print("INFO: UPLOAD updating journal ", len(update_args))
-                # handle additions and updates
-                JournalDB.update(database_name = databasename, table_name = "journal",
-                                    sets = ["upload_dtstr=?", 
-                                            "upload_duration=?",
-                                            "verify_duration=?"],
-                                    params = update_args,
-                                    where_clause="file_id=?"
-                                    )
-                update_args = []
-            
-                # don't need to delete the outdated files - mark all deleted as uploaded. 
-                # if len(del_args) >= 0:
-                #     JournalDB.update(database_name = databasename, table_name = "journal",
-                #                         sets = ["upload_dtstr=?"],
-                #                         params = del_args,
-                #                         where_clause="file_id=?")
-                #     del_args = []
-
-                # backup intermediate file into the dated dest path.
-                # journal_path.copy_file_to(journal_fn, dated_dest_path)
-                
-                perf.report()
-
+    # # process medium size files.
+    # # choosing max 8 threads as block size of 4MB * 8 == 32MB, which is the default max put size for azure.
+    # n_cores = kwargs.get("n_cores", 8)
+    # nthreads = min(n_cores, min(8, (os.cpu_count() or 1) + 4))
+    # print("INFO: UPLOAD files < 4MB using ", nthreads, " threads")
+    # (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = _parallel_upload(src_path, dest_path,
+    #                                                                                                                     medium_files, files_to_mark_deleted,
+    #                                                                                                                     databasename, upload_dt_str, update_args, del_args, step,
+    #                                                                                                                     missing_dest, missing_src, matched, mismatched, replaced,
+    #                                                                                                                     perf, nthreads, verbose)
+    # dated_dest_paths.update(dated_paths)
     
-        if len(update_args) > 0:
-            if verbose:
-                print("INFO: UPLOAD updating journal update last batch ", len(update_args))
-            # handle additions and updates
-            JournalDB.update(database_name = databasename, table_name = "journal",
-                                sets = ["upload_dtstr=?", 
-                                        "upload_duration=?",
-                                        "verify_duration=?"],
-                                params = update_args,
-                                where_clause="file_id=?"
-                                )
-            update_args = []
-            
-            # don't need to delete the outdated files - mark all deleted as uploaded. 
-            # if len(del_args) >= 0:
-            #     JournalDB.update(database_name = databasename, table_name = "journal",
-            #                         sets = ["upload_dtstr=?"],
-            #                         params = del_args,
-            #                         where_clause="file_id=?")
-            #     del_args = []
-            perf.report()
+    
+    # and  large files.
+    print("INFO: UPLOAD", len(large_files), "files > 4MB using 1 threads")
+    (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = _parallel_upload(src_path, dest_path,
+                                                                                                                        large_files, files_to_mark_deleted,
+                                                                                                                        databasename, upload_dt_str, update_args, del_args, step,
+                                                                                                                        missing_dest, missing_src, matched, mismatched, replaced,
+                                                                                                                        perf, 1, verbose)
+    dated_dest_paths.update(dated_paths)
+    
+    # report the remaiing.
+    if len(update_args) > 0:
+        print("INFO: UPLOAD updating journal update last batch ", len(update_args))
+        # print(update_args)
+        # handle additions and updates
+        JournalDB.update(database_name = databasename, table_name = "journal",
+                            sets = ["upload_dtstr=?", 
+                                    "upload_duration=?",
+                                    "verify_duration=?"],
+                            params = update_args,
+                            where_clause="file_id=?"
+                            )
+        update_args = []
+        
+        # don't need to delete the outdated files - mark all deleted as uploaded. 
+        # if len(del_args) >= 0:
+        #     JournalDB.update(database_name = databasename, table_name = "journal",
+        #                         sets = ["upload_dtstr=?"],
+        #                         params = del_args,
+        #                         where_clause="file_id=?")
+        #     del_args = []
+        perf.report()
 
     # # other cases are handled below.
 
@@ -539,9 +583,10 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     # do not do backup the table - this will create really big files.
     # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
-    if verbose:
-        print("INFO: UPLOAD: backing up journal")
-    journal_path.copy_file_to(journal_fn, dated_dest_path)
+    print("INFO: UPLOAD: backing up journal")
+    for dated_dest_path in dated_dest_paths:
+        journal_path.copy_file_to(journal_fn, dated_dest_path)
+        
     dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
     journal_path.copy_file_to(journal_fn, dest_fn)
     perf.report()

@@ -72,6 +72,8 @@ from azure.storage.blob import BlobServiceClient
 from cloudpathlib import AzureBlobClient
 #     from cloudpathlib import GoogleCloudClient
 
+AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
+
 # to ensure consistent interface, we use default profile (S3) or require environment variables to be set
 # azure:  url:  az://{container}/
 #     credential:  {AZURE_STORAGE_CONNECTION_STRING} or {AZURE_ACCOUNT_NAME}+{AZURE_ACCOUNT_KEY} or {AZURE_ACCOUNT_NAME}+{AZURE_SAS_TOKEN}
@@ -164,8 +166,8 @@ def __make_az_client(auth_params: dict):
                 account_url=azure_account_url, 
                 connection_verify = False, 
                 connection_cert = None,
-                max_single_get_size = 8 * 1024 * 1024,
-                max_single_put_size = 8 * 1024 * 1024,
+                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
                 ),
             file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
@@ -175,8 +177,8 @@ def __make_az_client(auth_params: dict):
                 conn_str = azure_storage_connection_string, 
                 connection_verify = False, 
                 connection_cert = None,
-                max_single_get_size = 8 * 1024 * 1024,
-                max_single_put_size = 8 * 1024 * 1024,
+                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
                 ), 
             file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string_env:
@@ -185,8 +187,8 @@ def __make_az_client(auth_params: dict):
                 conn_str = azure_storage_connection_string_env, 
                 connection_verify = False, 
                 connection_cert = None,
-                max_single_get_size = 8 * 1024 * 1024,
-                max_single_put_size = 8 * 1024 * 1024,
+                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
                 ),
             file_cache_mode = FileCacheMode.cloudpath_object)
     else:
