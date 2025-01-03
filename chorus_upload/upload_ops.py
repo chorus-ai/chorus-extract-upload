@@ -351,11 +351,6 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             dated_dest_paths.add(dated_dest_path)
             perf.add_file(info['size'])
             
-            if verbose:
-                print("INFO:  copied ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
-            else:
-                print(".", end="", flush=True)
-                
             if state == sync_state.MISSING_DEST:
                 missing_dest.append(fn2)
                 print("ERROR:  missing file at destination", fn2)
@@ -369,6 +364,10 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 if len(del_list) > 0:
                     del_args += [(upload_dt_str, fid) for fid in del_list]
                     replaced.append(fn2)
+                if verbose:
+                    print("INFO:  copied ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
+                else:
+                    print(".", end="", flush=True)
             elif state == sync_state.MISMATCHED:
                 mismatched.append(fn2)
                 print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", info['file_id'])            
