@@ -335,7 +335,6 @@ def _upload_and_verify(src_path : FileSystemHelper,
     return (fn, info, state, del_list, copy_time, verify_time)
 
 
-
 def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                      files_to_upload, files_to_mark_deleted, 
                      databasename, upload_dt_str, update_args, del_args, step,
@@ -358,11 +357,6 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             dated_dest_paths.add(dated_dest_path)
             perf.add_file(info['size'])
             
-            if verbose:
-                print("INFO:  copied ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
-            else:
-                print(".", end="", flush=True)
-                
             if state == sync_state.MISSING_DEST:
                 missing_dest.append(fn2)
                 print("ERROR:  missing file at destination", fn2)
@@ -376,6 +370,10 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 if len(del_list) > 0:
                     del_args += [(upload_dt_str, fid) for fid in del_list]
                     replaced.append(fn2)
+                if verbose:
+                    print("INFO:  copied ", fn2, " from ", str(src_path.root), " to ", str(dated_dest_path.root), flush=True)
+                else:
+                    print(".", end="", flush=True)
             elif state == sync_state.MISMATCHED:
                 mismatched.append(fn2)
                 print("ERROR:  mismatched upload file ", fn2, " upload failed? fileid ", info['file_id'])            
@@ -474,7 +472,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     mismatched = []
     replaced = []
     deleted = []
-    dated_dest_paths = set()
+    dated_dest_paths = {}
 
     # NEW    
     step = kwargs.get("page_size", 1000)
@@ -505,7 +503,8 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
                                                                                                                         databasename, upload_dt_str, update_args, del_args, step,
                                                                                                                         missing_dest, missing_src, matched, mismatched, replaced,
                                                                                                                         perf, nthreads, verbose)
-    dated_dest_paths.update(dated_paths)
+    for dp in dated_paths:
+        dated_dest_paths[str(dp.root)] = dp
     
     # # process medium size files.
     # # choosing max 8 threads as block size of 4MB * 8 == 32MB, which is the default max put size for azure.
@@ -520,14 +519,17 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     # dated_dest_paths.update(dated_paths)
     
     
-    # and  large files.
-    print("INFO: UPLOAD", len(large_files), "files > 4MB using 1 threads")
+    # and  large files.  empirically tested to set to 4 threads.
+    n_cores = kwargs.get("n_cores", 4)
+    nthreads = min(n_cores, min(4, (os.cpu_count() or 1) + 4))
+    print("INFO: UPLOAD ", len(large_files), "files > 4MB using ", nthreads, " threads")
     (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = _parallel_upload(src_path, dest_path,
                                                                                                                         large_files, files_to_mark_deleted,
                                                                                                                         databasename, upload_dt_str, update_args, del_args, step,
                                                                                                                         missing_dest, missing_src, matched, mismatched, replaced,
-                                                                                                                        perf, 1, verbose)
-    dated_dest_paths.update(dated_paths)
+                                                                                                                        perf, nthreads, verbose)
+    for dp in dated_paths:
+        dated_dest_paths[str(dp.root)] = dp
     
     # report the remaiing.
     if len(update_args) > 0:
@@ -583,8 +585,9 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     # do not do backup the table - this will create really big files.
     # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
-    print("INFO: UPLOAD: backing up journal")
-    for dated_dest_path in dated_dest_paths:
+    for dated_dest_path in dated_dest_paths.values():
+        if verbose:
+            print("INFO: UPLOAD: backing up journal to ", str(dated_dest_path.root))
         journal_path.copy_file_to(journal_fn, dated_dest_path)
         
     dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
