@@ -578,7 +578,12 @@ class FileSystemHelper:
         dest = FileSystemHelper._make_path(dest_path) if isinstance(dest_path, Path) or isinstance(dest_path, CloudPath) else dest_path.root
         dest_is_cloud = isinstance(dest, CloudPath)
         src_is_cloud = self.is_cloud
-        
+                
+        # not used.  let azure sdk automatically tune the number of threads per upload.  
+        # we set the number of concurrent uploads, and tune the timeout.
+        # nthreads = kwargs.get("nthreads", 1)
+        timeout = kwargs.get("timeout", 120)
+                
         lock = kwargs.get("lock", None)
                 
         if relpath is None: 
@@ -601,7 +606,18 @@ class FileSystemHelper:
                 src_file.download_to(dest_file)
         else:
             if dest_is_cloud:
-                dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
+                # dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
+                dest_relpath = str(dest_file)[len("az://" + dest_file.container + "/"):] 
+                # print("INFO: ", dest_relpath)
+
+                blob_serv_client = dest_file.client.service_client
+                container_client = blob_serv_client.get_container_client(dest_file.container)
+                with open(src_file, "rb") as data:
+                    try:
+                        container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True) #max_concurrency=nthreads, 
+                    except TypeError as e:
+                        print("ERROR uploading file ", src_file, " to ", dest_relpath, " with timeout ", timeout, "container ", dest_file.container)
+                        
             else:
                 try:
                     shutil.copy2(str(src_file), str(dest_file))
