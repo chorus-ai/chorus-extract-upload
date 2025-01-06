@@ -468,8 +468,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     dated_dest_paths = {}
 
     # NEW    
-    # step = kwargs.get("page_size", 1000)
-    step = 20
+    step = kwargs.get("page_size", 1000)
     
     # finally, upload the journal.
     journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
