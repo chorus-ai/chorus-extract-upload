@@ -530,7 +530,7 @@ class FileSystemHelper:
 
 
     # copy 1 file from one location to another.
-    def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False):
+    def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False, **kwargs):
         """
         Copy a file from the current storage path to the destination path.
 
@@ -552,6 +552,11 @@ class FileSystemHelper:
         dest_is_cloud = isinstance(dest, CloudPath)
         src_is_cloud = self.is_cloud
                 
+        # not used.  let azure sdk automatically tune the number of threads per upload.  
+        # we set the number of concurrent uploads, and tune the timeout.
+        # nthreads = kwargs.get("nthreads", 1)
+        timeout = kwargs.get("timeout", 120)
+                        
         if relpath is None:
             src_file = self.root
             dest_file = dest
@@ -569,7 +574,18 @@ class FileSystemHelper:
                 src_file.download_to(dest_file)
         else:
             if dest_is_cloud:
-                dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
+                # dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
+                dest_relpath = str(dest_file)[len("az://" + dest_file.container + "/"):] 
+                # print("INFO: ", dest_relpath)
+
+                blob_serv_client = dest_file.client.service_client
+                container_client = blob_serv_client.get_container_client(dest_file.container)
+                with open(src_file, "rb") as data:
+                    try:
+                        container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True) #max_concurrency=nthreads, 
+                    except TypeError as e:
+                        print("ERROR uploading file ", src_file, " to ", dest_relpath, " with timeout ", timeout, "container ", dest_file.container)
+                        
             else:
                 try:
                     shutil.copy2(str(src_file), str(dest_file))

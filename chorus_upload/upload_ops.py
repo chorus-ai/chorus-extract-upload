@@ -254,19 +254,21 @@ class sync_state(Enum):
 def _upload_and_verify(src_path : FileSystemHelper, 
                        fn : str, info: dict,
                        dated_dest_path : FileSystemHelper,
-                       all_deleted : dict):
+                       all_deleted : dict, **kwargs):
     state = sync_state.UNKNOWN
     
     # ======= copy.  parallelizable
     start = time.time()
     srcfile = src_path.root.joinpath(fn)
+    threads_per_file = kwargs.get("nthreads", 1)
+        
     if srcfile.exists():
         try:
-            src_path.copy_file_to(fn, dated_dest_path) 
+            src_path.copy_file_to(fn, dated_dest_path, kwargs = {'nthreads': threads_per_file}) 
         except azure.core.exceptions.ServiceResponseError as e:
             try:
                 print("WARNING:  copy failed ", fn, ", retrying")
-                src_path.copy_file_to(fn, dated_dest_path)
+                src_path.copy_file_to(fn, dated_dest_path, kwargs = {'nthreads': threads_per_file})
             except azure.core.exceptions.ServiceResponseError as e:                
                 print("ERROR:  copy failed ", fn, ", due to ", str(e), ". Please rerun 'file upload' when connectivity improves.")
                 state = sync_state.MISSING_DEST
@@ -334,14 +336,14 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                      files_to_upload, files_to_mark_deleted, 
                      databasename, upload_dt_str, update_args, del_args, step,
                      missing_dest, missing_src, matched, mismatched, replaced,
-                     perf, nthreads, verbose = False):
+                     perf, nuploads, threads_per_file, verbose = False):
     dated_dest_paths = set()
-    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nuploads) as executor:
         
         futures = []
         for fn, info in files_to_upload.items():
             dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
-            future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, files_to_mark_deleted)
+            future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, files_to_mark_deleted, kwargs = {'nthreads': threads_per_file})
             futures.append(future)
     
         for future in concurrent.futures.as_completed(futures):
@@ -466,7 +468,8 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     dated_dest_paths = {}
 
     # NEW    
-    step = kwargs.get("page_size", 1000)
+    # step = kwargs.get("page_size", 1000)
+    step = 20
     
     # finally, upload the journal.
     journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.
@@ -481,46 +484,39 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     #     (fn2, info, state, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, info, dated_dest_path, files_to_mark_deleted)
 
     # split set to small and large files by AZURE block size.
-    small_files = { fn: info for fn, info in files_to_upload.items() if info['size'] <= storage_helper.AZURE_MAX_BLOCK_SIZE }
-    large_files = { fn: info for fn, info in files_to_upload.items() if info['size'] > storage_helper.AZURE_MAX_BLOCK_SIZE }  # 4MB, above which azure sdk handles parallelization.
-
-    # handle small files first
-    # choosing max 32 threads as block size of 1MB * 32 == 32MB, 32 being the default max thread count..
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    print("INFO: UPLOAD ", len(small_files), "files <= 4MB using ", nthreads, " threads")
-    (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = _parallel_upload(src_path, dest_path,
-                                                                                                                        small_files, files_to_mark_deleted,
-                                                                                                                        databasename, upload_dt_str, update_args, del_args, step,
-                                                                                                                        missing_dest, missing_src, matched, mismatched, replaced,
-                                                                                                                        perf, nthreads, verbose)
-    for dp in dated_paths:
-        dated_dest_paths[str(dp.root)] = dp
     
-    # # process medium size files.
-    # # choosing max 8 threads as block size of 4MB * 8 == 32MB, which is the default max put size for azure.
-    # n_cores = kwargs.get("n_cores", 8)
-    # nthreads = min(n_cores, min(8, (os.cpu_count() or 1) + 4))
-    # print("INFO: UPLOAD files < 4MB using ", nthreads, " threads")
-    # (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = _parallel_upload(src_path, dest_path,
-    #                                                                                                                     medium_files, files_to_mark_deleted,
-    #                                                                                                                     databasename, upload_dt_str, update_args, del_args, step,
-    #                                                                                                                     missing_dest, missing_src, matched, mismatched, replaced,
-    #                                                                                                                     perf, nthreads, verbose)
-    # dated_dest_paths.update(dated_paths)
+    for threads_per_file in range(1, (nthreads // 2 + 1)):
+        files = { fn: info for fn, info in files_to_upload.items() 
+                 if (info['size'] > storage_helper.AZURE_MAX_BLOCK_SIZE * (threads_per_file-1)) and
+                    (info['size'] <= storage_helper.AZURE_MAX_BLOCK_SIZE * threads_per_file) }
+
+        nuploads = nthreads // threads_per_file        
+        if len(files) > 0:
+            print("INFO: UPLOAD ", len(files), "files sizes ", storage_helper.AZURE_MAX_BLOCK_SIZE * (threads_per_file-1), " to ", storage_helper.AZURE_MAX_BLOCK_SIZE * threads_per_file, ",", nuploads, " uploads")
+        
+            (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = \
+                _parallel_upload(src_path, dest_path,
+                                files, files_to_mark_deleted,
+                                databasename, upload_dt_str, update_args, del_args, step,
+                                missing_dest, missing_src, matched, mismatched, replaced,
+                                perf, nuploads, threads_per_file, verbose)
+            for dp in dated_paths:
+                dated_dest_paths[str(dp.root)] = dp
     
-    
-    # and  large files.  empirically tested to set to 4 threads.
-    n_cores = kwargs.get("n_cores", 4)
-    nthreads = min(n_cores, min(4, (os.cpu_count() or 1) + 4))
-    print("INFO: UPLOAD ", len(large_files), "files > 4MB using ", nthreads, " threads")
-    (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = _parallel_upload(src_path, dest_path,
-                                                                                                                        large_files, files_to_mark_deleted,
-                                                                                                                        databasename, upload_dt_str, update_args, del_args, step,
-                                                                                                                        missing_dest, missing_src, matched, mismatched, replaced,
-                                                                                                                        perf, nthreads, verbose)
-    for dp in dated_paths:
-        dated_dest_paths[str(dp.root)] = dp
+    files = { fn: info for fn, info in files_to_upload.items() 
+                if (info['size'] > storage_helper.AZURE_MAX_BLOCK_SIZE * (nthreads // 2)) }
+    print("INFO: UPLOAD ", len(files), "files > ", storage_helper.AZURE_MAX_BLOCK_SIZE * (nthreads // 2), ", 2 uploads")
+    if len(files) > 0:
+        (update_args, del_args, perf, missing_dest, missing_src, matched, mismatched, replaced, dated_paths) = \
+            _parallel_upload(src_path, dest_path,
+                            files, files_to_mark_deleted,
+                            databasename, upload_dt_str, update_args, del_args, step,
+                            missing_dest, missing_src, matched, mismatched, replaced,
+                            perf, 2, nthreads, verbose)
+        for dp in dated_paths:
+            dated_dest_paths[str(dp.root)] = dp
     
     # report the remaiing.
     if len(update_args) > 0:
