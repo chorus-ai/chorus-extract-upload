@@ -269,11 +269,11 @@ def _upload_and_verify(src_path : FileSystemHelper,
         
     if srcfile.exists():
         try:
-            src_path.copy_file_to((fn, destfn), dated_dest_path, kwargs = {'nthreads': threads_per_file, 'lock': lock})
+            src_path.copy_file_to((fn, destfn), dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
         except azure.core.exceptions.ServiceResponseError as e:
             try:
                 print("WARNING:  copy failed ", fn, ", retrying")
-                src_path.copy_file_to((fn, destfn), dated_dest_path, kwargs = {'nthreads': threads_per_file, 'lock': lock})
+                src_path.copy_file_to((fn, destfn), dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
             except azure.core.exceptions.ServiceResponseError as e:                
                 print("ERROR:  copy failed ", fn, ", due to ", str(e), ". Please rerun 'file upload' when connectivity improves.")
                 state = sync_state.MISSING_DEST
@@ -349,7 +349,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         futures = []
         for fn, info in files_to_upload.items():
             dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
-            future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, files_to_mark_deleted, kwargs = {'nthreads': threads_per_file, "lock": lock})
+            future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, files_to_mark_deleted, **{'nthreads': threads_per_file, "lock": lock})
             futures.append(future)
     
         for future in concurrent.futures.as_completed(futures):
