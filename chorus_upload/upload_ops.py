@@ -15,7 +15,7 @@ import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
 import chorus_upload.perf_counter as perf_counter
 
-from chorus_upload.journaldb_ops import JournalDB
+from chorus_upload.journaldb_ops import SQLiteDB, JournalTable
 
 import azure
 
@@ -385,13 +385,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 if verbose:
                     print("INFO: UPLOAD updating journal ", len(update_args))
                 # handle additions and updates
-                JournalDB.update(database_name = databasename, table_name = "journal",
-                                    sets = ["upload_dtstr=?", 
-                                            "upload_duration=?",
-                                            "verify_duration=?"],
-                                    params = update_args,
-                                    where_clause="file_id=?"
-                                    )
+                JournalTable.mark_as_uploaded_with_duration(databasename, update_args)
                 update_args = []
             
                 # backup intermediate file into the dated dest path.
@@ -531,22 +525,10 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
         print("INFO: UPLOAD updating journal update last batch ", len(update_args))
         # print(update_args)
         # handle additions and updates
-        JournalDB.update(database_name = databasename, table_name = "journal",
-                            sets = ["upload_dtstr=?", 
-                                    "upload_duration=?",
-                                    "verify_duration=?"],
-                            params = update_args,
-                            where_clause="file_id=?"
-                            )
+        JournalTable.mark_as_uploaded_with_duration(databasename, update_args)
         update_args = []
         
         # don't need to delete the outdated files - mark all deleted as uploaded. 
-        # if len(del_args) >= 0:
-        #     JournalDB.update(database_name = databasename, table_name = "journal",
-        #                         sets = ["upload_dtstr=?"],
-        #                         params = del_args,
-        #                         where_clause="file_id=?")
-        #     del_args = []
         perf.report()
 
     # # other cases are handled below.
@@ -562,16 +544,15 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     for fn, fids in files_to_mark_deleted:
         deleted.append(fn)
         for fid in fids:
-            del_args.append((upload_dt_str, fid))  # deleted
+            del_args.append((fid,))  # deleted
     deleted = set(deleted)
     
     # delete every thing in mark_deleted.
     if len(del_args) > 0:
         print("INFO: MArking as deleted: ", len(del_args))
-        JournalDB.update(database_name = databasename, table_name = "journal",
-                         sets = ["upload_dtstr=?"],
-                         params = del_args,
-                         where_clause="file_id=?")
+        JournalTable.mark_as_uploaded(databasename, 
+                                      version = upload_dt_str,
+                                      upload_args = del_args)
         del_args = []
     
         perf.report()
@@ -649,24 +630,16 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
         print(f"ERROR: No journal exists for filename {databasename}")
         return
     
-    dtstr = version if version is not None else JournalDB.get_max_value(databasename, table_name="journal", column_name="version")
+    dtstr = version if version is not None else JournalTable.get_latest_version(databasename)
     
-    if dtstr is None:
-        print("INFO: no previous upload found.")
+    files_to_verify = JournalTable.get_files_with_meta(databasename, 
+                                                    version = dtstr, 
+                                                    modalities = modalities, 
+                                                    **{'active': True})   
+
+    if len(files_to_verify) == 0:
+        print("INFO: no files to verify.")
         return
-    
-    where_clause = f"version = '{dtstr}' AND time_invalid_us is NULL"
-    if (modalities is not None) and (len(modalities) > 0):
-        where_clause += " AND ("
-        where_2 = [f"MODALITY = '{modality}'" for modality in modalities]
-        where_clause += " OR ".join(where_2)
-        where_clause += ")"
-            
-    files_to_verify = JournalDB.query(database_name = databasename,
-                                        table_name = "journal",
-                                        columns = ["file_id", "filepath", "size", "md5", "modality"],
-                                        where_clause = where_clause,
-                                        count = None)
         
     #---------- verify files.    
     # create a dated root directory to receive the files
@@ -685,7 +658,8 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
         lock = threading.Lock()
         futures = []
-        for file_info in files_to_verify:
+        for (fid, filepath, modtime, size, md5, modality, invalidtime, vresion, uploadtime) in files_to_verify:
+            file_info = (fid, filepath, size, md5, modality)
             future = executor.submit(_get_file_info, dated_dest_path, file_info, **{**kwargs, "lock": lock})
             futures.append(future)
             
@@ -734,17 +708,12 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         print(f"ERROR: No journal exists for filename {databasename}")
         return
 
-    where_clause = "upload_dtstr is NULL AND time_invalid_us is NULL"
-    if len(files) == 1:
-        where_clause += f" AND filepath = '{files[0]}'"
-        
     # get the list of files, md5, size for unuploaded, active files
-    db_files = JournalDB.query(database_name = databasename,
-                                table_name = "journal",
-                                columns = ["file_id", "filepath", "size", "md5", "version", "modality"],
-                                where_clause = where_clause,
-                                count = None)
-    
+    db_files = JournalTable.get_files_with_meta(databasename, 
+                                                version = version,
+                                                modalities = None,
+                                                **{'active': True, 'uploaded': False, 'files': files})
+
     # make a hashtable
     db_files = {f[1]: f for f in db_files}
     
@@ -752,23 +721,15 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
     
     print("INFO: marking ", len(files), " files as uploaded.")
     for f in files:
-        
-        # meta = JournalDB.query(database_name = databasename,
-        #                         table_name = "journal",
-        #                         columns = ["file_id", "filepath", "size", "md5", "version"],
-        #                         where_clause = f"upload_dtstr is NULL AND time_invalid_us is NULL AND filepath = '{f}'",
-        #                         count = None)
-        
-        # if meta is None or len(meta) == 0:
-        #     print("ERROR: file ", f, " not found in journal.")
-        #     continue
-        # db_files = {ff[1]: ff for ff in meta}
    
         if f not in db_files:
             print("WARNING: file ", f, " not found in journal or was previously uploaded.")
             continue
-   
-        (dest_meta, dest_md5, dest_root,  fid, fn, size, md5) = _get_file_info2(dest_path, db_files[f], **kwargs)
+        
+        (_fid, _fn, _mtime, _size, _md5, _mod, _invalidtime, _ver, _uploadtime) = db_files[f]
+        _info = (_fid, _fn, _size, _md5, _ver, _mod)
+        
+        (dest_meta, dest_md5, dest_root, fid, fn, size, md5) = _get_file_info2(dest_path, _info, **kwargs)
         
         if dest_meta is None:
             print("ERROR:  missing file ", fn, " in destination ", dest_root)
@@ -784,11 +745,8 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
             print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
 
     if len(matched) > 0:
-        JournalDB.update(database_name = databasename, 
-                         table_name = "journal",
-                         sets = [f"upload_dtstr='{version}'"],
-                         params = matched,
-                         where_clause="file_id=?"
-                         )
+        JournalTable.mark_as_uploaded(database_name = databasename, 
+                        version = version,
+                        upload_args = matched)
     
     print("INFO:  marked ", len(matched), " files as uploaded.")

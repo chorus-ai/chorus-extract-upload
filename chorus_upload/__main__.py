@@ -57,7 +57,11 @@ import parse
 # TODO: journaling_mode "append" would have one directory per submission.  how should these be managed?
 # TODO: DONE support different path patterns per modality path
 # TODO: DONE fix cloud md5.  azure blob md5 is in content-md5 header - automatically base64 encoded.   Need to fix all cloud files where md5 are doubly base64 encoded.
-# TODO: add support to upload files in the root directory, e.g. SUBMISSION.md
+# TODO: DONE updated with variable number of threads for upload to minimize connection timeout
+# TODO: asyncio?
+# TODO: minimize db size.
+# TODO: process uploaded data in central
+# TODO: add support to upload files in the submission directory: SUBMISSION/WAVEFORM_SUBMISSION.md
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands

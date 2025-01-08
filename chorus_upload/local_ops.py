@@ -8,7 +8,7 @@ from pathlib import Path
 import concurrent.futures
 import threading
 import chorus_upload.perf_counter as perf_counter
-from chorus_upload.journaldb_ops import JournalDB
+from chorus_upload.journaldb_ops import SQLiteDB, JournalTable
 
 import parse
 
@@ -26,7 +26,7 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
                    **kwargs):
     
     
-    table_exists = JournalDB.table_exists(database_name = databasename,
+    table_exists = SQLiteDB.table_exists(database_name = databasename,
                                           table_name = "journal")
 
     # check if journal table exists
@@ -83,7 +83,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         
     perf = perf_counter.PerformanceCounter()
         
-    JournalDB.create_journal_table(databasename)
+    JournalTable.create_journal_table(databasename)
     
     paths = []
     curtimestamp = int(math.floor(time.time() * 1e6))
@@ -118,7 +118,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                         print("INFO: scanning ", relpath)
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              {}, 
-                                             compiled_pattern, None if version_in_pattern else new_version, kwargs = {'lock': lock})
+                                             compiled_pattern, None if version_in_pattern else new_version, **{'lock': lock})
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -133,10 +133,10 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                         
                     all_args.append(myargs)
 
-                insert_count, last_row = JournalDB.insert_journal_entries(databasename, all_args)
+                insert_count = JournalTable.insert_journal_entries(databasename, all_args)
                 
                 total_count += len(all_args)
-                print(f"INFO: inserted {insert_count} of {len(all_args)}.  added {total_count} files to journal.db of {last_row} rows" )
+                print(f"INFO: inserted {insert_count} of {len(all_args)}.  added {total_count} files to journal.db" )
 
                 all_args = []
                 
@@ -161,13 +161,6 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     # matched = PERSONID_REGEX.match(relpath)
     # personid = matched.group(1) if matched else None
     
-    # 
-
-    # get information about the old file
-    # query files by filename, modtime, and size
-    # this should be merged with the initial call to get active fileset since we in theory will be checking most files.
-    # filecheckrow = cur.execute("Select file_id, size, src_modtime_us, md5, upload_dtstr from journal where filepath=? and TIME_INVALID_us IS NULL", [(relpath)])
-
     # results = filecheckrow.fetchall()
     if relpath in modality_files_to_inactivate.keys():
         results = modality_files_to_inactivate[relpath]
@@ -264,7 +257,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     # if not amend, create a new version - either with supplied version name, or with current time.
     journal_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
     if amend: # get the last version
-        journal_version = JournalDB.get_max_value(databasename, table_name="journal", column_name="VERSION")
+        journal_version = JournalTable.get_latest_version(database_name=databasename)
     
     perf = perf_counter.PerformanceCounter()
     
@@ -291,19 +284,18 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
         compiled_pattern = parse.compile(pattern)
         
         # do one modality at a time for now - logic is tested.  doing multiple modalities may accidentally delete?
-        activefiletuples = JournalDB.query(databasename, table_name = "journal",
-                                           columns = ["FILEPATH", "FILE_ID", "SIZE", "SRC_MODTIME_us", "MD5", "UPLOAD_DTSTR", "VERSION"],
-                                           where_clause = f"TIME_INVALID_us IS NULL AND MODALITY = '{modality}'",
-                                           count = None)
+        activefiletuples = JournalTable.get_files_with_meta(databasename, 
+                                                           version = None, 
+                                                           modalities = [modality], 
+                                                           **{'active': True} )
 
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
         modality_files_to_inactivate = {}
-        for i in activefiletuples:
-            fpath = i[0]
+        for (fid, fpath, modtime, size, md5, mod, invalidtime, ver, uploadtime) in activefiletuples:
             if fpath not in modality_files_to_inactivate.keys():
-                modality_files_to_inactivate[fpath] = [ (i[1], i[2], i[3], i[4], i[5], i[6]) ]
+                modality_files_to_inactivate[fpath] = [ (fid, size, modtime, md5, uploadtime, ver), ]
             else:
-                modality_files_to_inactivate[fpath].append((i[1], i[2], i[3], i[4], i[5], i[6]))
+                modality_files_to_inactivate[fpath].append((fid, size, modtime, md5, uploadtime, ver))
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             lock = threading.Lock()
@@ -315,7 +307,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                         print("INFO: scanning ", relpath)
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              modality_files_to_inactivate, 
-                                             compiled_pattern, journal_version if not version_in_pattern else None, kwargs = {'lock': lock})
+                                             compiled_pattern, journal_version if not version_in_pattern else None, **{'lock': lock})
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures):
@@ -346,10 +338,10 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     # backup_journal(databasename)
                     
                 # save to database
-                update_count, last_row = JournalDB.insert_journal_entries(databasename, all_insert_args)
+                update_count = JournalTable.insert_journal_entries(databasename, all_insert_args)
                 
                 total_count += len(all_insert_args)
-                print(f"INFO: inserted {update_count} of {len(all_insert_args)}.  added {total_count} files to journal.db of {last_row} rows" )
+                print(f"INFO: inserted {update_count} of {len(all_insert_args)}.  added {total_count} files to journal.db" )
 
                 all_insert_args = []
                 
@@ -380,8 +372,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 # back up only on upload
                 # backup_journal(databasename)
                 
-                deleted = JournalDB.inactivate_journal_entries(databasename, 
-                                                       "journal", 
+                deleted = JournalTable.inactivate_journal_entries(databasename, 
                                                        curtimestamp, 
                                                        all_del_args)
                 
@@ -399,21 +390,15 @@ def mark_files_as_deleted(files_to_remove:List[str],
                           version: str = None, 
                           verbose:bool = False):
     
-    if version is not None:
-        where_clause = f"TIME_INVALID_us IS NULL AND version = '{version}'"
-    else:
-        where_clause = "TIME_INVALID_us IS NULL"
-        
-    
     # find all files that are active
-    activefiletuples = JournalDB.query(databasename, table_name = "journal",
-                                        columns = ["FILEPATH", "FILE_ID"],
-                                        where_clause = where_clause,
-                                        count = None)
+    activefiletuples = JournalTable.get_files(databasename,
+                                            version = version,
+                                            modalities = None,
+                                            **{'active': True})
     
     # convert filepath to dictionary with list of file_id for quick look up
     active_files = {}
-    for (fpath, file_id) in activefiletuples:
+    for (file_id, fpath) in activefiletuples:
         if fpath in active_files.keys():
             active_files[fpath].append(file_id)
         else:
@@ -441,8 +426,7 @@ def mark_files_as_deleted(files_to_remove:List[str],
     curtimestamp = int(math.floor(time.time() * 1e6))
     
     # update the database
-    deleted = JournalDB.inactivate_journal_entries(databasename,
-                                             "journal",
+    deleted = JournalTable.inactivate_journal_entries(databasename,
                                              curtimestamp,
                                              all_del_args)
     
@@ -472,7 +456,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     """
     # when listing files, looking for version match if specified, and upload_dtstr is NULL.
         
-    table_exists = JournalDB.table_exists(database_name = databasename,
+    table_exists = SQLiteDB.table_exists(database_name = databasename,
                                         table_name = "journal")
     
     modality_configs = kwargs.get("modality_configs", {})
@@ -490,25 +474,12 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     # modified:  file with null invalid time, and a prior entry with non-null invalid time stamp
     # files_to_remove = cur.execute("Select filepath, size, md5, time_invalid_us from journal where upload_dtstr IS NULL").fetchall()
     # to_remove = [ ]
-    
-    if version is None:
-        where_clause = "upload_dtstr IS NULL"
-    else:
-        where_clause = f"upload_dtstr IS NULL AND version = '{version}'"
-    
-    if (modalities is not None) and (len(modalities) > 0):
-        where_clause += " AND ("
-        where_2 = [f"MODALITY = '{modality}'" for modality in modalities]
-        where_clause += " OR ".join(where_2)
-        where_clause += ")"
-        
             
     # select where upload_dtstr is NULL or time_invalid_us is NULL
-    files_to_update = JournalDB.query(database_name = databasename, 
-                                        table_name = "journal",
-                                        columns = ["FILEPATH", "FILE_ID", "SIZE", "MD5", "TIME_INVALID_us", "VERSION", "MODALITY"],
-                                        where_clause = where_clause,
-                                        count = None)
+    files_to_update = JournalTable.get_files_with_meta(database_name = databasename, 
+                                                        version = version,
+                                                        modalities = modalities,
+                                                        **{'uploaded': False})
         
     print("INFO: extracted files to upload for ", ("current" if version is None else version), " upload version and modalities =", 
           (",".join(modalities) if modalities is not None else "all"))
@@ -527,7 +498,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     inactive_files = {}  # file path to file id mapping is not unique
     
     
-    for (fn, fid, size, md5, invalidtime, version, modality) in files_to_update:
+    for (fid, fn, mtime, size, md5, modality, invalidtime, version, uploadtime) in files_to_update:
         if invalidtime is None:
             # updated files or added files.  should be in the most recent version.
             if (fn in active_files.keys()):
@@ -636,7 +607,7 @@ def list_versions(databasename: str):
     
     
     # List unique values in upload_dtstr column in journal table
-    res = JournalDB.get_unique_values(databasename, "journal", "VERSION", count = None)
+    res = SQLiteDB.get_unique_values(databasename, "journal", "VERSION", count = None)
     versions = [u[0] for u in res]
     
     if (versions is not None) and (len(versions) > 0):

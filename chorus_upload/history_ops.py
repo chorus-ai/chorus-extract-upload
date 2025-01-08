@@ -1,7 +1,7 @@
 import time
 import chorus_upload.config_helper as config_helper
 import json
-from chorus_upload.journaldb_ops import JournalDB
+from chorus_upload.journaldb_ops import CommandHistoryTable, SQLiteDB
 
 def _strip_account_info(args):
     filtered_args = {}
@@ -94,10 +94,15 @@ def save_command_history(common_params:str, cmd:str, parameters:str,
     curtimestamp = time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())
     # curtimestamp = int(math.floor(time.time() * 1e6))
 
-    JournalDB.create_command_history_table(databasename)
+    CommandHistoryTable.create_command_history_table(databasename)
  
-    _, command_id = JournalDB.insert_command_history_entry(databasename,
-                                             (curtimestamp, common_params, cmd, parameters, src_paths, dest_path))
+    _, command_id = CommandHistoryTable.insert_command_history_entry(databasename,
+                                             (f"'{curtimestamp}'", 
+                                              f"'{common_params}'", 
+                                              f"'{cmd}'", 
+                                              f"'{parameters}'", 
+                                              f"'{src_paths}'", 
+                                              f"'{dest_path}'"))
     
     return command_id
 
@@ -111,11 +116,8 @@ def update_command_completion(command_id:int, duration:float, databasename: str)
     - databasename (str): The name of the database file to connect to. Default is "journal.db".
     """
     
-    return JournalDB.update1(database_name = databasename, 
-                     table_name = "command_history",
-                     sets = [f"DURATION = {duration}"],
-                     where_clause = "COMMAND_ID = command_id"
-                    )
+    return CommandHistoryTable.update_command_completion(database_name = databasename, 
+                     command_id = command_id, duration = duration)
         
     
 def show_command_history(databasename: str):
@@ -129,11 +131,7 @@ def show_command_history(databasename: str):
     None
     """
     
-    commands = JournalDB.query(database_name = databasename,
-                               table_name = "command_history",
-                               columns = None,
-                               where_clause = None,
-                               count = None)
+    commands = CommandHistoryTable.get_command_history(databasename)
     
     for (id, timestamp, common_params, cmd, params, src_paths, dest_path, duration) in commands:
         # convert microsecond timestamp to datetime
