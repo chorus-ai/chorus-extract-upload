@@ -27,9 +27,9 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
     if table_exists:
         return _update_journal(root, modalities, databasename = databasename, 
                                journaling_mode = journaling_mode, 
-                               version = version, amend = amend, kwargs = kwargs)
+                               version = version, amend = amend, **kwargs)
     else:  # no amend possible since the file did not exist.
-        return _gen_journal(root, modalities, databasename, version = version, kwargs = kwargs)
+        return _gen_journal(root, modalities, databasename, version = version, **kwargs)
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path

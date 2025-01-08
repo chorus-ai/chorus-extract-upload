@@ -554,9 +554,9 @@ class FileSystemHelper:
                 
         # not used.  let azure sdk automatically tune the number of threads per upload.  
         # we set the number of concurrent uploads, and tune the timeout.
-        # nthreads = kwargs.get("nthreads", 1)
+        nthreads = kwargs.get("nthreads", 0) # 0 means use the default number of threads
         timeout = kwargs.get("timeout", 120)
-                        
+
         if relpath is None:
             src_file = self.root
             dest_file = dest
@@ -576,13 +576,18 @@ class FileSystemHelper:
             if dest_is_cloud:
                 # dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
                 dest_relpath = str(dest_file)[len("az://" + dest_file.container + "/"):] 
-                # print("INFO: ", dest_relpath)
+                if verbose:
+                    print("INFO: upload to ", dest_relpath, "with ", str(nthreads) if nthreads > 0 else "default number of ", " threads")
 
                 blob_serv_client = dest_file.client.service_client
                 container_client = blob_serv_client.get_container_client(dest_file.container)
                 with open(src_file, "rb") as data:
                     try:
-                        container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True) #max_concurrency=nthreads, 
+                        if nthreads < 1:
+                            container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True)
+                        else:
+                            container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True, max_concurrency=nthreads)
+
                     except TypeError as e:
                         print("ERROR uploading file ", src_file, " to ", dest_relpath, " with timeout ", timeout, "container ", dest_file.container)
                         

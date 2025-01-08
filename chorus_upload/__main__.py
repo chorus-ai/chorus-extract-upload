@@ -545,13 +545,13 @@ def _select_files(args, config, journal_fn):
     
         _write_files(file_list, ver, 
                      filename = args.output_file, 
-                     out_type = args.output_type, 
-                     dest_config = central, 
-                     config_fn = args.config, 
-                     max_num_files = int(args.max_num_files) if ("max_num_files" in vars(args)) and (args.max_num_files is not None) else None,
-                     journal_transport = config_helper.get_journal_config(config).get('upload_method', 'builtin'),
-                     cloud_journal = config_helper.get_journal_path(config),
-                     local_journal = journal_fn)
+                     **{'out_type': args.output_type, 
+                        'dest_config': central, 
+                        'config_fn': args.config, 
+                        'max_num_files': int(args.max_num_files) if ("max_num_files" in vars(args)) and (args.max_num_files is not None) else None,
+                        'journal_transport': config_helper.get_journal_config(config).get('upload_method', 'builtin'),
+                        'cloud_journal': config_helper.get_journal_path(config),
+                        'local_journal': journal_fn})
     
     
 def _mark_as_uploaded(args, config, journal_fn):
