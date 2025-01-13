@@ -21,6 +21,9 @@ journaling_mode = "full"
 # file processing page size. database is updated after each page. default is 1000
 page_size = 1000
 
+# profile journaling and upload performance.
+profile = false
+
 # number of threads to use.  default is min of cores + 4, 32, or the number specified here.  Recommend not setting the number of threads.
 # num_threads = 1
 
