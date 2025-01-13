@@ -566,8 +566,8 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
             print("INFO: UPLOAD: backing up journal to ", str(dated_dest_path.root))
         journal_path.copy_file_to(journal_fn, dated_dest_path)
         
-    dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
-    journal_path.copy_file_to(journal_fn, dest_fn)
+    # dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
+    # journal_path.copy_file_to(journal_fn, dest_fn)
     perf.report()
     
     del perf
