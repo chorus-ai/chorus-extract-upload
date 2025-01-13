@@ -606,7 +606,7 @@ def list_versions(databasename: str):
     
     
     # List unique values in upload_dtstr column in journal table
-    res = SQLiteDB.get_unique_values(databasename, "journal", "VERSION", count = None)
+    res = SQLiteDB.get_versions(databasename)
     versions = [u[0] for u in res]
     
     if (versions is not None) and (len(versions) > 0):

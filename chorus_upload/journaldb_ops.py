@@ -526,6 +526,15 @@ class JournalDispatcher:
         else:
             raise ValueError("Invalid version number")
 
+    @classmethod
+    def get_versions(cls, database_name: str):
+        version = cls._get_version(database_name)
+        if version == 1:
+            return JournalTableV1.get_versions(database_name)
+        elif version == 2:
+            return JournalTableV2.get_versions(database_name)
+        else:
+            raise ValueError("Invalid version number")
 
 class CommandHistoryTableV1:
     table_name = "command_history"
@@ -754,6 +763,13 @@ class JournalTableV1:
                         columns = ["FILE_ID", "FILEPATH"],
                         where_clause = where_clause,
                         count = count)
+        
+        
+    @classmethod
+    def get_versions(cls, database_name: str):
+        return SQLiteDB.get_unique_values(database_name = database_name,
+                                      table_name = cls.table_name,
+                                      column_name = "VERSION")
 
 
 class CommandHistoryTableV2:
@@ -1180,6 +1196,14 @@ class JournalTableV2:
         
         # create a generator to yield the results
         return [(fid, "/".join([srcpath, fn])) for (fid, srcpath, fn) in result]
+    
+    @classmethod
+    def get_versions(cls, database_name: str):
+        return SQLiteDB.query(database_name = database_name,
+                         table_name = "versions",
+                         columns = ["VERSION"],
+                         where_clause = None,
+                         count = None)
 
 
 def _copy_journal_v1_to_v2(database_name: str, params: list) -> int:
