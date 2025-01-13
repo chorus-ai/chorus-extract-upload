@@ -1,4 +1,4 @@
-FROM python:3.10-slim
+FROM python:3.12-slim
 
 RUN apt-get update && apt-get install -y \
     git \
@@ -23,6 +23,8 @@ RUN flit install --symlink
 COPY config.toml /app/chorus-extract-upload/config.toml
 
 # entrypoint in "exec" form
-ENV AZURE
-CMD ["-c", "/app/chorus-extract-upload/config.toml", "journal", "update"]
-ENTRYPOINT [ "python", "chorus_upload" ]
+ENV AZURE_CLI_DISABLE_CONNECTION_VERIFICATION 1
+# CMD ["-c", "/app/chorus-extract-upload/config.toml", "journal", "update"]
+# ENTRYPOINT [ "python", "chorus_upload" ]
+
+ENTRYPOINT ["/bin/bash"]
