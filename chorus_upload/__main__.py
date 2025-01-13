@@ -15,6 +15,9 @@ from chorus_upload import local_ops
 import chorus_upload.storage_helper as storage_helper
 import re
 
+from chorus_upload.journaldb_ops import JournalDispatcher
+import chorus_upload.journaldb_ops as journaldb_ops
+
 import parse
 
 
@@ -716,7 +719,7 @@ if __name__ == "__main__":
     parser_unlock = journal_subparsers.add_parser("unlock", help = "unlock a cloud journal file")
     # parser_unlock.set_defaults(func = upload_ops.unlock_journal)
         
-
+    parser_upgrade = journal_subparsers.add_parser("upgrade", help = "upgrade a journal database to the NEXT version")
     
     # DANGEROUS
     # parser_revert = subparsers.add_parser("revert-version", help = "revert to a previous journal version.")
@@ -811,6 +814,9 @@ if __name__ == "__main__":
         print("INFO: Using config file: ", config_fn)
         config = config_helper.load_config(config_fn)
         
+        # get the configuration for profiling
+        JournalDispatcher.profiling = config["configuration"].get("profiling", False)
+        
         # set a default client for central storage
         central_config = config_helper.get_central_config(config)
         central_client = storage_helper._make_client(central_config)
@@ -831,7 +837,26 @@ if __name__ == "__main__":
         elif ((args.command in ["journal"]) and (args.journal_command in ["checkin"])):
             # for checkout and checkin, the argfunc handles the checkin and checkout.
             upload_ops.checkin_journal(journal_path, lock_path, local_path)
+        
+        elif ((args.command in ["journal"]) and (args.journal_command in ["upgrade"])):                            
             
+            local_journal_fn = str(local_path.root)
+
+            # checkout journal            
+            upload_ops.checkout_journal(journal_path, lock_path, local_path)
+            
+            # === no need to save command history
+            # call the subcommand function.
+            start = time.time()
+            journaldb_ops._upgrade_journal(local_path, lock_path)
+            end = time.time()
+            elapsed = end - start
+            print(f"Command Completed in {elapsed:.2f} seconds.")
+    
+            # push journal up.
+            upload_ops.checkin_journal(journal_path, lock_path, local_path)
+            
+        
         else:
             if ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"])):
                 # purely local operation on the local file.

@@ -15,7 +15,7 @@ import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
 import chorus_upload.perf_counter as perf_counter
 
-from chorus_upload.journaldb_ops import SQLiteDB, JournalTable
+from chorus_upload.journaldb_ops import JournalDispatcher
 
 import azure
 
@@ -385,7 +385,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 if verbose:
                     print("INFO: UPLOAD updating journal ", len(update_args))
                 # handle additions and updates
-                JournalTable.mark_as_uploaded_with_duration(databasename, update_args)
+                JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
                 update_args = []
             
                 # backup intermediate file into the dated dest path.
@@ -525,7 +525,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
         print("INFO: UPLOAD updating journal update last batch ", len(update_args))
         # print(update_args)
         # handle additions and updates
-        JournalTable.mark_as_uploaded_with_duration(databasename, update_args)
+        JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
         update_args = []
         
         # don't need to delete the outdated files - mark all deleted as uploaded. 
@@ -550,7 +550,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     # delete every thing in mark_deleted.
     if len(del_args) > 0:
         print("INFO: MArking as deleted: ", len(del_args))
-        JournalTable.mark_as_uploaded(databasename, 
+        JournalDispatcher.mark_as_uploaded(databasename, 
                                       version = upload_dt_str,
                                       upload_args = del_args)
         del_args = []
@@ -630,9 +630,9 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
         print(f"ERROR: No journal exists for filename {databasename}")
         return
     
-    dtstr = version if version is not None else JournalTable.get_latest_version(databasename)
+    dtstr = version if version is not None else JournalDispatcher.get_latest_version(databasename)
     
-    files_to_verify = JournalTable.get_files_with_meta(databasename, 
+    files_to_verify = JournalDispatcher.get_files_with_meta(databasename, 
                                                     version = dtstr, 
                                                     modalities = modalities, 
                                                     **{'active': True})   
@@ -709,7 +709,7 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         return
 
     # get the list of files, md5, size for unuploaded, active files
-    db_files = JournalTable.get_files_with_meta(databasename, 
+    db_files = JournalDispatcher.get_files_with_meta(databasename, 
                                                 version = version,
                                                 modalities = None,
                                                 **{'active': True, 'uploaded': False, 'files': files})
@@ -745,7 +745,7 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
             print("ERROR:  mismatched file ", fid, " ", fn, " for upload ", version, ": cloud size ", dest_meta['size'], " journal size ", size, "; cloud md5 ", dest_md5, " journal md5 ", md5)
 
     if len(matched) > 0:
-        JournalTable.mark_as_uploaded(database_name = databasename, 
+        JournalDispatcher.mark_as_uploaded(database_name = databasename, 
                         version = version,
                         upload_args = matched)
     
