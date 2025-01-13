@@ -22,7 +22,7 @@ journaling_mode = "full"
 page_size = 1000
 
 # profile journaling and upload performance.
-profile = False
+profile = false
 
 # number of threads to use.  default is min of cores + 4, 32, or the number specified here.  Recommend not setting the number of threads.
 # num_threads = 1

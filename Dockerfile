@@ -20,7 +20,7 @@ ENV FLIT_ROOT_INSTALL=1
 RUN flit install --symlink
 
 # copy in the config.toml file
-COPY config.toml /app/chorus-extract-upload/config.toml
+# COPY /app/chorus-extract-upload/chorus_upload/config.toml.template /app/chorus-extract-upload/config.toml
 
 # entrypoint in "exec" form
 ENV AZURE_CLI_DISABLE_CONNECTION_VERIFICATION 1
