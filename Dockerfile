@@ -1,19 +1,22 @@
 FROM python:3.12-slim
 
-RUN curl -LsS https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb > /app/packages-microsoft-prod.deb && \
-    dpkg -i packages-microsoft-prod.deb && \
-    apt-get update && \
+RUN apt-get update && \
     apt-get install -y \
     git \
     curl \
     libfuse3-dev fuse3 \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -LsS https://packages.microsoft.com/config/debian/12/packages-microsoft-prod.deb > /app/packages-microsoft-prod.deb && \
+    dpkg -i packages-microsoft-prod.deb
+RUN apt-get update && apt-get install -y\
     blobfuse2 \
     && rm -rf /var/lib/apt/lists/*
 # if building blobfuse2 directly, would need to install
 # make cmake gcc g++ parallel \
 # also, golang package 1.23 needed so have to install directly.
 
-RUN mkdir /app && mkdir /cache && mkdir /mnt
+RUN mkdir /app 
+# && mkdir /cache && mkdir /mnt
 WORKDIR /app
 
 # # install go
