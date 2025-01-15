@@ -1,5 +1,10 @@
 FROM python:3.12-slim
 
+RUN mkdir /app 
+# && mkdir /cache && mkdir /mnt
+WORKDIR /app
+
+
 RUN apt-get update && \
     apt-get install -y \
     git \
@@ -15,9 +20,6 @@ RUN apt-get update && apt-get install -y\
 # make cmake gcc g++ parallel \
 # also, golang package 1.23 needed so have to install directly.
 
-RUN mkdir /app 
-# && mkdir /cache && mkdir /mnt
-WORKDIR /app
 
 # # install go
 # RUN curl -LsS https://go.dev/dl/go1.23.4.linux-amd64.tar.gz > /app/go1.23.4.linux-amd64.tar.gz  && \
