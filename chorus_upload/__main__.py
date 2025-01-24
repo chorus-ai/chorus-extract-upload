@@ -88,7 +88,7 @@ def _print_usage(args, config, journal_fn):
     print("  -c or --config:   config file (defaults to config.toml in the script directory) with storage path locations")
     print("generating journal")
     print("  journal update:    python chorus_upload --config ./config.toml journal update")
-    print("             python chorus_upload journal update --modalities Waveforms,Images,OMOP")
+    print("             python chorus_upload journal update --modalities Waveforms,Images,Metadata")
     print("generating upload file list")
     print("  file list:    python chorus_upload file list")
     print("             python chorus_upload file list --version 20210901120000 -f filelist.txt")
@@ -691,7 +691,7 @@ if __name__ == "__main__":
     #------ create the parser for the "update" command
     parser_update = journal_subparsers.add_parser("update", help = "create or update the current journal")
     parser_update.add_argument("--modalities", 
-                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
+                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP,Metadata'.  case sensitive.", 
                                required=False)
     parser_update.add_argument("--version", 
                                help="version string for the upcoming upload.  If not specified, the current datetime in YYYYMMDDHHMMSS format is used.", 
@@ -751,7 +751,7 @@ if __name__ == "__main__":
     parser_upload = file_subparsers.add_parser("upload", help = "upload files to server")
     parser_upload.add_argument("--version", help="datetime of an upload (use list to get date times). defaults to all un-uploaded files", required=False)
     parser_upload.add_argument("--modalities", 
-                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
+                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP,Metadata'.  case sensitive.", 
                                required=False)
     parser_upload.add_argument("--max-num-files", help="maximum number of files to list.", required=False)
 
@@ -781,7 +781,7 @@ if __name__ == "__main__":
                                help="datetime of a submission version.  defaults to most recent version.", 
                                required=False)
     parser_verify.add_argument("--modalities", 
-                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP'.  case sensitive.", 
+                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP,Metadata'.  case sensitive.", 
                                required=False)
     parser_verify.set_defaults(func = _verify_files)
         

@@ -7,8 +7,8 @@
 # fallbacks are environment variables for these.
 
 [configuration]
-# supported modalities are "OMOP,Images,Waveforms"
-supported_modalities = "OMOP,Images,Waveforms"
+# supported modalities are "OMOP,Images,Waveforms,Metadata"
+supported_modalities = "OMOP,Images,Waveforms,Metadata"
 
 # upload method can be one of "azcli" or "builtin"
 upload_method = "builtin"
@@ -26,6 +26,9 @@ profile = false
 
 # number of threads to use.  default is min of cores + 4, 32, or the number specified here.  Recommend not setting the number of threads.
 # num_threads = 1
+
+# flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
+# patient_first = false
 
 [journal]
 #path = "journal.db"   # specify the journal file name. defaults to cloud storage
@@ -107,6 +110,20 @@ azure_sas_token = "sastoken"
 
   [site_path.Waveforms]
   # this is the path of the source directory for waveforms
+  path = "/mnt/another_datadir/site"
+
+  # indicates if the relative path is in a dated directory
+  versioned = false
+
+  # pattern for the files.  defaults to {patient_id:d}/Waveforms/{filepath}
+  # :d indicates that only numeric id are supported.
+  pattern = "{patient_id:d}/Waveforms/{filepath}"
+  # pattern = "Person{patient_id:d}/Waveforms/{filepath}"
+  # pattern = "{version:d}/{patient_id:d}/Waveforms/{filepath}"
+
+
+  [site_path.Metadata]
+  # this is the path of the source directory for submission metadata
   path = "/mnt/another_datadir/site"
 
   # indicates if the relative path is in a dated directory

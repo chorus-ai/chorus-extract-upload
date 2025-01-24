@@ -39,7 +39,7 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path
-# PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images|OMOP)/.*", re.IGNORECASE)
+# PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images|OMOP|Metadata)/.*", re.IGNORECASE)
 
 # get the file pattern from the modality config or use default
 def _get_modality_pattern(modality:str, modality_configs:dict):
@@ -56,6 +56,8 @@ def _get_modality_pattern(modality:str, modality_configs:dict):
                 pattern = "{patient_id:w}/OMOP/{filepath}"
             else:
                 pattern = "OMOP/{filepath}"
+        elif (modality.lower() == "metadata"):
+            pattern = "Metadata/{filepath}"
         else:
             pattern = "{patient_id:w}/" + modality + "/{filepath}"
     return pattern
@@ -70,7 +72,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
 
     Args:
         root (FileSystemHelper): The root directory to generate the journal for.
-        modalities (list[str], optional): The subdirectories to include in the journal. Defaults to ['Waveforms', 'Images', 'OMOP'].
+        modalities (list[str], optional): The subdirectories to include in the journal. Defaults to ['Waveforms', 'Images', 'OMOP', 'Metadata'].
         databasename (str, optional): The name of the database to store the journal. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
@@ -243,7 +245,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
     Args:
         root (FileSystemHelper): The root directory to search for files.
-        modalities (list[str], optional): The subdirectories to search for files. Defaults to ['Waveforms', 'Images', 'OMOP'].
+        modalities (list[str], optional): The subdirectories to search for files. Defaults to ['Waveforms', 'Images', 'OMOP', 'Metadata'].
         databasename (str, optional): The name of the journal database. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
@@ -552,7 +554,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
 
 # if version is specified, then it has priority over what's in the local_path string.
 def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Parser, modality:str, 
-                                    omop_per_patient:bool = False):
+                                    omop_per_patient:bool = False, patient_centric: bool = True):
     """
     Convert a local path to a central path using the pattern.
 
@@ -565,15 +567,31 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
         str: The central path, including version.
 
     """
-    if modality.lower() == "waveforms":
-        out_pattern = "{patient_id}/Waveforms/{filepath}"
-    elif modality.lower() == "images":
-        out_pattern = "{patient_id}/Images/{filepath}"
-    elif modality.lower() == "omop":
-        if omop_per_patient:
-            out_pattern = "{patient_id}/OMOP/{filepath}"
-        else:
-            out_pattern = "OMOP/{filepath}"
+    if patient_centric:
+    
+        if modality.lower() == "waveforms":
+            out_pattern = "{patient_id}/Waveforms/{filepath}"
+        elif modality.lower() == "images":
+            out_pattern = "{patient_id}/Images/{filepath}"
+        elif modality.lower() == "omop":
+            if omop_per_patient:
+                out_pattern = "{patient_id}/OMOP/{filepath}"
+            else:
+                out_pattern = "OMOP/{filepath}"
+        elif modality.lower() == "metadata":
+            out_pattern = "Metadata/{filepath}"
+    else:
+        if modality.lower() == "waveforms":
+            out_pattern = "Waveforms/{patient_id}/{filepath}"
+        elif modality.lower() == "images":
+            out_pattern = "Images/{patient_id}/{filepath}"
+        elif modality.lower() == "omop":
+            if omop_per_patient:
+                out_pattern = "OMOP/{patient_id}/{filepath}"
+            else:
+                out_pattern = "OMOP/{filepath}"
+        elif modality.lower() == "metadata":
+            out_pattern = "Metadata/{filepath}"
     
     parsed = in_compiled_pattern.parse(local_path)
     if parsed is None:

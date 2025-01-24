@@ -47,7 +47,7 @@ def get_config(config: dict):
 
 def get_modalities(config: dict):
     subconfig = config.get('configuration', {})
-    return subconfig.get('supported_modalities', "OMOP,Waveforms,Images").split(',')
+    return subconfig.get('supported_modalities', "OMOP,Waveforms,Images,Metadata").split(',')
 
 def get_journal_path(config: dict):
     subconfig = config.get('journal', {})
