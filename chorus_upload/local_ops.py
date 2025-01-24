@@ -127,13 +127,15 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                     myargs = future.result()
                     perf.add_file(myargs[4])
                     rlpath = myargs[1]
-                    status = myargs[7]
-                    if verbose and status == "ADDED":
-                        print("INFO: ADDED ", rlpath)
-                    else:
-                        print(".", end="", flush=True)
-                        
-                    all_args.append(myargs)
+                    status = myargs[8]
+                    if status in ["ADDED", "MOVED", "UPDATED"]:
+                        if verbose:
+                            print("INFO: ADDED ", rlpath)
+                        else:
+                            print(".", end="", flush=True)
+                        all_args.append(myargs)
+                    elif status == "ERROR4":                    
+                        print("INFO: File does not fit pattern.", rlpath)                        
 
                 insert_count = JournalTable.insert_journal_entries(databasename, all_args)
                 
@@ -157,9 +159,14 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     
     # first item is personid.
     parsed = compiled_pattern.parse(relpath)
-    personid = parsed.named.get("patient_id", None)
-    version = version if version is not None else parsed.named.get("version", None)
-
+    if parsed is not None:
+        personid = parsed.named.get("patient_id", None)
+        version = version if version is not None else parsed.named.get("version", None)
+        # print("DEBUG: Parsed ", relpath, " person id ", personid, "version", version)
+    else:
+        # print("Info: pattern not matched. skipping ", relpath)
+        return (None, relpath, modality, None, 0, None, curtimestamp, None, "ERROR4", None, None)
+        
     # matched = PERSONID_REGEX.match(relpath)
     # personid = matched.group(1) if matched else None
     
@@ -170,10 +177,10 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
         # There should only be 1 active file according to the path in a well-formed 
         if (len(results) > 1):
             # print("ERROR: Multiple active files with that path - journal is not consistent")
-            return (personid, relpath, modality, None, None, None, curtimestamp, None, "ERROR1", None, None)
+            return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR1", None, None)
         if (len(results) == 0):
             # print("ERROR: File found but no metadata.", relpath)
-            return (personid, relpath, modality, None, None, None, curtimestamp, None, "ERROR2", None, None)
+            return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR2", None, None)
         
         if len(results) == 1:
             (oldfileid, oldsize, oldmtime, oldmd5, oldsync, oldversion) = results[0]
@@ -260,6 +267,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     journal_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
     if amend: # get the last version
         journal_version = JournalTable.get_latest_version(database_name=databasename)
+        journal_version = journal_version if journal_version is not None else time.strftime("%Y%m%d%H%M%S")
     
     perf = perf_counter.PerformanceCounter()
     
@@ -324,6 +332,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                         print("ERROR: File found but no metadata.", rlpath)
                     elif status == "ERROR3":
                         print("ERROR: File size is different but modtime is the same.", rlpath)
+                    elif status == "ERROR4":
+                        print("ERROR: File does not fit pattern.", rlpath)
                     elif status == "KEEP":
                         del modality_files_to_inactivate[myargs[1]]
                     else:

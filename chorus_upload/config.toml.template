@@ -71,7 +71,7 @@ azure_sas_token = "sastoken"
   path = "/mnt/data/site"
   # path = "/mnt/data/site/pitts"
 
-  # if true, OMOP is a subdirectory of patient directory:  "{patient_id}/OMOP/*.csv"
+  # if true, OMOP is a subdirectory of patient directory:  "{patient_id:w}/OMOP/*.csv"
   # if false, OMOP is a sibling directory of patients:  "OMOP/*.csv"
   # this will influence the central repo's content
   # default is false
@@ -80,12 +80,13 @@ azure_sas_token = "sastoken"
   # indicates if the relative path is in a dated directory
   versioned = false
 
-  # default pattern for omop files.
+  # default pattern for omop files.  
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
   pattern = "OMOP/{filepath}"
-  # pattern = "{patient_id:d}/OMOP_tables/{filepath}"
+  # pattern = "{patient_id:w}/OMOP_tables/{filepath}"
   # if omop_per_patient == true
-  # pattern = "{patient_id:d}/OMOP/{filepath}"
-  # pattern = "{version:d}/{patient_id:d}/OMOP_tables/{filepath}"
+  # pattern = "{patient_id:w}/OMOP/{filepath}"
+  # pattern = "{version:w}/{patient_id:w}/OMOP_tables/{filepath}"
   
 
   [site_path.Images]
@@ -102,11 +103,11 @@ azure_sas_token = "sastoken"
   # indicates if the relative path is in a dated directory
   versioned = false
 
-  # pattern for the files.  defaults to {patient_id:d}/Images/{filepath}
-  # :d indicates that only numeric id are supported.
-  pattern = "{patient_id:d}/Images/{filepath}"
-  # pattern = "Person{patient_id:d}/Images/{filepath}"
-  # pattern = "{version:d}/{patient_id:d}/Images/{filepath}"
+  # pattern for the files.  defaults to {patient_id:w}/Images/{filepath}
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  pattern = "{patient_id:w}/Images/{filepath}"
+  # pattern = "Person{patient_id:w}/Images/{filepath}"
+  # pattern = "{version:w}/{patient_id:w}/Images/{filepath}"
 
   [site_path.Waveforms]
   # this is the path of the source directory for waveforms
@@ -115,11 +116,11 @@ azure_sas_token = "sastoken"
   # indicates if the relative path is in a dated directory
   versioned = false
 
-  # pattern for the files.  defaults to {patient_id:d}/Waveforms/{filepath}
-  # :d indicates that only numeric id are supported.
-  pattern = "{patient_id:d}/Waveforms/{filepath}"
-  # pattern = "Person{patient_id:d}/Waveforms/{filepath}"
-  # pattern = "{version:d}/{patient_id:d}/Waveforms/{filepath}"
+  # pattern for the files.  defaults to {patient_id:w}/Waveforms/{filepath}
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  pattern = "{patient_id:w}/Waveforms/{filepath}"
+  # pattern = "Person{patient_id:w}/Waveforms/{filepath}"
+  # pattern = "{version:w}/{patient_id:w}/Waveforms/{filepath}"
 
 
   [site_path.Metadata]
@@ -129,8 +130,8 @@ azure_sas_token = "sastoken"
   # indicates if the relative path is in a dated directory
   versioned = false
 
-  # pattern for the files.  defaults to {patient_id:d}/Waveforms/{filepath}
-  # :d indicates that only numeric id are supported.
-  pattern = "{patient_id:d}/Waveforms/{filepath}"
-  # pattern = "Person{patient_id:d}/Waveforms/{filepath}"
-  # pattern = "{version:d}/{patient_id:d}/Waveforms/{filepath}"
+  # pattern for the files.  defaults to {patient_id:w}/Waveforms/{filepath}
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  pattern = "{patient_id:w}/Waveforms/{filepath}"
+  # pattern = "Person{patient_id:w}/Waveforms/{filepath}"
+  # pattern = "{version:w}/{patient_id:w}/Waveforms/{filepath}"
