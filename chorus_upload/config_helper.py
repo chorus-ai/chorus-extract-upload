@@ -47,7 +47,10 @@ def get_config(config: dict):
 
 def get_modalities(config: dict):
     subconfig = config.get('configuration', {})
-    return subconfig.get('supported_modalities', "OMOP,Waveforms,Images,Metadata").split(',')
+    mods = subconfig.get('supported_modalities', "OMOP,Waveforms,Images,Metadata").split(',')
+    if "Metadata" not in mods:
+        mods.append("Metadata")
+    return mods
 
 def get_journal_path(config: dict):
     subconfig = config.get('journal', {})
