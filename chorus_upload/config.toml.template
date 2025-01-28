@@ -1,43 +1,51 @@
-# each section below indicates a path.
+# REQUIRED field are annotated as such
+
 # each of the paths can be specified as a local or a cloud path
 # cloud paths are specified as "az://container/path" or "s3://container/path"
-# supported cloud credentials are below.  parentheses indicate required pairing.
+
+# supported cloud credentials are below.  parentheses indicate required sets of information.
 # (azure_account_name, azure_sas_token), (azure_account_name, azure_account_key), azure_connection_string, azure_account_url
 # (aws_access_key_id, aws_secret_access_key), aws_session_token, aws_profile
 # fallbacks are environment variables for these.
 
 [configuration]
 # supported modalities are "OMOP,Images,Waveforms,Metadata"
-supported_modalities = "OMOP,Images,Waveforms,Metadata"
+# supported_modalities = "OMOP,Images,Waveforms,Metadata"
 
-# upload method can be one of "azcli" or "builtin"
-upload_method = "builtin"
+# upload method.  DO NOT CHANGE
+# upload_method = "builtin"
 
+# REQUIRED
 # journaling mode can be either "full" or "append". 
 # in full mode, the source data is assumed to be a full repo and journal is taking a snapshot.  Previous version file that are missing in the current file system are considered as deleted
 # in append mode, the source data is assumed to be new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  To delete a file, "file delete" has to be called.
 journaling_mode = "full"
 
 # file processing page size. database is updated after each page. default is 1000
-page_size = 1000
+# page_size = 1000
 
-# profile journaling and upload performance.
-profile = false
+# profile journaling and upload performance.  defaults to false
+# profile = false
 
 # number of threads to use.  default is min of cores + 4, 32, or the number specified here.  Recommend not setting the number of threads.
 # num_threads = 1
 
 # flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
-# patient_first = false
+# patient_first = true
 
 [journal]
-#path = "journal.db"   # specify the journal file name. defaults to cloud storage
+# REQUIRED.  location of the journal file.  defaults to chorus cloud storage.
 path = "az://container/journal.db"
+#path = "journal.db"   # specify the journal file name. defaults to cloud storage
+
+# REQUIRED if journal is in azure cloud.
 azure_account_name = "account_name"
+
+# REQUIRED if journal is in azure cloud.
 azure_sas_token = "sastoken"
 
-# if "builtin" then azcli script will use chorus_upload.  else it would use azcli to upload.
-upload_method = "builtin"
+# if "builtin" then azcli script will use chorus_upload.  DO NOT CHANGE
+# upload_method = "builtin"
 
 # local path for downloaded journal file.  default is "journal.db"
 local_path = "journal.db"
@@ -47,91 +55,110 @@ local_path = "journal.db"
 # This is also the default location for the journal file
 
 # example:  "az://container/path"
+
+# REQUIRED
 path = "az://container/"
+
+# REQUIRED
 azure_container = "container"
-# azure account credentials are specified as one or more of the following.
+# REQUIRED azure account credentials are specified as one or more of the following.
 azure_account_name = "account_name"
+# REQUIRED azure account credentials are specified as one or more of the following.
 azure_sas_token = "sastoken"
+
+# Alternative authentication options.
 # azure_account_key = "account_key"
 # azure_connection_string = "connection_string"
 # azure_account_url = "account_url"
 
 [site_path]
 
-# LOCAL WINDOWS PATH should use either forward slash "/" or double backslash "\\"
+# NOTE: LOCAL WINDOWS PATH should use either forward slash "/" or double backslash "\\"
+# each can have its own access credentials if in cloud.
 
   [site_path.default]
-  # specify the default site (source) path
+  # REQUIRED specify the default site (source) path.
   path = "/mnt/data/site"
 
-  # each can have its own access credentials
-
+  # OPTIONAL if same as default path.  
   [site_path.OMOP]
-  # optional:  specific root paths for omop data
+  # REQUIRED if section present:  specific root paths for omop data
   path = "/mnt/data/site"
-  # path = "/mnt/data/site/pitts"
 
   # if true, OMOP is a subdirectory of patient directory:  "{patient_id:w}/OMOP/*.csv"
   # if false, OMOP is a sibling directory of patients:  "OMOP/*.csv"
-  # this will influence the central repo's content
   # default is false
-  omop_per_patient = false
+  # omop_per_patient = false
 
-  # indicates if the relative path is in a dated directory
-  versioned = false
+  # indicates if the relative path is in a dated directory. default is false
+  # versioned = false
 
-  # default pattern for omop files.  
+  # pattern for omop files.  defaults to "OMOP/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
   # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  # modify to match the file organization under the root path.
   pattern = "OMOP/{filepath}"
-  # pattern = "{patient_id:w}/OMOP_tables/{filepath}"
-  # if omop_per_patient == true
-  # pattern = "{patient_id:w}/OMOP/{filepath}"
-  # pattern = "{version:w}/{patient_id:w}/OMOP_tables/{filepath}"
-  
 
+  # if omop_per_patient is true
+  # pattern = "{patient_id:w}/OMOP/{filepath}"
+  # if versioned == true
+  # pattern = "{version:w}/{patient_id:w}/OMOP_tables/{filepath}"
+
+  # OPTIONAL if same as default path.
   [site_path.Images]
-  # optional:  specific root paths for images
+  # REQUIRED if section present:  specific root paths for images
   path = "/mnt/data/site"
+  # example if images are in AWS S3
   # path = "s3://container/path"
   # s3_container = "container"
   # aws_access_key_id = "access_key_id"
   # aws_secret_access_key = "secret_access"
-  # can also specify aws session token, or profile.
+  # Alternatively, can also specify aws session token, or profile.
   # aws_session_token = "session_token"
   # aws_profile = "profile"
 
-  # indicates if the relative path is in a dated directory
-  versioned = false
+  # indicates if the relative path is in a dated directory.  default is false
+  # versioned = false
 
-  # pattern for the files.  defaults to {patient_id:w}/Images/{filepath}
+  # pattern for Image files.  defaults to "{patient_id:w}/Images/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
   # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  # modify to match the file organization under the root path.
   pattern = "{patient_id:w}/Images/{filepath}"
+  # other examples
   # pattern = "Person{patient_id:w}/Images/{filepath}"
   # pattern = "{version:w}/{patient_id:w}/Images/{filepath}"
 
+  # OPTIONAL if same as default path.  
   [site_path.Waveforms]
-  # this is the path of the source directory for waveforms
+  # REQUIRED if section present.  specifies root path of waveforms
   path = "/mnt/another_datadir/site"
 
-  # indicates if the relative path is in a dated directory
-  versioned = false
+  # indicates if the relative path is in a dated directory.  default is false
+  # versioned = false
 
-  # pattern for the files.  defaults to {patient_id:w}/Waveforms/{filepath}
+  # pattern for Waveform files.  defaults to "{patient_id:w}/Waveforms/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
   # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  # modify to match the file organization under the root path.
   pattern = "{patient_id:w}/Waveforms/{filepath}"
+  # other examples
   # pattern = "Person{patient_id:w}/Waveforms/{filepath}"
   # pattern = "{version:w}/{patient_id:w}/Waveforms/{filepath}"
 
-
+  # OPTIONAL if same as default path.  
   [site_path.Metadata]
-  # this is the path of the source directory for submission metadata
+  # REQUIRED if section present.  specifies root path of Metadata
   path = "/mnt/another_datadir/site"
 
-  # indicates if the relative path is in a dated directory
-  versioned = false
+  # indicates if the relative path is in a dated directory.  default is false
+  # versioned = false
 
-  # pattern for the files.  defaults to {patient_id:w}/Waveforms/{filepath}
+  # pattern for Submission Metadata files.  defaults to "Metadata/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
   # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
-  pattern = "{patient_id:w}/Waveforms/{filepath}"
-  # pattern = "Person{patient_id:w}/Waveforms/{filepath}"
-  # pattern = "{version:w}/{patient_id:w}/Waveforms/{filepath}"
+  # modify to match the file organization under the root path.
+  pattern = "Metadata/{filepath}"
+  # other examples
+  # pattern = "{version:w}/Metadata/{filepath}"
+

@@ -122,22 +122,32 @@ If you are transferring files from a cloud account to CHoRUS, please refer to yo
 
 
 ### Configuration:
-A `config.toml` file must be customized for each DGS.  A template is available as `chorus_upload/config.toml.template` in the `chorus-extract-upload` source tree.
+A `config.toml` file must be customized for each DGS.  A template is available as `chorus_upload/config.toml.template` in the `chorus-extract-upload` source tree.  Please see the template file for more details about each variable.   Below is an example illustrating different site_paths for different data types:  OMOP and Metadata are in versioned site directory, waveform data is in an on-prem directory, and image data are in S3 bucket.
 
 ```
-[configuration]
-# upload method can be one of "azcli" or "builtin"
-upload_method = "builtin"
+# REQUIRED field are annotated as such
 
+[configuration]
+supported_modalities = "OMOP,Images,Waveforms,Metadata"
+
+# REQUIRED
 # journaling mode can be either "full" or "append". 
 # in full mode, the source data is assumed to be a full repo and journal is taking a snapshot.  Previous version file that are missing in the current file system are considered as deleted
 # in append mode, the source data is assumed to be new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  To delete a file, "file delete" has to be called.
 journaling_mode = "full"
 
+# flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
+patient_first = true
+
 [journal]
-path = "az://{DGS_CONTAINER}/journal.db"   # specify the journal file name. defaults to cloud storage
+# REQUIRED.  location of the journal file.  defaults to chorus cloud storage.
+path = "az://emory/journal.db"
+
+# REQUIRED if journal is in azure cloud.
 azure_account_name = "choruspilotstorage"
-azure_sas_token = "{sastoken}"
+
+# REQUIRED if journal is in azure cloud.
+azure_sas_token = "sastoken"
 
 # local path for downloaded journal file.  default is "journal.db"
 local_path = "journal.db"
@@ -145,29 +155,90 @@ local_path = "journal.db"
 [central_path]
 # specify the central (target) container/path, to which files are uploaded.  
 # This is also the default location for the journal file
-path = "az://{DGS_CONTAINER}/"
-azure_container = "{DGS_CONTAINER}"
+# REQUIRED
+path = "az://emory/"
+
+# REQUIRED
+azure_container = "emory"
+# REQUIRED azure account credentials are specified as one or more of the following.
 azure_account_name = "choruspilotstorage"
-azure_sas_token = "{sastoken}"
+# REQUIRED azure account credentials are specified as one or more of the following.
+azure_sas_token = "sastoken"
 
 [site_path]
+
+# NOTE: LOCAL WINDOWS PATH should use either forward slash "/" or double backslash "\\"
+# each can have its own access credentials if in cloud.
+
   [site_path.default]
-  # specify the default site (source) path
+  # REQUIRED specify the default site (source) path.
   path = "/mnt/data/site"
 
-  # each can have its own access credentials
+  # OPTIONAL if same as default path.  
   [site_path.OMOP]
-  # optional:  specific root paths for omop data
+  # REQUIRED if section present:  specific root paths for omop data
   path = "/mnt/data/site"
 
+  # if true, OMOP is a subdirectory of patient directory:  "{patient_id:w}/OMOP/*.csv"
+  # if false, OMOP is a sibling directory of patients:  "OMOP/*.csv"
+  # default is false
+  # omop_per_patient = false
+
+  # indicates if the relative path is in a dated directory. default is false
+  versioned = true
+
+  # pattern for omop files.  defaults to "OMOP/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  # modify to match the file organization under the root path.
+  pattern = "{version:w}/OMOP/{filepath}"
+
+
+  # OPTIONAL if same as default path.
   [site_path.Images]
-  # optional:  specific root paths for images
+  # REQUIRED if section present:  specific root paths for images
   path = "s3://container/path"
+  s3_container = "container"
   aws_access_key_id = "access_key_id"
   aws_secret_access_key = "secret_access"
+  
+  # indicates if the relative path is in a dated directory.  default is false
+  versioned = false
 
+  # pattern for Image files.  defaults to "{patient_id:w}/Images/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  # modify to match the file organization under the root path.
+  pattern = "{patient_id:w}/Images/{filepath}"
+
+  # OPTIONAL if same as default path.  
   [site_path.Waveforms]
+  # REQUIRED if section present.  specifies root path of waveforms
   path = "/mnt/another_datadir/site"
+
+  # indicates if the relative path is in a dated directory.  default is false
+  versioned = false
+
+  # pattern for Waveform files.  defaults to "{patient_id:w}/Waveforms/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  # modify to match the file organization under the root path.
+  pattern = "{patient_id:w}/Waveforms/{filepath}"
+
+  # OPTIONAL if same as default path.  
+  [site_path.Metadata]
+  # REQUIRED if section present.  specifies root path of Metadata
+  path = "/mnt/another_datadir/site"
+
+  # indicates if the relative path is in a dated directory.  default is false
+  versioned = false
+
+  # pattern for Submission Metadata files.  defaults to "Metadata/{filepath}".  
+  # parsible variables are "version", "patient_id", and "filepath"
+  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
+  # modify to match the file organization under the root path.
+  pattern = "{version:w}/Metadata/{filepath}"
+
 ```
 
 
