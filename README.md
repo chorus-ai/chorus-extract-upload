@@ -1,6 +1,31 @@
 # chorus-extract-upload
 Scripts and tools for organizing uploads to the CHoRUS central data repository
 
+## IMPORTANT UPDATE 5/2/2025
+Please note that due to recent CHoRUS cloud network configuration changes, previous `config.toml` files need to be updated to reflect the new container name, the new storage account name.
+
+SAS tokens can be retrieved using a new process using site-specific 1Password URLs.  Please see "Getting Azure credential" section below.
+
+For new users, please follow the instructions below.
+
+For existing users, the changes are in the following sections of the `config.toml` file.
+
+```
+[journal]
+path : add "-temp" suffix to container name:  e.g. "az://emory/journal.db" to "az://emory-temp/journal.db"
+azure_account_name : "choruspilotstorage" -> "mghb2ailanding"
+azure_sas_token : retrieve using the 1password process.
+
+[central_path]
+path : add "-temp" suffix to container name:  e.g. "az://emory" to "az://emory-temp"
+Azure_container : add "-temp" suffix to container name:  e.g. "emory" to "emory-temp"
+azure_account_name : "choruspilotstorage" -> "mghb2ailanding"
+azure_sas_token : retrieve using the 1password process.
+```
+
+Also, previous change in `/etc/hosts` is no longer needed.  Please see step 4 below for instruction of undoing that change.
+
+
 ## Site-Specific Upload Environments
 
 | SITE | Upload Environment |
@@ -43,7 +68,7 @@ source {venv_directory}/bin/activate
 
 pip install flit
 ```
-> **Note**: on Windows, the command to activate python virtual environmnet is `{venv_directory}\Scripts\activate.bat`
+> **Note**: on Windows, the command to activate python virtual environment is `{venv_directory}\Scripts\activate.bat`
 
 
 2. Get the software:
@@ -66,29 +91,33 @@ flit install --symlink
 ```
 which allows changes in the code directory to be immediately reflected in the python environment.
 
-4. Configure /etc/hosts:
-You need to modify the `/etc/hosts` file on the system from which you will be running the upload tool.
+4. Configure /etc/hosts: 
+The `/etc/hosts` modification that were previously required is no longer required for the `chorus-upload` tool. If you have previously added the following entry to your `/etc/hosts` file:
 
-You will need root access to edit this file.  Add the following to the file:
 ```
 172.203.106.139             choruspilotstorage.blob.core.windows.net
 ```
 
-If this is not configured, you may see error in AZ CLI like so:
+please remove it to avoid potential conflicts or issues. 
+
+On Linux or macOS, you can edit the `/etc/hosts` file using a text editor with root privileges:
 
 ```
-The request may be blocked by network rules of storage account. Please check network rule set using 'az storage account show -n accountname --query networkRuleSet'.
-If you want to change the default action to apply when no rule matches, please use 'az storage account update'.
+sudo nano /etc/hosts
 ```
 
-And with the built-in azure python library:
+Locate the line containing `172.203.106.139 choruspilotstorage.blob.core.windows.net` and delete it. Save the file and exit the editor.
+
+On Windows, the equivalent file is located at:
+
 ```
-HttpResponseError: Operation returned an invalid status 'This request is not authorized to perform this operation.'
-ErrorCode:AuthorizationFailure
+C:\Windows\System32\drivers\etc\hosts
 ```
 
+Open the file in a text editor with Administrator privileges, locate the same line, and remove it. Save the file and close the editor.
 
-On windows, the `/etc/hosts` file equivalent `C:\Windows\system32\drivers\etc\hosts`.   Administrator privilege is needed to edit this file.
+After making these changes, no further `/etc/hosts` configuration is necessary for the tool to function correctly.
+
 
 > **Optional**
 > 5. AZ CLI installation (only when using `chorus-upload` generated azcli scripts):
@@ -114,9 +143,21 @@ export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
 
 ### Getting Azure credential
 
-For users with CHoRUS cloud storage access via the Azure Portal, please generate a sas token for your container.  If you do not have access, please reach out to a member of the CHoRUS central cloud team.
+**Using 1Password for SAS Token Retrieval**
 
-From the Azure Portal, navigate to `Storage Account` / `Containers`, and select your DGS container.  Please make note of the account name (should be `choruspilotstorage`) and the container name (should be a short name for your institution).  In the left menu, select `Settings` / `Shared access tokens`.  Create a new SAS token with `Read`, `Add`, `Create`, `Write`, `Move`, `Delete`, and `List` enabled (or just select all the options).  The expiration of the SAS token is recommended to be 1 month from the creation date.  Copy the SAS token string and save it in a secure location.  The SAS token will be used by the `chorus-upload` tool. 
+For institutions using 1Password to manage Azure credentials, follow these steps to retrieve your SAS token:
+
+1. Open your institution-specific 1Password URL in a web browser. The URL should be provided by your CHoRUS administrator.
+2. Log in to 1Password using your credentials.
+3. Search for the entry labeled with your institution's name and "Azure SAS Token."
+4. Copy the SAS token value from the entry.
+5. Paste the SAS token into the `azure_sas_token` field in your `config.toml` file.
+
+Ensure the SAS token is stored securely and not shared publicly. If you encounter any issues, contact your CHoRUS administrator for assistance.
+
+~~For users with CHoRUS cloud storage access via the Azure Portal, please generate a sas token for your container.  If you do not have access, please reach out to a member of the CHoRUS central cloud team.~~
+
+~~From the Azure Portal, navigate to `Storage Account` / `Containers`, and select your DGS container.  Please make note of the account name (should be `mghb2ailanding`) and the container name (should be a short name for your institution).  In the left menu, select `Settings` / `Shared access tokens`.  Create a new SAS token with `Read`, `Add`, `Create`, `Write`, `Move`, `Delete`, and `List` enabled (or just select all the options).  The expiration of the SAS token is recommended to be 1 month from the creation date.  Copy the SAS token string and save it in a secure location.  The SAS token will be used by the `chorus-upload` tool.~~
 
 If you are transferring files from a cloud account to CHoRUS, please refer to your institution's documentation to retrieve credentials for other storage clouds.  For a list of supported authentication mechanisms for each tested cloud providers, please see the `config.toml.template` file.
 
@@ -141,10 +182,10 @@ patient_first = true
 
 [journal]
 # REQUIRED.  location of the journal file.  defaults to chorus cloud storage.
-path = "az://emory/journal.db"
+path = "az://emory-temp/journal.db"
 
 # REQUIRED if journal is in azure cloud.
-azure_account_name = "choruspilotstorage"
+azure_account_name = "mghb2ailanding"
 
 # REQUIRED if journal is in azure cloud.
 azure_sas_token = "sastoken"
@@ -156,12 +197,12 @@ local_path = "journal.db"
 # specify the central (target) container/path, to which files are uploaded.  
 # This is also the default location for the journal file
 # REQUIRED
-path = "az://emory/"
+path = "az://emory-temp/"
 
 # REQUIRED
-azure_container = "emory"
+azure_container = "emory-temp"
 # REQUIRED azure account credentials are specified as one or more of the following.
-azure_account_name = "choruspilotstorage"
+azure_account_name = "mghb2ailanding"
 # REQUIRED azure account credentials are specified as one or more of the following.
 azure_sas_token = "sastoken"
 
