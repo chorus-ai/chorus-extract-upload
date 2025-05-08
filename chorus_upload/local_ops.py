@@ -333,7 +333,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     status = myargs[8]
                     rlpath = myargs[1]
                     if status == "ERROR1":
-                        print("ERROR: Multiple active files with that path - journal is not consistent", relpath)
+                        print("ERROR: Multiple active files with that path - journal is not consistent", rlpath)
                     elif status == "ERROR2":
                         print("ERROR: File found but no metadata.", rlpath)
                     elif status == "ERROR3":
@@ -341,8 +341,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     elif status == "ERROR4":
                         print("ERROR: File does not fit pattern.", rlpath)
                     elif status == "KEEP":
-                        if verbose:
-                            print(f"INFO: {status} {rlpath}")
+                        #if verbose:
+                        #    print(f"INFO: {status} {rlpath}")
                         del modality_files_to_inactivate[rlpath]
                     elif status == "ADDED":
                         if verbose:
