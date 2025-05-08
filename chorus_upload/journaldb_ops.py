@@ -384,40 +384,40 @@ class CommandHistoryDispatcher:
     
     @classmethod
     def create_command_history_table(cls, database_name: str):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             CommandHistoryTableV1.create_command_history_table(database_name)
-        elif version == 2:
+        elif dbver == 2:
             CommandHistoryTableV2.create_command_history_table(database_name)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def insert_command_history_entry(cls, database_name: str, params: tuple) -> int:
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return CommandHistoryTableV1.insert_command_history_entry(database_name, params)
-        elif version == 2:
+        elif dbver == 2:
             return CommandHistoryTableV2.insert_command_history_entry(database_name, params)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def get_command_history(cls, database_name: str):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return CommandHistoryTableV1.get_command_history(database_name)
-        elif version == 2:
+        elif dbver == 2:
             return CommandHistoryTableV2.get_command_history(database_name)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def update_command_completion(cls, database_name: str, command_id:int, duration:float):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return CommandHistoryTableV1.update_command_completion(database_name, command_id, duration)
-        elif version == 2:
+        elif dbver == 2:
             return CommandHistoryTableV2.update_command_completion(database_name, command_id, duration)
         else:
             raise ValueError("Invalid version number")
@@ -450,88 +450,88 @@ class JournalDispatcher:
     
     @classmethod
     def create_journal_table(cls, database_name: str):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             JournalTableV1.create_journal_table(database_name)
-        elif version == 2:
+        elif dbver == 2:
             JournalTableV2.create_journal_table(database_name)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def insert_journal_entries(cls, database_name: str, params: list) -> int:
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.insert_journal_entries(database_name, params)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.insert_journal_entries(database_name, params)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def inactivate_journal_entries(cls, database_name: str, invalidate_time: int, file_states: list):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.inactivate_journal_entries(database_name, invalidate_time, file_states)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.inactivate_journal_entries(database_name, invalidate_time, file_states)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def mark_as_uploaded_with_duration(cls, database_name: str, update_args: list):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.mark_as_uploaded_with_duration(database_name, update_args)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.mark_as_uploaded_with_duration(database_name, update_args)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def mark_as_uploaded(cls, database_name: str, version: str, upload_args: list):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.mark_as_uploaded(database_name, version, upload_args)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.mark_as_uploaded(database_name, version, upload_args)
         
     @classmethod
     def get_latest_version(cls, database_name: str):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.get_latest_version(database_name)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.get_latest_version(database_name)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod   
     def get_files_with_meta(cls, database_name: str, version: str, modalities: list, **kwargs):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.get_files_with_meta(database_name, version, modalities, **kwargs)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.get_files_with_meta(database_name, version, modalities, **kwargs)
         else:
             raise ValueError("Invalid version number")
     
     @classmethod
     def get_files(cls, database_name: str, version: str, modalities: list, **kwargs):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.get_files(database_name, version, modalities, **kwargs)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.get_files(database_name, version, modalities, **kwargs)
         else:
             raise ValueError("Invalid version number")
 
     @classmethod
     def get_versions(cls, database_name: str):
-        version = cls._get_version(database_name)
-        if version == 1:
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
             return JournalTableV1.get_versions(database_name)
-        elif version == 2:
+        elif dbver == 2:
             return JournalTableV2.get_versions(database_name)
         else:
             raise ValueError("Invalid version number")
