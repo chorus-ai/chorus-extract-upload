@@ -116,8 +116,8 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                 futures = []
 
                 for relpath in paths:
-                    if verbose:
-                        print("INFO: scanning ", relpath)
+                    #if verbose:
+                    #    print("INFO: scanning ", relpath)
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              {}, 
                                              compiled_pattern, None if version_in_pattern else new_version, **{'lock': lock})
@@ -130,7 +130,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                     status = myargs[8]
                     if status in ["ADDED", "MOVED", "UPDATED"]:
                         if verbose:
-                            print("INFO: ADDED ", rlpath)
+                            print(f"INFO: {status} {rlpath}")
                         else:
                             print(".", end="", flush=True)
                         all_args.append(myargs)
@@ -299,6 +299,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                                                            version = None, 
                                                            modalities = [modality], 
                                                            **{'active': True} )
+        print(f"INFO: acivefiletuples: count {len(activefiletuples)}")
 
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
         modality_files_to_inactivate = {}
@@ -314,8 +315,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 futures = []
 
                 for relpath in paths:
-                    if verbose:
-                        print("INFO: scanning ", relpath)
+                    #if verbose:
+                    #    print("INFO: scanning ", relpath)
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              modality_files_to_inactivate, 
                                              compiled_pattern, journal_version if not version_in_pattern else None, **{'lock': lock})
@@ -336,15 +337,15 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     elif status == "ERROR4":
                         print("ERROR: File does not fit pattern.", rlpath)
                     elif status == "KEEP":
+                        #if verbose:
+                        #    print(f"INFO: no change {rlpath}")
                         del modality_files_to_inactivate[myargs[1]]
                     else:
                         if verbose:
-                            if status == "MOVED":
-                                print("INFO: COPIED/MOVED ", rlpath)
-                            elif status == "UPDATED":
-                                print("INFO: UPDATED ", rlpath)
-                            elif status == "ADDED":
-                                print("INFO: ADDED ", rlpath)
+                            if status in ["MOVED", "UPDATED", "ADDED"]:
+                                print(f"INFO: {status} {rlpath}")
+                            else:
+                                print(f"INFO: unknown status:  {status}, {rlpath}")
                         all_insert_args.append(myargs)
             
                     # back up only on upload
