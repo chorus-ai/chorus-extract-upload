@@ -285,6 +285,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     all_insert_args = []
     all_del_args = []
     total_count = 0
+    total_deleted = 0
     for modality in modalities:
         start = time.time()
         
@@ -309,10 +310,13 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             else:
                 modality_files_to_inactivate[fpath].append((fid, size, modtime, md5, uploadtime, ver))
 
+
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             lock = threading.Lock()
             for paths in root.get_files_iter(pattern, page_size = page_size ):  # list of relative paths in posix format and in string form.
                 futures = []
+                modality_files_to_inactivate_in_iter = {}
+                
 
                 for relpath in paths:
                     #if verbose:
@@ -337,19 +341,55 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     elif status == "ERROR4":
                         print("ERROR: File does not fit pattern.", rlpath)
                     elif status == "KEEP":
-                        #if verbose:
-                        #    print(f"INFO: no change {rlpath}")
-                        del modality_files_to_inactivate[myargs[1]]
-                    else:
                         if verbose:
-                            if status in ["MOVED", "UPDATED", "ADDED"]:
-                                print(f"INFO: {status} {rlpath}")
-                            else:
-                                print(f"INFO: unknown status:  {status}, {rlpath}")
+                            print(f"INFO: {status} {rlpath}")
+                        del modality_files_to_inactivate[rlpath]
+                    elif status == "ADDED":
+                        if verbose:
+                            print(f"INFO: {status} {rlpath}")
                         all_insert_args.append(myargs)
-            
+                    elif status in ["MOVED", "UPDATED"]:
+                        if verbose:
+                            print(f"INFO: {status} {rlpath}")                        
+                        all_insert_args.append(myargs)
+                        # move the key-val pair to the new list.
+                        modality_files_to_inactivate_in_iter[rlpath] = modality_files_to_inactivate[rlpath]
+                        del modality_files_to_inactivate[rlpath]
+                    else:
+                        print(f"INFO: unknown status:  {status}, {rlpath}")
                     # back up only on upload
                     # backup_journal(databasename)
+                    
+                # remove the outdated items.
+                del_args_in_iter = []
+                for relpath, vals in modality_files_to_inactivate_in_iter.items():
+                    # check if there are non alphanumeric characters in the path
+                    # if so, print out the path
+                    if not (relpath.isalnum() or relpath.isascii()):
+                        print("INFO: Path contains non-alphanumeric characters:", relpath)
+
+                    for v in vals:
+                        if (relpath in paths):
+                            del_args_in_iter.append(("OUTDATED", v[0]))
+                            if verbose:
+                                print("INFO: OUTDATED  ", relpath)
+                        elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
+                            del_args_in_iter.append(("DELETED", v[0]))
+                            if verbose:
+                                print("INFO: DELETED  ", relpath)
+                # print("SQLITE update arguments ", all_del_args)
+                if (len(del_args_in_iter) > 0):
+                    # back up only on upload
+                    # backup_journal(databasename)
+                    
+                    deleted = JournalDispatcher.inactivate_journal_entries(databasename, 
+                                                        curtimestamp, 
+                                                        del_args_in_iter)
+                    
+                    total_deleted += deleted
+                    to_delete = len(del_args_in_iter)
+                    print(f"INFO: deleted/outdated {deleted} of {to_delete} from journal." )
+                    
                     
                 # save to database
                 update_count = JournalDispatcher.insert_journal_entries(databasename, all_insert_args)
@@ -363,7 +403,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
             # for all files that were active but aren't there anymore
             # invalidate in journal
-            
+            modality_files_to_inactivate.update(modality_files_to_inactivate_in_iter)
             for relpath, vals in modality_files_to_inactivate.items():
                 # check if there are non alphanumeric characters in the path
                 # if so, print out the path
@@ -389,11 +429,12 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 deleted = JournalDispatcher.inactivate_journal_entries(databasename, 
                                                        curtimestamp, 
                                                        all_del_args)
-                
+                total_deleted += deleted
                 to_delete = len(all_del_args)
                 print(f"INFO: deleted/outdated {deleted} of {to_delete} from journal." )
             
         del perf
+        print("INFO: Total added ", total_count, "and inactivated", total_deleted, " files in journal.db")
         print("INFO: Journal Update Elapsed time ", time.time() - start, "s")
 
 
