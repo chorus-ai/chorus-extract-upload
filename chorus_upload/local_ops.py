@@ -388,7 +388,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     
                     total_deleted += deleted
                     to_delete = len(del_args_in_iter)
-                    print(f"INFO: deleted/outdated {deleted} of {to_delete} from journal." )
+                    print(f"INFO: deleted/outdated {deleted} of {to_delete} from journal. total {total_deleted} inactivated" )
                     
                     
                 # save to database
