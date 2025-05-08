@@ -72,6 +72,18 @@ def generateFirstFiles():
         with open(outputfilepath, 'wb') as fout:
             fout.write(os.urandom(fileSizeInBytes)) 
             
+
+    # Metadata directory
+    personwfdir = os.path.join(initpushdir, "Metadata")
+    os.makedirs(personwfdir, exist_ok=True)
+    
+    for filenum in range(14):
+        fileSizeInBytes = 2**random.randint(minfileSizeInLog2Bytes, maxfileSizeInLog2Bytes)
+        outputfilename = str(filenum) + ".txt"
+        outputfilepath = os.path.join(personwfdir, outputfilename)
+        with open(outputfilepath, 'wb') as fout:
+            fout.write(os.urandom(fileSizeInBytes)) 
+
             
 def generateUpdate():
     # now do the same, but  make a new push that selectively keeps some files 

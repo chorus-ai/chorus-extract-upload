@@ -39,7 +39,7 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
         
 # compile a regex for extracting person id from waveform and iamge paths
 # the personid is the first part of the path, followed by the modality, then the rest of the path
-# PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images|OMOP)/.*", re.IGNORECASE)
+# PERSONID_REGEX = re.compile(r"([^/:]+)/(Waveforms|Images|OMOP|Metadata)/.*", re.IGNORECASE)
 
 # get the file pattern from the modality config or use default
 def _get_modality_pattern(modality:str, modality_configs:dict):
@@ -56,6 +56,8 @@ def _get_modality_pattern(modality:str, modality_configs:dict):
                 pattern = "{patient_id:w}/OMOP/{filepath}"
             else:
                 pattern = "OMOP/{filepath}"
+        elif (modality.lower() == "metadata"):
+            pattern = "Metadata/{filepath}"
         else:
             pattern = "{patient_id:w}/" + modality + "/{filepath}"
     return pattern
@@ -70,7 +72,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
 
     Args:
         root (FileSystemHelper): The root directory to generate the journal for.
-        modalities (list[str], optional): The subdirectories to include in the journal. Defaults to ['Waveforms', 'Images', 'OMOP'].
+        modalities (list[str], optional): The subdirectories to include in the journal. Defaults to ['Waveforms', 'Images', 'OMOP', 'Metadata'].
         databasename (str, optional): The name of the database to store the journal. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
@@ -125,13 +127,15 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                     myargs = future.result()
                     perf.add_file(myargs[4])
                     rlpath = myargs[1]
-                    status = myargs[7]
-                    if verbose and status == "ADDED":
-                        print("INFO: ADDED ", rlpath)
-                    else:
-                        print(".", end="", flush=True)
-                        
-                    all_args.append(myargs)
+                    status = myargs[8]
+                    if status in ["ADDED", "MOVED", "UPDATED"]:
+                        if verbose:
+                            print("INFO: ADDED ", rlpath)
+                        else:
+                            print(".", end="", flush=True)
+                        all_args.append(myargs)
+                    elif status == "ERROR4":                    
+                        print("INFO: File does not fit pattern.", rlpath)                        
 
                 insert_count = JournalDispatcher.insert_journal_entries(databasename, all_args)
                 
@@ -155,9 +159,14 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     
     # first item is personid.
     parsed = compiled_pattern.parse(relpath)
-    personid = parsed.named.get("patient_id", None)
-    version = version if version is not None else parsed.named.get("version", None)
-
+    if parsed is not None:
+        personid = parsed.named.get("patient_id", None)
+        version = version if version is not None else parsed.named.get("version", None)
+        # print("DEBUG: Parsed ", relpath, " person id ", personid, "version", version)
+    else:
+        # print("Info: pattern not matched. skipping ", relpath)
+        return (None, relpath, modality, None, 0, None, curtimestamp, None, "ERROR4", None, None)
+        
     # matched = PERSONID_REGEX.match(relpath)
     # personid = matched.group(1) if matched else None
     
@@ -168,10 +177,10 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
         # There should only be 1 active file according to the path in a well-formed 
         if (len(results) > 1):
             # print("ERROR: Multiple active files with that path - journal is not consistent")
-            return (personid, relpath, modality, None, None, None, curtimestamp, None, "ERROR1", None, None)
+            return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR1", None, None)
         if (len(results) == 0):
             # print("ERROR: File found but no metadata.", relpath)
-            return (personid, relpath, modality, None, None, None, curtimestamp, None, "ERROR2", None, None)
+            return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR2", None, None)
         
         if len(results) == 1:
             (oldfileid, oldsize, oldmtime, oldmd5, oldsync, oldversion) = results[0]
@@ -243,7 +252,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
     Args:
         root (FileSystemHelper): The root directory to search for files.
-        modalities (list[str], optional): The subdirectories to search for files. Defaults to ['Waveforms', 'Images', 'OMOP'].
+        modalities (list[str], optional): The subdirectories to search for files. Defaults to ['Waveforms', 'Images', 'OMOP', 'Metadata'].
         databasename (str, optional): The name of the journal database. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
@@ -258,7 +267,9 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     journal_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
     if amend: # get the last version
         journal_version = JournalDispatcher.get_latest_version(database_name=databasename)
-    
+        if journal_version is None:
+            print("ERROR: amend but there is not an existing version")
+
     perf = perf_counter.PerformanceCounter()
     
     # check if journal table exists.
@@ -322,6 +333,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                         print("ERROR: File found but no metadata.", rlpath)
                     elif status == "ERROR3":
                         print("ERROR: File size is different but modtime is the same.", rlpath)
+                    elif status == "ERROR4":
+                        print("ERROR: File does not fit pattern.", rlpath)
                     elif status == "KEEP":
                         del modality_files_to_inactivate[myargs[1]]
                     else:
@@ -551,7 +564,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
 
 # if version is specified, then it has priority over what's in the local_path string.
 def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Parser, modality:str, 
-                                    omop_per_patient:bool = False):
+                                    omop_per_patient:bool = False, patient_centric: bool = True):
     """
     Convert a local path to a central path using the pattern.
 
@@ -564,15 +577,31 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
         str: The central path, including version.
 
     """
-    if modality.lower() == "waveforms":
-        out_pattern = "{patient_id}/Waveforms/{filepath}"
-    elif modality.lower() == "images":
-        out_pattern = "{patient_id}/Images/{filepath}"
-    elif modality.lower() == "omop":
-        if omop_per_patient:
-            out_pattern = "{patient_id}/OMOP/{filepath}"
-        else:
-            out_pattern = "OMOP/{filepath}"
+    if patient_centric:
+    
+        if modality.lower() == "waveforms":
+            out_pattern = "{patient_id}/Waveforms/{filepath}"
+        elif modality.lower() == "images":
+            out_pattern = "{patient_id}/Images/{filepath}"
+        elif modality.lower() == "omop":
+            if omop_per_patient:
+                out_pattern = "{patient_id}/OMOP/{filepath}"
+            else:
+                out_pattern = "OMOP/{filepath}"
+        elif modality.lower() == "metadata":
+            out_pattern = "Metadata/{filepath}"
+    else:
+        if modality.lower() == "waveforms":
+            out_pattern = "Waveforms/{patient_id}/{filepath}"
+        elif modality.lower() == "images":
+            out_pattern = "Images/{patient_id}/{filepath}"
+        elif modality.lower() == "omop":
+            if omop_per_patient:
+                out_pattern = "OMOP/{patient_id}/{filepath}"
+            else:
+                out_pattern = "OMOP/{filepath}"
+        elif modality.lower() == "metadata":
+            out_pattern = "Metadata/{filepath}"
     
     parsed = in_compiled_pattern.parse(local_path)
     if parsed is None:
