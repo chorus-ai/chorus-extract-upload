@@ -106,7 +106,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         pattern = _get_modality_pattern(modality, kwargs.get("modality_configs", {}))
         version_in_pattern = ("{version:w}" in pattern) or ("{version}" in pattern)
         compiled_pattern = parse.compile(pattern)
-        
+       
         total_count = 0
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             lock = threading.Lock()
@@ -189,7 +189,7 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
             meta = FileSystemHelper.get_metadata(root = root.root, path = relpath, with_metadata = True, with_md5 = False, **kwargs)
             filesize = meta['size']
             modtimestamp = meta['modify_time_us']
-            
+        
             # if old size and new size, old mtime and new mtime are same (name is already matched)
             # then same file, skip rest.
             if (oldmtime == modtimestamp):
@@ -310,6 +310,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             else:
                 modality_files_to_inactivate[fpath].append((fid, size, modtime, md5, uploadtime, ver))
 
+        modality_files_to_inactivate_rdonly = dict(modality_files_to_inactivate)
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             lock = threading.Lock()
@@ -322,7 +323,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     #if verbose:
                     #    print("INFO: scanning ", relpath)
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
-                                             modality_files_to_inactivate, 
+                                             modality_files_to_inactivate_rdonly, 
                                              compiled_pattern, journal_version if not version_in_pattern else None, **{'lock': lock})
                     futures.append(future)
                 
@@ -403,7 +404,6 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
             # for all files that were active but aren't there anymore
             # invalidate in journal
-            modality_files_to_inactivate.update(modality_files_to_inactivate_in_iter)
             for relpath, vals in modality_files_to_inactivate.items():
                 # check if there are non alphanumeric characters in the path
                 # if so, print out the path

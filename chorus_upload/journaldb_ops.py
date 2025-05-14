@@ -35,16 +35,16 @@ class SQLiteDB:
         
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
-                #print(f"SELECT {fields} FROM {table_name} {where_str}")
                 res = cur.execute(f"SELECT {fields} FROM {table_name} {where_str}")
                 if (count is None) or (count == 0):
                     # get all
-                    return res.fetchall()
+                    vals = res.fetchall()
                 elif count == 1:
-                    return res.fetchone()
+                    vals = res.fetchone()
                 else:
-                    return res.fetchmany(count)
-                
+                    vals = res.fetchmany(count)
+        return vals        
+
     @classmethod
     def query_with_left_join(cls,
                         database_name: str,
@@ -83,16 +83,16 @@ class SQLiteDB:
 
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
-                #print(f"SELECT {fields} FROM {table_name} {join_clause} {where_str}")
                 res = cur.execute(f"SELECT {fields} FROM {table_name} {join_clause} {where_str}")
+                
                 if (count is None) or (count == 0):
                     # get all
-                    return res.fetchall()
+                    vals = res.fetchall()
                 elif count == 1:
-                    return res.fetchone()
+                    vals = res.fetchone()
                 else:
-                    return res.fetchmany(count)
-                
+                    vals = res.fetchmany(count)
+        return vals
 
     # column_types is a list of tuples of form (column_name, column_type, column property)
     # index_on is a list of column names
@@ -324,8 +324,8 @@ class SQLiteDB:
     def get_max_value(cls, database_name: str, table_name: str, column_name: str):
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
-                return cur.execute(f"SELECT MAX({column_name}) FROM {table_name}").fetchone()[0]
-
+                val = cur.execute(f"SELECT MAX({column_name}) FROM {table_name}").fetchone()[0]
+        return val
     @classmethod
     def get_unique_values(cls, 
                           database_name: str, 
@@ -337,11 +337,12 @@ class SQLiteDB:
                 res = cur.execute(f"SELECT DISTINCT {column_name} FROM {table_name}")
                 if (count is None) or (count == 0):
                     # get all
-                    return res.fetchall()
+                    vals = res.fetchall()
                 elif count == 1:
-                    return res.fetchone()
+                    vals = res.fetchone()
                 else:
-                    return res.fetchmany(count)
+                    vals = res.fetchmany(count)
+        return vals
 
     @classmethod
     def get_row_count(cls,
@@ -349,8 +350,8 @@ class SQLiteDB:
                       table_name: str):
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
-                return cur.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-
+                val = cur.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
+        return val
         
     @classmethod
     def table_exists(cls, database_name: str, table_name: str ) -> bool:
@@ -1167,7 +1168,7 @@ class JournalTableV2:
                         join_criteria=join_criteria,
                         where_clause = where_clause,
                         count = count)
-        
+
         # create a generator to yield the results
         return [(fid, "/".join([srcpath, fn]), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
 
@@ -1193,7 +1194,7 @@ class JournalTableV2:
                         join_criteria=join_criteria,
                         where_clause = where_clause,
                         count = count)
-        
+
         # create a generator to yield the results
         return [(fid, "/".join([srcpath, fn])) for (fid, srcpath, fn) in result]
     
