@@ -143,3 +143,35 @@ plot_violin(df3, 'size (MiB)', 'upload_throughput', bin_edges)
 
 
 # %%
+from chorus_upload.journaldb_ops import JournalDispatcher
+
+dbfile = "/home/tpan/src/chorus-extract-upload/journal.20250509.db"
+#%%
+image_listing = JournalDispatcher.get_files_with_meta(dbfile,
+                                                version = None, 
+                                                modalities = ["Images"], 
+                                                **{'active': True} )
+
+image_metadata = pd.DataFrame([{ 
+                   'path': fpath,
+                   'modality': mod,
+                   'ver': ver} for (fid, fpath, _, _, _, mod, _, ver, _) in image_listing])
+
+
+waveform_listing = JournalDispatcher.get_files_with_meta(dbfile,
+                                                version = None, 
+                                                modalities = ["Waveforms"], 
+                                                **{'active': True} )
+
+
+wv_metadata = pd.DataFrame([{
+                   'path': fpath,
+                   'modality': mod,
+                   'ver': ver} for (fid, fpath, _, _, _, mod, _, ver, _) in waveform_listing])
+
+#%%
+image_metadata.to_parquet("/home/tpan/src/chorus-extract-upload/images_20250509.parquet", engine='fastparquet', index = False)
+wv_metadata.to_parquet("/home/tpan/src/chorus-extract-upload/waveforms_20250509.parquet", engine='fastparquet', index = False)
+
+
+# %%
