@@ -120,19 +120,20 @@ class SQLiteDB:
                     cur.execute(f"CREATE INDEX IF NOT EXISTS {table_name}_idx ON {table_name} ({indexes})")
             conn.commit()
         
-    # create a lookup table.  uses rowid as the id.
+    # create a lookup table.  
     @classmethod
     def create_lookup_table(cls, database_name: str, table_name: str, column_name: str):
         SQLiteDB.create_table(
             database_name = database_name,
             table_name = table_name, 
             column_types = [
-                (f"{column_name}", "TEXT", "PRIMARY KEY"), # matches the cloud directory. required
+                ("id", "INTEGER", "PRIMARY KEY AUTOINCREMENT"), 
+                (f"{column_name}", "TEXT", "UNIQUE"), # matches the cloud directory. required
                 ],
             foreign_keys=None,
             index_on = [column_name, ])
 
-    # insert and retrieve lookup table value, uses rowid as the id.
+    # insert and retrieve lookup table value,
     @classmethod
     def insert_lookup_table(cls, database_name: str, table_name: str, column_name: str, lookup: set):
         # if lookup is empty, return the whole lookup table.
@@ -155,12 +156,12 @@ class SQLiteDB:
                 where_clause = column_name + " in (" + ",".join([f"'{val}'" for val in batch]) + ")"
                 value_ids.extend(SQLiteDB.query(database_name = database_name,
                                                 table_name = table_name,
-                                                columns = ['rowid', column_name],
+                                                columns = ['id', column_name],
                                                 where_clause = where_clause))
         else:
             value_ids = SQLiteDB.query(database_name = database_name,
                                         table_name = table_name,
-                                        columns = ['rowid', column_name],
+                                        columns = ['id', column_name],
                                         where_clause = None)
         return {val: val_id for (val_id, val) in value_ids}
 
@@ -887,10 +888,10 @@ class JournalTableV2:
                 ("VERSION_ID", "INTEGER", "NOT NULL"), # matches the cloud directory. required
                 # ("STATE", "TEXT", ""),  # set but not used.  possible value ADDED, UPDATED, DELETED, OUTDATED, MOVED
                 ],
-            foreign_keys = [ ("SRC_PATH_ID", "srcpaths", "rowid"),
-                             ("MODALITY_ID", "modalities", "rowid"),
-                             ("UPLOAD_DT_ID", "uploads", "rowid"),
-                             ("VERSION_ID", "versions", "rowid")],
+            foreign_keys = [ ("SRC_PATH_ID", "srcpaths", "id"),
+                             ("MODALITY_ID", "modalities", "id"),
+                             ("UPLOAD_DT_ID", "uploads", "id"),
+                             ("VERSION_ID", "versions", "id")],
             index_on = None) # index on SRC_PATH_ID
                         
         if cls.profiling:
@@ -1155,10 +1156,10 @@ class JournalTableV2:
             ("uploads.UPLOAD_DT", "upload_dtstr"),
         ]
         join_criteria = [
-            ("srcpaths", "srcpaths.rowid", f"{cls.table_name}.SRC_PATH_ID"),
-            ("modalities", "modalities.rowid", f"{cls.table_name}.MODALITY_ID"),
-            ("versions", "versions.rowid", f"{cls.table_name}.VERSION_ID"),
-            ("uploads", "uploads.rowid", f"{cls.table_name}.UPLOAD_DT_ID"),
+            ("srcpaths", "srcpaths.id", f"{cls.table_name}.SRC_PATH_ID"),
+            ("modalities", "modalities.id", f"{cls.table_name}.MODALITY_ID"),
+            ("versions", "versions.id", f"{cls.table_name}.VERSION_ID"),
+            ("uploads", "uploads.id", f"{cls.table_name}.UPLOAD_DT_ID"),
         ]
         where_clause = cls._make_where_clause_for_join(version, modalities, **kwargs)
             
@@ -1184,7 +1185,7 @@ class JournalTableV2:
             ("FILENAME", None),
         ]
         join_criteria = [
-            ("srcpaths", "srcpaths.rowid", f"{cls.table_name}.SRC_PATH_ID"),
+            ("srcpaths", "srcpaths.id", f"{cls.table_name}.SRC_PATH_ID"),
         ]
         where_clause = cls._make_where_clause_for_join(version, modalities, **kwargs)
             
