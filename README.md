@@ -177,8 +177,11 @@ supported_modalities = "OMOP,Images,Waveforms,Metadata"
 # in append mode, the source data is assumed to be new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  To delete a file, "file delete" has to be called.
 journaling_mode = "full"
 
+upload_method = "builtin"
+
 # flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
-patient_first = true
+
+auth_mode = "login"  # "login" or "sas_token"
 
 [journal]
 # REQUIRED.  location of the journal file.  defaults to chorus cloud storage.

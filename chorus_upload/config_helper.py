@@ -80,5 +80,5 @@ def get_site_config(config: dict, modality: str):
         raise ValueError(f"Site path for modality {modality} not found in config file")
     return out
 
-def get_auth_param(config: dict, key: str):
-    return config.get(key, None)
+def get_auth_param(config: dict, key: str, default: str = None):
+    return config.get(key, default)

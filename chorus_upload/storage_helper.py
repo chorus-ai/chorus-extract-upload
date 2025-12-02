@@ -68,6 +68,7 @@ import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 from cloudpathlib import S3Client
+from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from cloudpathlib import AzureBlobClient
 #     from cloudpathlib import GoogleCloudClient
@@ -132,11 +133,31 @@ def __make_az_client(auth_params: dict):
     # Azure format for account_url
         
     # parse out all the relevant argument
+    azure_auth_mode = config_helper.get_auth_param(auth_params, "auth_mode", "login")
+    
     azure_account_url = config_helper.get_auth_param(auth_params, "azure_account_url")
-    azure_sas_token = config_helper.get_auth_param(auth_params, "azure_sas_token")
+    azure_storage_proxy_url = config_helper.get_auth_param(auth_params, "azure_storage_proxy_url", default=None)
     azure_account_name = config_helper.get_auth_param(auth_params, "azure_account_name")
-    if azure_account_url is None:
-        azure_account_url = f"https://{azure_account_name}.blob.core.windows.net/?{azure_sas_token}" if azure_account_name and azure_sas_token else None
+    
+    if azure_account_url is None :
+        if azure_storage_proxy_url is None:
+            if azure_account_name is None:
+                raise ValueError("Azure account name must be specified if account url or storage proxy url is not specified")
+            else:
+                azure_account_url = f"https://{azure_account_name}.blob.core.windows.net"
+        else:
+            azure_account_url = azure_storage_proxy_url    
+    
+    if azure_auth_mode == "login":
+        # force the commandline login
+        # Use DefaultAzureCredential to pick up your Entra login session
+        credential = DefaultAzureCredential()
+    elif azure_auth_mode == "sas":
+        azure_sas_token = config_helper.get_auth_param(auth_params, "azure_sas_token")
+        azure_account_url = f"{azure_account_url}/?{azure_sas_token}" if azure_sas_token is not None else azure_account_url            
+    else:
+        raise ValueError("Unknown Azure auth_mode.  use 'login' or 'sas' " + str(azure_auth_mode))
+        
 
     # format for account url for client.  container is not discarded unlike stated.  so must use format like below.
     # example: 'https://{account_url}.blob.core.windows.net/?{sas_token}
@@ -161,15 +182,28 @@ def __make_az_client(auth_params: dict):
     # connection_verify = False, connection_cert = None
 
     if azure_account_url:
-        return AzureBlobClient(
-            blob_service_client = BlobServiceClient(
-                account_url=azure_account_url, 
-                connection_verify = False, 
-                connection_cert = None,
-                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                ),
-            file_cache_mode = FileCacheMode.cloudpath_object)
+        if azure_auth_mode == "login":
+            # use login credential
+            return AzureBlobClient(
+                blob_service_client = BlobServiceClient(
+                    account_url=azure_account_url, 
+                    credential=credential,
+                    connection_verify = False, 
+                    connection_cert = None,
+                    max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+                    max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                    ),
+                file_cache_mode = FileCacheMode.cloudpath_object)
+        elif azure_auth_mode == "sas":
+            return AzureBlobClient(
+                blob_service_client = BlobServiceClient(
+                    account_url=azure_account_url, 
+                    connection_verify = False, 
+                    connection_cert = None,
+                    max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+                    max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                    ),
+                file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
         # connection string specified, then use it
         return AzureBlobClient(

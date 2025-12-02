@@ -6,5 +6,6 @@ cloudpathlib==0.18.1
 cloudpathlib[azure]
 cloudpathlib[gs]
 cloudpathlib[s3]
+azure-identity==1.25.1
 tomli==2.0.1
 parse==1.20.2

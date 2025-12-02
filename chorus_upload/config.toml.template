@@ -32,6 +32,7 @@ journaling_mode = "full"
 
 # flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
 # patient_first = true
+auth_mode = "login"  # "login" or "sas_token"
 
 [journal]
 # REQUIRED.  location of the journal file.  defaults to chorus cloud storage.
@@ -41,7 +42,7 @@ path = "az://container/journal.db"
 # REQUIRED if journal is in azure cloud.
 azure_account_name = "account_name"
 
-# REQUIRED if journal is in azure cloud.
+# OPTIONAL. if journal is in azure cloud.
 azure_sas_token = "sastoken"
 
 # if "builtin" then azcli script will use chorus_upload.  DO NOT CHANGE
@@ -49,6 +50,9 @@ azure_sas_token = "sastoken"
 
 # local path for downloaded journal file.  default is "journal.db"
 local_path = "journal.db"
+
+azure_storage_proxy_url = "https://upload.chorus4ai.org"
+
 
 [central_path]
 # specify the central (target) container/path, to which files are uploaded.  
@@ -63,13 +67,15 @@ path = "az://container/"
 azure_container = "container"
 # REQUIRED azure account credentials are specified as one or more of the following.
 azure_account_name = "account_name"
-# REQUIRED azure account credentials are specified as one or more of the following.
+# OPTIONAL azure account credentials are specified as one or more of the following.
 azure_sas_token = "sastoken"
+# OPTIONAL proxy url that takes the place of https://{azure_account_name}.blob.core.windows.net
+azure_storage_proxy_url = "https://upload.chorus4ai.org"
 
 # Alternative authentication options.
 # azure_account_key = "account_key"
 # azure_connection_string = "connection_string"
-# azure_account_url = "account_url"
+azure_account_url = "account_url"
 
 [site_path]
 

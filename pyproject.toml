@@ -21,6 +21,7 @@ dependencies = [
     "pandas",
     "cloudpathlib == 0.18.1",
     "cloudpathlib[azure] == 0.18.1",
+    "azure-identity == 1.25.1",
     "tomli",
     "parse"
 ]
