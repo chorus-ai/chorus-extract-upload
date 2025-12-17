@@ -72,6 +72,7 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from cloudpathlib import AzureBlobClient
 #     from cloudpathlib import GoogleCloudClient
+from urllib.parse import urlparse, urlunparse
 
 AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
 
@@ -91,7 +92,7 @@ AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
 
 
 # internal helper to create the cloud client
-def __make_aws_client(auth_params: dict):
+def __make_aws_client(auth_params: dict) -> S3Client:
     # Azure format for account_url
     aws_session_token = config_helper.get_auth_param(auth_params, "aws_session_token")
     aws_profile = config_helper.get_auth_param(auth_params, "aws_profile")
@@ -129,25 +130,22 @@ def __make_aws_client(auth_params: dict):
     return S3Client(file_cache_mode = FileCacheMode.cloudpath_object)
 
 # internal helper to create the cloud client
-def __make_az_client(auth_params: dict):
+def __make_az_client(auth_params: dict) -> AzureBlobClient:
     # Azure format for account_url
         
     # parse out all the relevant argument
     azure_auth_mode = config_helper.get_auth_param(auth_params, "auth_mode", "login")
     
     azure_account_url = config_helper.get_auth_param(auth_params, "azure_account_url")
-    azure_storage_proxy_url = config_helper.get_auth_param(auth_params, "azure_storage_proxy_url", default=None)
-    azure_account_name = config_helper.get_auth_param(auth_params, "azure_account_name")
+    azure_account_name = config_helper.get_auth_param(auth_params, "azure_account_name", default=None)
     
     if azure_account_url is None :
-        if azure_storage_proxy_url is None:
-            if azure_account_name is None:
-                raise ValueError("Azure account name must be specified if account url or storage proxy url is not specified")
-            else:
-                azure_account_url = f"https://{azure_account_name}.blob.core.windows.net"
+        if azure_account_name is None:
+            raise ValueError("Azure account name must be specified if account url is not specified")
         else:
-            azure_account_url = azure_storage_proxy_url    
-    
+            # default account url for account not specified.
+            azure_account_url = f"https://{azure_account_name}.blob.core.windows.net"
+        
     if azure_auth_mode == "login":
         # force the commandline login
         # Use DefaultAzureCredential to pick up your Entra login session
@@ -165,11 +163,13 @@ def __make_az_client(auth_params: dict):
     # format for path:  az://{container}/...
     # note if container is specified in account_url, we will get duplicates.
     
-    azure_storage_connection_string = config_helper.get_auth_param(auth_params, "azure_storage_connection_string")
-    azure_account_key = config_helper.get_auth_param(auth_params, "azure_account_key")
-    if azure_storage_connection_string is None:
-        azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" if azure_account_name and azure_account_key else None 
-    
+    azure_storage_connection_string = config_helper.get_auth_param(auth_params, "azure_storage_connection_string", default=None)
+    azure_account_key = config_helper.get_auth_param(auth_params, "azure_account_key", default=None)
+    if azure_storage_connection_string is None and azure_account_name and azure_account_key:
+        azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" 
+    else:
+        azure_storage_connection_string = None
+        
     azure_storage_connection_string_env = os.environ.get("AZURE_STORAGE_CONNECTION_STRING") if "AZURE_STORAGE_CONNECTION_STRING" in os.environ.keys() else None
     
 
@@ -204,6 +204,16 @@ def __make_az_client(auth_params: dict):
                     max_single_put_size = AZURE_MAX_BLOCK_SIZE,
                     ),
                 file_cache_mode = FileCacheMode.cloudpath_object)
+    elif azure_storage_connection_string_env:
+        return AzureBlobClient(
+            blob_service_client = BlobServiceClient.from_connection_string(
+                conn_str = azure_storage_connection_string_env, 
+                connection_verify = False, 
+                connection_cert = None,
+                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                ),
+            file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
         # connection string specified, then use it
         return AzureBlobClient(
@@ -215,19 +225,15 @@ def __make_az_client(auth_params: dict):
                 max_single_put_size = AZURE_MAX_BLOCK_SIZE,
                 ), 
             file_cache_mode = FileCacheMode.cloudpath_object)
-    elif azure_storage_connection_string_env:
-        return AzureBlobClient(
-            blob_service_client = BlobServiceClient.from_connection_string(
-                conn_str = azure_storage_connection_string_env, 
-                connection_verify = False, 
-                connection_cert = None,
-                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                ),
-            file_cache_mode = FileCacheMode.cloudpath_object)
     else:
         raise ValueError("No viable Azure account info available to open connection")
         
+def __get_azure_internal_host(cloud_config:dict) -> Optional[str]:
+    azure_account_name = config_helper.get_auth_param(cloud_config.get("auth", {}), "azure_account_name", default=None)
+    if azure_account_name:
+        return f"{azure_account_name}.blob.core.windows.net"
+    else:
+        raise ValueError("Azure account name must be specified in the configuration toml file in each azure auth section.")
 
 # # internal helper to create the cloud client
 # def __make_gs_client(auth_params: dict):
@@ -241,19 +247,21 @@ def __make_az_client(auth_params: dict):
 #         raise ValueError("No viable Google application credentials to open connection")
 
 # internal helper to create the cloud client
-def _make_client(cloud_params:dict):
-    path_str = cloud_params["path"]
+def _make_client(cloud_config:dict):
+    
+    path_str = cloud_config.get("path", None)
+    cloud_params = cloud_config.get("auth", {})
     
     if (path_str.startswith("s3://")):
-        return __make_aws_client(cloud_params)
+        return __make_aws_client(cloud_params), None
     elif (path_str.startswith("az://")):
-        return __make_az_client(cloud_params)
+        return __make_az_client(cloud_params), __get_azure_internal_host(cloud_config)
     # elif (path_str.startswith("gs://")):
     #     return __make_gs_client(args, for_central = for_central)
     elif ("://" in path_str):
         raise ValueError("Unknown cloud storage provider.  Supports s3, az")
     else:
-        return None
+        return None, None
     
 
 
@@ -335,7 +343,7 @@ class FileSystemHelper:
             return str(p)
 
     
-    def __init__(self, path: Union[str, CloudPath, Path], client : Optional[Client] = None):
+    def __init__(self, path: Union[str, CloudPath, Path], client : Optional[Client] = None, **kwargs):
         """
         Initialize the StoragePath object.
 
@@ -351,6 +359,13 @@ class FileSystemHelper:
         # If no client, then environment variable, or default profile (s3) is used.            
         self.is_cloud = isinstance(self.root, CloudPath)
         # self.is_dir = self.root.is_dir()  what is the path is mean to be a directory but does not exist yet?  can't tell if it's a directory.
+        self.internal_host = kwargs.get("internal_host", None)
+                
+    def __str__(self):
+        return f"<client {self.client}, path {self.root}>"
+
+    def __repr__(self):
+        return f"<FileSystemHelper client={self.client} root={self.root!r} is_cloud={self.is_cloud}>"
                        
     @classmethod
     def _calc_file_md5(cls, curr: Union[CloudPath, Path] ):
@@ -635,7 +650,29 @@ class FileSystemHelper:
 
         if src_is_cloud:
             if dest_is_cloud:
-                src_file.copy(dest_file, force_overwrite_to_cloud=True)
+                src_uri = src_file.as_uri()
+                dest_uri = dest_file.as_uri()
+                
+                if src_uri.startswith("az://") and dest_uri.startswith("az://") and \
+                    (src_file.client.service_client == dest_file.client.service_client) :
+                    # src and dest are both azure blobs, and they share the same client.  use server side copy
+                    dest_service = dest_file.client.service_client
+                    dest_container = dest_service.get_container_client(dest_file.container)
+                    dest_blob_client = dest_container.get_blob_client(dest_file.blob)
+                    
+                    src_service = src_file.client.service_client
+                    src_container = src_service.get_container_client(src_file.container)
+                    src_blob_client = src_container.get_blob_client(src_file.blob)
+                    src_url = src_blob_client.url
+                    parsed_url = urlparse(src_url)
+                    internal_url = urlunparse(parsed_url._replace(netloc=self.internal_host))
+                    print(f"DEBUG: copying within azure from {src_url} via {internal_url} to {dest_blob_client.url}")
+                    # now copy from internal url
+                    dest_blob_client.start_copy_from_url(internal_url)
+                else:               
+                    src_file.copy(dest_file, force_overwrite_to_cloud=True)
+                
+                
             else:
                 src_file.download_to(dest_file)
         else:

@@ -2,6 +2,8 @@ import re
 from pathlib import Path
 import os
 
+import platform
+
 WINDOWS_STRINGS = {
     "eol": "\n",  # supposed to use "\n" reguardless of os.
     "var_start": "%",
@@ -33,6 +35,8 @@ def _write_auth_params(is_linux: bool, auth_mode: str, transport:str, url: str =
     # check sas vs login
     var_start = LINUX_STRINGS["var_start"] if is_linux else WINDOWS_STRINGS["var_start"]
     var_end = LINUX_STRINGS["var_end"] if is_linux else WINDOWS_STRINGS["var_end"]
+    set_var_quoted_start = LINUX_STRINGS["set_var_quoted_start"] if is_linux else WINDOWS_STRINGS["set_var_quoted_start"]
+    set_var_quoted_end = LINUX_STRINGS["set_var_quoted_end"] if is_linux else WINDOWS_STRINGS["set_var_quoted_end"]
     
     if transport == "azcli":
         if auth_mode == "sas":    
@@ -43,7 +47,7 @@ def _write_auth_params(is_linux: bool, auth_mode: str, transport:str, url: str =
             raise ValueError("Unknown auth_mode: " + auth_mode)
     elif transport == "azcopy":
         if auth_mode == "sas":    
-            return f"--account-name {var_start}account{var_end} --sas-token \"{var_start}sas_token{var_end}\"" 
+            return f"?{set_var_quoted_start}{var_start}sas_token{var_end}{set_var_quoted_end}" 
         elif auth_mode == "login":
             if url is not None:
                 suffix = ".".join(url.strip("/").split(".")[-2:])
@@ -60,6 +64,8 @@ def _write_auth_login(is_linux: bool, auth_mode: str, f, **kwargs):
     
     out_type = kwargs.get('out_type', '').lower()
     
+    is_wsl = "microsoft" in platform.release().lower() if is_linux else False
+    
     comment = LINUX_STRINGS["comment"] if is_linux else WINDOWS_STRINGS["comment"]
     eol = LINUX_STRINGS["eol"] if is_linux else WINDOWS_STRINGS["eol"]
     cmd_proc = LINUX_STRINGS["command_processor"] if is_linux else WINDOWS_STRINGS["command_processor"]
@@ -69,13 +75,13 @@ def _write_auth_login(is_linux: bool, auth_mode: str, f, **kwargs):
     set_var_quoted_end = LINUX_STRINGS["set_var_quoted_end"] if is_linux else WINDOWS_STRINGS["set_var_quoted_end"]
     
     dest_config = kwargs.get('dest_config', {})
-    account_name = dest_config.get('azure_account_name', '')
-    sas_token = dest_config.get('azure_sas_token', '')
     container = dest_config.get('azure_container', '')
     
     f.write(f"{comment} Destination azure credentials{eol}")
-    f.write(f"{set_var}account={account_name}{eol}")
     if auth_mode == "sas":
+        account_name = dest_config.get('azure_account_name', '')
+        sas_token = dest_config.get('azure_sas_token', '')
+        f.write(f"{set_var}account={account_name}{eol}")
         if not is_linux:
             f.write(f"{set_var_quoted} sas_token={set_var_quoted_start}{sas_token.replace("%", "%%")}{set_var_quoted_end}{eol}")
         else:                
@@ -89,15 +95,55 @@ def _write_auth_login(is_linux: bool, auth_mode: str, f, **kwargs):
         raise ValueError("Unknown auth_mode: " + auth_mode)
     
     if (out_type == "azcopy"):
-        f.write(f"{comment} azcopy login{eol}")
+        if is_wsl:
+            f.write(f"{comment} azcopy login (WSL){eol}")
+            f.write(f"{cmd_proc}keyctl session{eol}")
+        else:
+            f.write(f"{comment} azcopy login{eol}")
         f.write(f"{set_var}AZCOPY_AUTO_LOGIN_TYPE=DEVICE{eol}")
-        f.write(f"{cmd_proc}azcopy login{eol}")
+        f.write(f"{cmd_proc}az login --use-device-code{eol}")
+        f.write(f"{cmd_proc}azcopy login --login-type azcli{eol}")
         f.write(eol)
     elif (out_type == "azcli"):
         f.write(f"{comment} az cli login{eol}")
         f.write(f"{cmd_proc}az login --use-device-code{eol}")
         f.write(eol)
 
+def _write_auth_logout(is_linux: bool, auth_mode: str, f, **kwargs):
+    out_type = kwargs.get('out_type', '').lower()
+    
+    is_wsl = "microsoft" in platform.release().lower() if is_linux else False
+    
+    comment = LINUX_STRINGS["comment"] if is_linux else WINDOWS_STRINGS["comment"]
+    eol = LINUX_STRINGS["eol"] if is_linux else WINDOWS_STRINGS["eol"]
+    cmd_proc = LINUX_STRINGS["command_processor"] if is_linux else WINDOWS_STRINGS["command_processor"]
+    set_var = LINUX_STRINGS["set_var"] if is_linux else WINDOWS_STRINGS["set_var"]
+    set_var_quoted = LINUX_STRINGS["set_var_quoted"] if is_linux else WINDOWS_STRINGS["set_var_quoted"]
+    set_var_quoted_start = LINUX_STRINGS["set_var_quoted_start"] if is_linux else WINDOWS_STRINGS["set_var_quoted_start"]
+    set_var_quoted_end = LINUX_STRINGS["set_var_quoted_end"] if is_linux else WINDOWS_STRINGS["set_var_quoted_end"]
+    
+    dest_config = kwargs.get('dest_config', {})
+
+    
+    if auth_mode == "sas":
+        return
+    elif auth_mode != "login":
+        raise ValueError("Unknown auth_mode: " + auth_mode)
+    
+    if (out_type == "azcopy"):
+
+
+        f.write(f"{comment} azcopy logout{eol}")
+        f.write(f"{cmd_proc}azcopy logout{eol}")
+        f.write(f"{cmd_proc}az logout{eol}")
+        if is_wsl:
+            f.write(f"{cmd_proc}keyctl invalidate @s{eol}")
+        f.write(eol)
+    elif (out_type == "azcli"):
+        f.write(f"{comment} az cli logout{eol}")
+        f.write(f"{cmd_proc}az logout{eol}")
+        f.write(eol)
+    
 
 def _write_journal_download(is_linux: bool, auth_mode: str, f, **kwargs):
     out_type = kwargs.get('out_type', '').lower()
@@ -192,7 +238,7 @@ def _write_journal_download(is_linux: bool, auth_mode: str, f, **kwargs):
                 # if no remote journal, create a new local journal file
                 f.write("    type nul > " + var_start+"local_journal"+var_end + eol)
             else:
-                # check lock existentce
+                # check lock existence
                 f.write(set_var + "exists=`az storage blob exists " + auth_params + 
                         " --container-name " + var_start+"container"+var_end + 
                         " --name \"" + var_start+"cloud_journal"+var_end + "\" --output tsv`" + eol)
@@ -250,9 +296,8 @@ def _write_journal_download(is_linux: bool, auth_mode: str, f, **kwargs):
                 raise ValueError("Unknown auth_mode: " + auth_mode)
 
             dest_config = kwargs.get('dest_config', {})
-            account_name = dest_config.get('azure_account_name', '')
-            proxy_url = dest_config.get('azure_storage_proxy_url', 'https://upload.chorus4ai.org')
-            dest_url = "https://" + var_start+"account"+var_end + ".blob.core.windows.net" if proxy_url is None else proxy_url
+            dest_url = "https://" + var_start+"account"+var_end + ".blob.core.windows.net"
+            dest_url = dest_config.get('azure_account_url', dest_url)
             auth_params = _write_auth_params(is_linux, auth_mode, out_type, url=dest_url)
             
             # check if lock file exists.  if yes, end.           
@@ -265,10 +310,10 @@ def _write_journal_download(is_linux: bool, auth_mode: str, f, **kwargs):
             
                     
             if not is_linux:
-                f.write("azcopy list " + remote_lock_path + " " + auth_params + " | findstr /C:\"Name:\" >nul" + eol)
+                f.write("azcopy list " + remote_lock_path + " --location Blob " + auth_params + " | findstr /C:\"Name:\" >nul" + eol)
                 f.write("if " + var_start + "ERRORLEVEL" + var_end + " == 0 (" + eol)
             else:
-                f.write("if azcopy list " + remote_lock_path + " " + auth_params + " | grep -q \"Name:\"; then" + eol)
+                f.write("if azcopy list " + remote_lock_path + " --location Blob " + auth_params + " | grep -q \"Name:\"; then" + eol)
                 
             f.write("    echo Journal is locked.  Cannot continue." + eol)
             
@@ -283,14 +328,14 @@ def _write_journal_download(is_linux: bool, auth_mode: str, f, **kwargs):
 
             if not is_linux:
                 # check remote journal existence
-                f.write("azcopy list " + remote_journal_path + " " + auth_params + " | findstr /C:\"Name:\" >nul" + eol)
+                f.write("azcopy list " + remote_journal_path + " --location Blob " + auth_params + " | findstr /C:\"Name:\" >nul" + eol)
                 # set up the conditional
                 f.write("if not " + var_start + "ERRORLEVEL" + var_end + " == 0 (" + eol)
                 # if no remote journal, create a new local journal file
                 f.write("    type nul > " + var_start+"local_journal"+var_end + eol)
             else:
                 # check remote journal existentce
-                f.write("if ! azcopy list " + remote_journal_path + " " + auth_params + " | grep -q \"Name:\"; then" + eol)
+                f.write("if ! azcopy list " + remote_journal_path + " --location Blob " + auth_params + " | grep -q \"Name:\"; then" + eol)
                 # if no remote lock, create a new local journal file
                 f.write("    touch " + var_start+"local_journal"+var_end + eol)
             # upload as the lock file
@@ -359,17 +404,16 @@ def _write_file_upload(root:str, fn:str, info:dict, is_linux: bool, auth_mode: s
             raise ValueError("Unknown auth_mode: " + auth_mode)
         
         dest_config = kwargs.get('dest_config', {})
-        account_name = dest_config.get('azure_account_name', '')
-        proxy_url = dest_config.get('azure_storage_proxy_url', 'https://upload.chorus4ai.org')
-        dest_url = "https://" + var_start+"account"+var_end + ".blob.core.windows.net" if proxy_url is None else proxy_url
+        dest_url = "https://" + var_start+"account"+var_end + ".blob.core.windows.net"
+        dest_url = dest_config.get('azure_account_url', dest_url)
         
         auth_params = _write_auth_params(is_linux, auth_mode, out_type, url=dest_url)
         
         if (root.startswith("az://")):
             mod_config = kwargs.get('mod_config', {})
             mod_account_name = mod_config.get('azure_account_name', '')
-            mod_proxy_url = mod_config.get('azure_storage_proxy_url', 'https://upload.chorus4ai.org')
-            mod_url = "https://" + var_start+"mod_local_account"+var_end + ".blob.core.windows.net" if mod_proxy_url is None else mod_proxy_url
+            mod_url = f"https://{mod_account_name}.blob.core.windows.net"
+            mod_url = mod_config.get('azure_account_url', mod_url)
             
             mod_auth_params = _write_auth_params(is_linux, auth_mode, out_type, url=mod_url)
             f.write(testme + cmd_proc + "azcopy copy " + 
@@ -439,9 +483,8 @@ def _write_journal_upload(is_linux: bool, auth_mode: str, f, **kwargs):
             raise ValueError("Unknown auth_mode: " + auth_mode)
         
         dest_config = kwargs.get('dest_config', {})
-        account_name = dest_config.get('azure_account_name', '')
-        proxy_url = dest_config.get('azure_storage_proxy_url', "https://upload.chorus4ai.org")
-        dest_url = "https://" + var_start+"account"+var_end + ".blob.core.windows.net" if proxy_url is None else proxy_url
+        dest_url = "https://" + var_start+"account"+var_end + ".blob.core.windows.net"
+        dest_url = dest_config.get('azure_account_url', dest_url)
 
         auth_params = _write_auth_params(is_linux, auth_mode, out_type, url=dest_url)
         # check if lock file exists.  if yes, end.           
@@ -521,15 +564,8 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
         print("WARNING: Destination is not an azure path.  cannot generate azcli script, but can genearete a list of source files")
         out_type = "list"
     
-    account_name = dest_config.get('azure_account_name', '')
-        
-    if account_name is None or account_name == "":
-        print("ERROR: destination is not an azure path")
-        raise ValueError("Destination is not an azure path")
  
     auth_mode = dest_config.get('auth_mode', 'login').lower()
-    # sas_token = dest_config.get('azure_sas_token', '')
-    container = dest_config.get('azure_container', '')
     
     # track configuration file
     config_fn = kwargs.get('config_fn', '')
@@ -568,7 +604,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
         
         if (out_type != "azcli") and (out_type != "azcopy"):
             for _, (config, fninfos) in file_list.items():
-                root = config["path"]            
+                root = config_helper.get_path_str(config)            
                 filenames = ["/".join([root, fn]) for fn in fninfos.keys()]
                 if is_windows:
                     fns = [fn.replace("/", "\\") for fn in filenames]
@@ -709,3 +745,5 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             f.write(eol)
 
             _write_journal_upload(not is_windows, auth_mode, f, **kwargs)
+            
+            _write_auth_logout(not is_windows, auth_mode, f, **kwargs)

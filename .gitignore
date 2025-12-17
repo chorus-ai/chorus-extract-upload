@@ -4,3 +4,5 @@
 **/TestData
 **/*.db
 **/config*.toml
+
+tests/output

@@ -65,7 +65,10 @@ from script_generators import _write_files
 # TODO: process uploaded data in central
 # TODO: DONE add support to upload files in the submission directory: SUBMISSION/WAVEFORM_SUBMISSION.md
 # TODO: refactor script file generation to script_generators.py
-
+# TODO: support different journal transport methods.
+# TODO: support different upload methods.
+# TODO: change to require explicit checkout and checkin - other functions should work from journal.db.local file.
+# TODO: azcli needs account_name and should fail if that is not there...
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -124,7 +127,8 @@ def _update_journal(args, config, journal_fn):
     first = True
     for mod, mod_config in mod_configs.items():        
         # create the file system helper    
-        datafs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
+        client, internal_host =storage_helper._make_client(mod_config)
+        datafs = FileSystemHelper(config_helper.get_path_str(mod_config), client = client, internal_host = internal_host)
 
         print("Update journal ", journal_fn, " for ", mod)
         update_journal(datafs, modalities = [mod], 
@@ -160,8 +164,12 @@ def _select_files(args, config, journal_fn):
                                                    verbose=args.verbose, modality_configs = modality_configs)
             mod_config = config_helper.get_site_config(config, mod)
 
+            if mod_files is None:
+                print("No files found for modality ", mod)
+                continue
+
             for (version, files) in mod_files.items():
-                print("files for version: ", version, " root at ", mod_config["path"], " for ", mod)
+                print("files for version: ", version, " root at ", config_helper.get_path_str(mod_config), " for ", mod)
                 print("\n".join(files))
     else:
         # generate a script for uploading files.
@@ -199,7 +207,8 @@ def _mark_as_uploaded(args, config, journal_fn):
     file = args.file if 'file' in vars(args) else None
     filelist = args.file_list if 'file_list' in vars(args) else None
     central_config = config_helper.get_central_config(config)
-    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
+    client, internal_host =storage_helper._make_client(central_config)
+    centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     journal_f = args.local_journal if 'local_journal' in vars(args) else journal_fn
     
@@ -243,14 +252,16 @@ def _upload_files(args, config, journal_fn):
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
 
     central_config = config_helper.get_central_config(config)
-    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
+    client, internal_host =storage_helper._make_client(central_config)
+    centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
     page_size = config_helper.get_config(config).get('page_size', 1000)
     
     remaining = max_upload_count
     for mod, mod_config in mod_configs.items():
-        sitefs = FileSystemHelper(mod_config["path"], client = _make_client(mod_config))
+        client, internal_host =storage_helper._make_client(mod_config)
+        sitefs = FileSystemHelper(config_helper.get_path_str(mod_config), client = client, internal_host = internal_host)
         _, remaining = upload_ops.upload_files_parallel(sitefs, centralfs, modalities = [mod], databasename = journal_fn, max_num_files = remaining, 
                                                     verbose = args.verbose, num_threads = nthreads, page_size = page_size, modality_configs = mod_configs)
         if (remaining is not None) and (remaining <= 0):
@@ -267,7 +278,8 @@ def _verify_files(args, config, journal_fn):
     compiled_patterns = { mod: parse.compile(_get_modality_pattern(mod, mod_configs)) for mod in mods }      
 
     central_config = config_helper.get_central_config(config)
-    centralfs = FileSystemHelper(central_config["path"], client = _make_client(central_config))
+    client, internal_host =storage_helper._make_client(central_config)
+    centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
     page_size = config_helper.get_config(config).get('page_size', 1000)
@@ -329,11 +341,11 @@ if __name__ == "__main__":
     parser_list.set_defaults(func = _list_versions)
     
     parser_checkout = journal_subparsers.add_parser("checkout", help = "checkout a cloud journal file and create a local copy named journal.db")
-    parser_checkout.add_argument("--local-journal", help="local filename for the journal file", required=False)
+    parser_checkout.add_argument("--local-journal", help="local filename for the journal file, overrides config file", required=False)
     # parser_checkout.set_defaults(func = _checkout_journal)
     
     parser_checkin = journal_subparsers.add_parser("checkin", help = "check in a cloud journal file from local copy")
-    parser_checkin.add_argument("--local-journal", help="local filename for the journal file", required=False)
+    parser_checkin.add_argument("--local-journal", help="local filename for the journal file, overrides config file", required=False)
     # parser_checkin.set_defaults(func = _checkin_journal)
     
     parser_unlock = journal_subparsers.add_parser("unlock", help = "unlock a cloud journal file")
@@ -439,7 +451,7 @@ if __name__ == "__main__":
         
         # set a default client for central storage
         central_config = config_helper.get_central_config(config)
-        central_client = storage_helper._make_client(central_config)
+        central_client, internal_host =storage_helper._make_client(central_config)
         central_client.set_as_default_client()
         
         local_journal_fn_override = args.local_journal if ('local_journal' in vars(args)) and (args.local_journal is not None) else None

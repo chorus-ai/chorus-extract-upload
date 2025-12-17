@@ -45,21 +45,20 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
 def _get_modality_pattern(modality:str, modality_configs:dict):
     modality_config = modality_configs.get(modality, {})
     pattern = modality_config.get("pattern", None)
+    
     if pattern is None:
-        if (modality.lower() == "waveforms"):
-            pattern = "{patient_id:w}/Waveforms/{filepath}"
-        elif (modality.lower() == "images"):
-            pattern = "{patient_id:w}/Images/{filepath}"
-        elif (modality.lower() == "omop"):
+        mod = modality.lower()
+        MOD_STR = MOD_STRING.get(mod, modality)
+        
+        pattern = "{patient_id:w}/" + MOD_STR + "/{filepath}"
+        if mod == 'omop':
             omop_per_patient = modality_config.get("omop_per_patient", False)
-            if omop_per_patient:
-                pattern = "{patient_id:w}/OMOP/{filepath}"
-            else:
+            if not omop_per_patient:
                 pattern = "OMOP/{filepath}"
-        elif (modality.lower() == "metadata"):
+        elif mod == "metadata":
             pattern = "Metadata/{filepath}"
-        else:
-            pattern = "{patient_id:w}/" + modality + "/{filepath}"
+            
+    # print(f"INFO: Using pattern for modality {modality}: {pattern} from config {modality_configs}")
     return pattern
 
 
@@ -517,10 +516,12 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     compiled_patterns = {}
     for mod in modalities:
         compiled_patterns[mod] = parse.compile(_get_modality_pattern(mod, modality_configs))
+
+    
     
     if not table_exists:
-        print(f"ERROR: table journal does not exist.")
-        return None
+        print(f"ERROR: table journal does not exist in {databasename}.")
+        return None, None, None
 
     # identify 3 subsets:   deleted, updated, and added.
     # deleted:  file with invalid time stamp.  No additional valid time stamp
@@ -604,6 +605,13 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
                 
     return active_files_by_version, active_files, inactive_files
 
+MOD_STRING = {
+    "waveforms": "Waveforms",
+    "images": "Images",
+    "omop": "OMOP",
+    "metadata": "Metadata"
+}
+
 # if version is specified, then it has priority over what's in the local_path string.
 def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Parser, modality:str, 
                                     omop_per_patient:bool = False, patient_centric: bool = True):
@@ -619,32 +627,7 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
         str: The central path, including version.
 
     """
-    if patient_centric:
-    
-        if modality.lower() == "waveforms":
-            out_pattern = "{patient_id}/Waveforms/{filepath}"
-        elif modality.lower() == "images":
-            out_pattern = "{patient_id}/Images/{filepath}"
-        elif modality.lower() == "omop":
-            if omop_per_patient:
-                out_pattern = "{patient_id}/OMOP/{filepath}"
-            else:
-                out_pattern = "OMOP/{filepath}"
-        elif modality.lower() == "metadata":
-            out_pattern = "Metadata/{filepath}"
-    else:
-        if modality.lower() == "waveforms":
-            out_pattern = "Waveforms/{patient_id}/{filepath}"
-        elif modality.lower() == "images":
-            out_pattern = "Images/{patient_id}/{filepath}"
-        elif modality.lower() == "omop":
-            if omop_per_patient:
-                out_pattern = "OMOP/{patient_id}/{filepath}"
-            else:
-                out_pattern = "OMOP/{filepath}"
-        elif modality.lower() == "metadata":
-            out_pattern = "Metadata/{filepath}"
-    
+        
     parsed = in_compiled_pattern.parse(local_path)
     if parsed is None:
         raise ValueError(f"ERROR: Invalid local path {local_path}, pattern {in_compiled_pattern}")
@@ -652,6 +635,14 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
     patient_id = parsed.named.get('patient_id', None)
     filepath = parsed.named.get('filepath', None)
     
+    mod = modality.lower()
+    MOD_STR = MOD_STRING.get(mod, modality)
+    out_pattern = "{patient_id}/" + MOD_STR + "/{filepath}" if patient_centric else MOD_STR + "/{patient_id}/" + "{filepath}"
+    if mod == "omop" and not omop_per_patient:
+        out_pattern = "OMOP/{filepath}"
+    elif mod == "metadata":
+        out_pattern = "Metadata/{filepath}"
+
     # convert the local path to a central path
     return out_pattern.format(patient_id = patient_id, filepath = filepath)
 

@@ -82,11 +82,14 @@ LOCK_SUFFIX = ".locked"
 def get_journal_paths(config, local_fn_override: str = None):
       
     #============= get the journal file name and path obj  (download from cloud to local)
+    journal_config = config_helper.get_journal_config(config)
+    
     journal_path_str = config_helper.get_journal_path(config) # full file name
     local_path_str = local_fn_override if local_fn_override is not None else config_helper.get_journal_local_path(config)
     
-    
-    journal_path = FileSystemHelper(journal_path_str, client = storage_helper._make_client(config_helper.get_journal_config(config)))
+    journal_config = config_helper.get_journal_site_config(config, 'source')
+    client, internal_host =storage_helper._make_client(journal_config)
+    journal_path = FileSystemHelper(journal_path_str, client = client, internal_host = internal_host)
     local_path = FileSystemHelper(local_path_str)
     
     if (local_path.is_cloud):
@@ -104,7 +107,7 @@ def get_journal_paths(config, local_fn_override: str = None):
     
     # make the lock file and lock.
     lock_file = journal_dir.joinpath(journal_fn + LOCK_SUFFIX)
-    lock_path = FileSystemHelper(lock_file, client = journal_path.client)
+    lock_path = FileSystemHelper(lock_file, client = journal_path.client, internal_host = journal_path.internal_host)
     
     if (not lock_path.is_cloud):
         raise ValueError("lock path is not cloud storage.  Please provide a cloud path for journal path.")
@@ -118,11 +121,12 @@ def get_journal_paths(config, local_fn_override: str = None):
 # cloud file will be renamed to .locked
 # which will be returned as a key for unlocking later.
 # return (journal_path, lock_path, local_path)
-def checkout_journal(journal_path, lock_path, local_path):
+def checkout_journal(journal_path, lock_path, local_path, transport_method: str="builtin"):
     
     # enforced restriction:  lock_path is cloud or None.  local_path is local.
     
     if (not journal_path.is_cloud):
+        print(f"INFO: journal is a local file: {str(journal_path.root)}. no locking needed.")
         # local, ignore lock, and just copy if needed.
         # md5 = FileSystemHelper.get_metadata(journal_path.root, with_metadata = False, with_md5 = True)['md5']
         if journal_path.root.absolute() != local_path.root.absolute():
@@ -144,11 +148,17 @@ def checkout_journal(journal_path, lock_path, local_path):
     # Can't use rename to ensure that only one process can lock the file.  linux and cloud - silent replacement.  Windows - exception.
     downloadable = journal_file.exists()
     if downloadable: 
-        journal_file.rename(lock_file)
-        # remove local path if there, then copy from lock path to local.
-        lock_path.copy_file_to(relpath = None, dest_path = local_file)
+        # can't use rename because internally it does not use the right path.
+        journal_path.copy_file_to(relpath = None, dest_path = lock_file)
+        # copy from journal path to local.
+        journal_path.copy_file_to(relpath = None, dest_path = local_file)
+        # complete the rename
+        journal_path.root.unlink()
+        # journal_file.rename(lock_file)
+        # lock_path.copy_file_to(relpath = None, dest_path = local_file)
     else:
         # no lock and no journal file.  okay to create.
+        print(f"DEBUG: creating a new journal lock file at {str(lock_file)} and local file at {str(local_file)}")
         lock_file.touch()
         local_file.touch()
     
@@ -183,41 +193,47 @@ def checkout_journal(journal_path, lock_path, local_path):
     return (journal_path, lock_path, local_path)
 
 
-def checkin_journal(journal_path, lock_path, local_path):
+def checkin_journal(journal_path, lock_path, local_path, transport_method: str="builtin"):
     # check journal file in.
     # lock_path is cloud or None.  local_path is local.
     
     if not journal_path.is_cloud:
+        print(f"INFO: journal is a local file: {str(journal_path.root)}. no unlocking needed.")
         # not cloud, if local path is not the same as journal path, copy back
         if journal_path.root.absolute() != local_path.root.absolute():
             local_path.copy_file_to(relpath = None, dest_path = journal_path.root)
         return
 
     if (lock_path is None):
-        raise ValueError("lock file not specified. cannot checkin")
+        print(f"INFO: no lock file specified.  prob local journal.")
+        return
     
     lock_file = lock_path.root
 
     # first copy local to cloud as lockfile. (with overwrite)
     # since each lock is dated, unlikely to have conflicts.
-    if lock_file.exists():
-        local_path.copy_file_to(relpath = None, dest_path = lock_file)
-    else:
-        raise ValueError("Locked file lost, unable to checkin.")
+    if not lock_file.exists():
+        print(f"INFO: no lock file, unable to checkin.")
+        return
     
     # then rename lock back to journal.
     try:
-        lock_file.rename(journal_path.root)
+        local_path.copy_file_to(relpath = None, dest_path = journal_path)
+        lock_file.unlink()
+        # lock_file.rename(journal_path.root)
     except:
         raise ValueError("Checkin failed, unable to move lock file as journal file.  journal may exist and is already unlocked.")
 
 
 # force unlocking.
-def unlock_journal(journal_path, lock_path):
+def unlock_journal(journal_path, lock_path, transport_method: str="builtin"):
     # lock file is none or cloud
     
+    print(f"DEBUG: unlocking journal {journal_path} with lock {lock_path if lock_path is not None else 'None'}")
+    
     if (lock_path is None):
-        raise ValueError("lock file not specified. cannot unlock")
+        print(f"INFO: no lock file specified.  prob local journal.")
+        return
     
     if (not journal_path.is_cloud):
         raise ValueError("journal is not cloud storage.  cannot unlock.")
@@ -235,7 +251,10 @@ def unlock_journal(journal_path, lock_path):
             print("INFO: journal ", str(journal_file), " is not locked.")
     else:
         if (has_lock):
-            locked_file.rename(journal_file)
+            print(f"DEBUG: journal file {str(journal_file)} missing, but lock file {str(locked_file)} present.  restoring journal from lock.")
+            lock_path.copy_file_to(relpath = None, dest_path = journal_file)
+            locked_file.unlink()
+            # locked_file.rename(journal_file)
             print("INFO: force unlocked ", str(journal_file))
         else:
             print("INFO: no journal or lock file.  okay to create")
@@ -348,14 +367,14 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         
         futures = []
         for fn, info in files_to_upload.items():
-            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
+            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']), client = dest_path.client, internal_host = dest_path.internal_host)
             future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, files_to_mark_deleted, **{'nthreads': threads_per_file, "lock": lock})
             futures.append(future)
     
         for future in concurrent.futures.as_completed(futures):
             (fn2, info, state, del_list, copy_time, verify_time) = future.result()
             
-            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
+            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']), client = dest_path.client, internal_host = dest_path.internal_host)
             dated_dest_paths.add(dated_dest_path)
             perf.add_file(info['size'])
             
@@ -482,7 +501,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
 
     # for fn, info in files_to_upload.items():  # only the active files.
     #     # create a dated root directory to receive the files
-    #     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']))
+    #     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']), client = dest_path.client, internal_host = dest_path.internal_host)
     #     (fn2, info, state, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, info, dated_dest_path, files_to_mark_deleted)
 
     # split set to small and large files by AZURE block size.
@@ -643,7 +662,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
         
     #---------- verify files.    
     # create a dated root directory to receive the files
-    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr))
+    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr), client = dest_path.client, internal_host = dest_path.internal_host)
     
     # now compare the metadata and md5
     missing = []

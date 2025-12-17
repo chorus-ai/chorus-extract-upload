@@ -60,7 +60,7 @@ def _get_paths_for_history(args, config):
     
     if ((command == "file") and 
         (args.file_command in ["upload", "verify", "mark_as_uploaded_central", "mark_as_uploaded_local"])):
-        dest_path = config_helper.get_central_config(config)["path"]
+        dest_path = config_helper.get_path_str(config_helper.get_central_config(config))
     else:
         dest_path = None
     
@@ -72,7 +72,7 @@ def _get_paths_for_history(args, config):
          (args.file_command in ["upload"])) or 
         ((command == "journal") and 
          (args.journal_command in ["update"]))):
-        src_paths = { mod: mod_config["path"] for mod, mod_config in mod_configs.items() }
+        src_paths = { mod: config_helper.get_path_str(mod_config) for mod, mod_config in mod_configs.items() }
         # convert dict to json string
         if len(src_paths) > 0:
             src_paths_json = json.dumps(src_paths)

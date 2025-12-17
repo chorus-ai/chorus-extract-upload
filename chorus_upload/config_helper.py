@@ -13,7 +13,7 @@ def _print_config_usage(args, config, journal_fn):
     print("[site_path]:  contains the path to the default DGS storage location.  This is where the files will be uploaded from.")
     print("Site_path may contain subsections for each modality, for example [site_path.Waveforms].  This allows different modality files to be stored in different locations")
     print("")    
-    print("For each section or subsection, if the path is a cloud path, e.g. s3:// or az://, then the following parameters are required for authentication.")
+    print("For each section or subsection, if the path is a cloud path, e.g. s3:// or az://, then the following parameters are required for authentication, stored in a subsection with suffix '.auth'.")
     print("Authentication is only needed for update, upload, and verify commands Local file system is assumed to not require authentication.")
     print("")
     print("  AWS:   in order of precedence")
@@ -22,7 +22,7 @@ def _print_config_usage(args, config, journal_fn):
     print("         aws-profile.  see aws/credentials files in home directory")
     print("         if none specified, profile `default` is used.")
     print("  Azure: in order of precedence")
-    print("         account-url with embedded sas token")
+    print("         account-url (or proxy url) with embedded sas token when needed")
     print("         azure-account-name, azure-sas-token.  constructs an account-url")
     print("         azure-storage_connection_string.")
     print("         azure-account-name, azure-account-key. constructs a connection string")
@@ -36,14 +36,34 @@ def load_config(configifle: str):
         config = tomli.load(file)
     return config
 
+def get_config(config: dict):
+    return config.get('configuration', {})
+
 def get_journal_config(config: dict):
     return config.get('journal', {})
 
 def get_central_config(config: dict):
     return config.get('central_path', {})
 
-def get_config(config: dict):
-    return config.get('configuration', {})
+# site_path section has subsections for each modality, including default.
+def get_site_config(config: dict, modality: str):
+    # first get the default
+    subconfig = config.get('site_path', None)
+    out_config = subconfig.get('default', {}).copy()  #must make copy - otherwise source config and subconfig are modified.
+    mod_config = subconfig.get(modality, {})
+    # merge.
+    if "path" not in mod_config and "path" not in out_config:
+        raise ValueError(f"No site path for modality {modality} found in config file")
+    else:
+        out_config.update(mod_config)
+        
+    return out_config
+    
+
+# journal section has [local] and [source] site subsections
+def get_journal_site_config(config: dict, site: str):
+    return get_journal_config(config).get(site, {})
+
 
 def get_modalities(config: dict):
     subconfig = config.get('configuration', {})
@@ -53,32 +73,42 @@ def get_modalities(config: dict):
     return mods
 
 def get_journal_path(config: dict):
-    subconfig = config.get('journal', {})
+    journalconfig = config.get('journal', {})
+    subconfig = journalconfig.get('source', {})
     return subconfig.get('path', "journal.db")
 
 def get_journal_local_path(config: dict):
-    cloud_path = config.get('journal', {}).get('path', "journal.db")
-    is_cloud = cloud_path.startswith("s3://") or cloud_path.startswith("az://") or cloud_path.startswith("gs://")
-    cloud_derived = cloud_path.split("/")[-1]
-    # if local_path defined, use it.  else if path is cloud, use the file name, else use cloud_path.
-    return config.get('journal', {}).get('local_path', cloud_derived if is_cloud else cloud_path)
+    journalconfig = config.get('journal', {})
+    localconfig = journalconfig.get('local', {})
+    path = localconfig.get('path', None)
+    if path is None:
+        remoteconfig = journalconfig.get('source', {})
+        remote_path = remoteconfig.get('path', "journal.db")
+        path = remote_path.split("/")[-1] if (remote_path.startswith("s3://") or remote_path.startswith("az://") or remote_path.startswith("gs://")) else remote_path
+    return path
 
-def get_upload_methods(config: dict):
-    subconfig = config.get('configuration', {})
-    return subconfig.get('upload_methods', 'builtin')
+
+
+def get_journal_upload_method(config: dict):
+    journalconfig = config.get('journal', {})
+    subconfig = journalconfig.get('source', {})
+    return subconfig.get('upload_method', 'builtin')
 
 def get_journaling_mode(config: dict):
-    subconfig = config.get('configuration', {})
+    subconfig = config.get('journal', {})
     return subconfig.get('journaling_mode', 'append')
 
-def get_site_config(config: dict, modality: str):
-    subconfig = config.get('site_path', None)
-    if subconfig is None:
-        raise ValueError("No site path section in config file") 
-    out = subconfig.get(modality, subconfig.get('default', None))
-    if out is None:
-        raise ValueError(f"Site path for modality {modality} not found in config file")
-    return out
+def get_upload_method(config: dict):
+    subconfig = config.get('central_path', {})
+    return subconfig.get('upload_method', 'builtin')
 
-def get_auth_param(config: dict, key: str, default: str = None):
-    return config.get(key, default)
+def get_auth_params(path_config: dict) -> dict:
+    return path_config.get('auth', {})
+
+# get the path
+def get_path_str(path_config: dict, default: str = None) -> str:
+    return path_config.get('path', default)
+
+# look for the authentication module.
+def get_auth_param(auth_config: dict, key: str, default: str = None):
+    return auth_config.get(key, default)
