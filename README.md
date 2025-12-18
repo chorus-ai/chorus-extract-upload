@@ -91,32 +91,32 @@ flit install --symlink
 ```
 which allows changes in the code directory to be immediately reflected in the python environment.
 
-4. Configure /etc/hosts: 
-The `/etc/hosts` modification that were previously required is no longer required for the `chorus-upload` tool. If you have previously added the following entry to your `/etc/hosts` file:
+~~4. Configure /etc/hosts:~~
+~~The `/etc/hosts` modification that were previously required is no longer required for the `chorus-upload` tool. If you have previously added the following entry to your `/etc/hosts` file:~~
 
-```
-172.203.106.139             choruspilotstorage.blob.core.windows.net
-```
+~~```~~
+~~172.203.106.139             choruspilotstorage.blob.core.windows.net~~
+~~```~~
 
-please remove it to avoid potential conflicts or issues. 
+~~please remove it to avoid potential conflicts or issues.~~
 
-On Linux or macOS, you can edit the `/etc/hosts` file using a text editor with root privileges:
+~~On Linux or macOS, you can edit the `/etc/hosts` file using a text editor with root privileges:~~
 
-```
-sudo nano /etc/hosts
-```
+~~```~~
+~~sudo nano /etc/hosts~~
+~~```~~
 
-Locate the line containing `172.203.106.139 choruspilotstorage.blob.core.windows.net` and delete it. Save the file and exit the editor.
+~~Locate the line containing `172.203.106.139 choruspilotstorage.blob.core.windows.net` and delete it. Save the file and exit the editor.~~
 
-On Windows, the equivalent file is located at:
+~~On Windows, the equivalent file is located at:~~
 
-```
-C:\Windows\System32\drivers\etc\hosts
-```
+~~```~~
+~~C:\Windows\System32\drivers\etc\hosts~~
+~~```~~
 
-Open the file in a text editor with Administrator privileges, locate the same line, and remove it. Save the file and close the editor.
+~~Open the file in a text editor with Administrator privileges, locate the same line, and remove it. Save the file and close the editor.~~
 
-After making these changes, no further `/etc/hosts` configuration is necessary for the tool to function correctly.
+~~After making these changes, no further `/etc/hosts` configuration is necessary for the tool to function correctly.~~
 
 
 > **Optional**
