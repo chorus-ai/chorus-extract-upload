@@ -1,5 +1,14 @@
 import time
 
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger(__name__)
 
 class PerformanceCounter:
     def __print_total(self):
@@ -12,15 +21,13 @@ class PerformanceCounter:
             if (self.has_total) and (self.total_file_count > 0) and (self.file_count > 0):
                 percent_files = (self.file_count / self.total_file_count) * 100
                 remaining_time = (elapsed / self.file_count) * (self.total_file_count - self.file_count) 
-                print("TIMING: {:.2f} Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and ".format(
-                    cur_t, elapsed, self.file_count, file_throughput) + \
-                    " {:.2f} MB ({:.2f} MB/s). {:.2f}% files and Estimated remaining time: {:.2f} seconds".format(
-                    size, size_throughput, percent_files, remaining_time), flush=True)
+                log.info(f"TIMING: {cur_t:.2f} Total elapsed: {elapsed:.2f} seconds, with {self.file_count} files ({file_throughput:.2f} files/s) and " +
+                    f" {size:.2f} MB ({size_throughput:.2f} MB/s). {percent_files:.2f}% files and Estimated remaining time: {remaining_time:.2f} seconds")
+                
             else:
-                print("TIMING: {:.2f} Total elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and {:.2f} MB ({:.2f} MB/s).".format(
-                    cur_t, elapsed, self.file_count, file_throughput, size, size_throughput), flush=True)
+                log.info(f"TIMING: {cur_t:.2f} Total elapsed: {elapsed:.2f} seconds, with {self.file_count} files ({file_throughput:.2f} files/s) and {size:.2f} MB ({size_throughput:.2f} MB/s).")
         else:
-            print("TIMING: {:.2f} Warning: total elapsed time is 0".format(cur_t), flush=True)
+            log.warning(f"TIMING: {cur_t:.2f} Warning: total elapsed time is 0")
             
     def __print_session(self):
         cur_t = time.time()
@@ -29,10 +36,9 @@ class PerformanceCounter:
             size = float(self.session_file_size) / (1024 * 1024)
             size_throughput = size / elapsed
             file_throughput = float(self.session_file_count) / elapsed
-            print("TIMING: {:.2f} Session elapsed: {:.2f} seconds, with {} files ({:.2f} files/s) and {:.2f} MB ({:.2f} MB/s)".format(
-                cur_t, elapsed, self.session_file_count, file_throughput, size, size_throughput), flush=True)
+            log.info(f"TIMING: {cur_t:.2f} Session elapsed: {elapsed:.2f} seconds, with {self.session_file_count} files ({file_throughput:.2f} files/s) and {size:.2f} MB ({size_throughput:.2f} MB/s)")
         else:
-            print("TIMING: {:.2f} Warning: session elapsed time is 0".format(cur_t), flush=True)        
+            log.warning(f"TIMING: {cur_t:.2f} Warning: session elapsed time is 0")        
 
     
     def __init__(self, total_file_count: int = None):

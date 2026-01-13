@@ -74,6 +74,17 @@ from cloudpathlib import AzureBlobClient
 #     from cloudpathlib import GoogleCloudClient
 from urllib.parse import urlparse, urlunparse
 
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger(__name__)
+
+
 AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
 
 # to ensure consistent interface, we use default profile (S3) or require environment variables to be set
@@ -440,7 +451,7 @@ class FileSystemHelper:
             info = curr.stat()
             metadata["path"] = FileSystemHelper._as_posix(rel)
             if ("\\" in metadata["path"]):
-                print("WARNING:  path contains backslashes: ", metadata["path"])
+                log.warning(f"WARNING:  path contains backslashes: {metadata['path']}")
             metadata["size"] = info.st_size
 
             # in cloudpathlib, only size and mtime are populated, mtime is the time of last upload, in second granularity, so not super useful
@@ -472,17 +483,17 @@ class FileSystemHelper:
                         md5_str = md5.hexdigest() if md5 else None
                         if lock is not None:
                             with lock:
-                                print("NOTE: Missing md5 for ", curr, ". setting with computed MD5. hex=", md5_str)
+                                log.info(f"Missing md5 for {curr}. setting with computed MD5. hex= {md5_str}")
                         else:
-                            print("NOTE: Missing md5 for ", curr, ". setting with computed MD5. hex=", md5_str)
+                            log.info(f"Missing md5 for {curr}. setting with computed MD5. hex= {md5_str}")
 
                     else:
                         md5_str = local_md5
                         if lock is not None:
                             with lock:
-                                print("NOTE: Missing md5 for ", curr, ". setting with supplied MD5. hex=", md5_str)
+                                log.info(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
                         else:
-                            print("NOTE: Missing md5 for ", curr, ". setting with supplied MD5. hex=", md5_str)
+                            log.info(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
                         
                     set_md5 = True
                         
@@ -496,17 +507,17 @@ class FileSystemHelper:
                             if (base64.b64decode(curr.md5).hex() == local_md5):
                                 if lock is not None:
                                     with lock:
-                                        print("WARNING: cloud md5 is doubly b64encoded. fixing ", curr, " with md5 ", md5_str, ", local ", local_md5, ". b64decoded cloud ", base64.b64decode(curr.md5).hex())
+                                        log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(curr.md5).hex()}")
                                 else:
-                                    print("WARNING: cloud md5 is doubly b64encoded. fixing ", curr, " with md5 ", md5_str, ", local ", local_md5, ". b64decoded cloud ", base64.b64decode(curr.md5).hex())
+                                    log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(curr.md5).hex()}")
                                 md5_str = local_md5
                                 set_md5 = True
                             else:
                                 if lock is not None:
                                     with lock:
-                                        print("NOTE: cloud and supplied local md5 are different for ", curr, " cloud ", md5_str, ", local ", local_md5)
+                                        log.info(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
                                 else:
-                                    print("NOTE: cloud and supplied local md5 are different for ", curr, " cloud ", md5_str, ", local ", local_md5)
+                                    log.info(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
                         # else md5 matches.  no action needed.
                     
                     # else no local_md5, no action needed.
@@ -550,7 +561,7 @@ class FileSystemHelper:
         pattern = pattern.replace("{patient_id:d}", "*").replace("{patient_id:w}", "*").replace("{patient_id}", "*")
         pattern = pattern.replace("{version:d}", "*").replace("{version:w}", "*").replace("{version}", "*")
         # convert pattern to be case insensitive
-        print("INFO: getting list of files for ", pattern)
+        log.info(f"INFO: getting list of files for {pattern}")
         # not using rglob as it does too much matching.
         # case_sensitive is a pathlib 3.12+ feature.
         count = 0
@@ -561,10 +572,9 @@ class FileSystemHelper:
             paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client = self.client))
             count += 1
             if (count % 1000) == 0:
-                print("Found ", count, " files", flush=True)
+                log.info(f"Found {count} files")
             
-        print(".", flush=True)
-        print("INFO: completed retrieving files.")
+        log.info("completed retrieving files.")
         # return relative path
         return paths
     
@@ -584,7 +594,7 @@ class FileSystemHelper:
         glob_pattern = glob_pattern.replace("{filepath}", "**/*")
         glob_pattern = glob_pattern.replace("{patient_id:d}", "*").replace("{patient_id:w}", "*").replace("{patient_id}", "*")
         glob_pattern = glob_pattern.replace("{version:d}", "*").replace("{version:w}", "*").replace("{version}", "*")
-        print("INFO: getting list of files for ", pattern, "converted to", glob_pattern)
+        log.info(f"INFO: getting list of files for {pattern} converted to {glob_pattern}")
         paths = []
         count = 0
         for f in self.root.glob(glob_pattern, case_sensitive = False):  # this may be inconsistently implemented in different clouds.
@@ -594,14 +604,14 @@ class FileSystemHelper:
             paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client))
             count += 1
             if count >= page_size:
-                # print("Found ", count, " files", flush=True)
+                #log.info(f"Found {count} files")
                 yield paths
                 paths = []
                 count = 0
         
         if (count > 0):
             yield paths
-        print("INFO: completed retrieving files.")
+        log.info("completed retrieving files.")
         
 
 
@@ -666,7 +676,7 @@ class FileSystemHelper:
                     src_url = src_blob_client.url
                     parsed_url = urlparse(src_url)
                     internal_url = urlunparse(parsed_url._replace(netloc=self.internal_host))
-                    print(f"DEBUG: copying within azure from {src_url} via {internal_url} to {dest_blob_client.url}")
+                    log.debug(f"copying within azure from {src_url} via {internal_url} to {dest_blob_client.url}")
                     # now copy from internal url
                     dest_blob_client.start_copy_from_url(internal_url)
                 else:               
@@ -680,7 +690,7 @@ class FileSystemHelper:
                 # dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
                 dest_relpath = str(dest_file)[len("az://" + dest_file.container + "/"):] 
                 if verbose:
-                    print("INFO: upload to ", dest_relpath, "with ", str(nthreads) if nthreads > 0 else "default number of ", " threads")
+                    log.info(f"upload to {dest_relpath} with {str(nthreads) if nthreads > 0 else 'default number of'} threads")
 
                 blob_serv_client = dest_file.client.service_client
                 container_client = blob_serv_client.get_container_client(dest_file.container)
@@ -692,7 +702,7 @@ class FileSystemHelper:
                             container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True, max_concurrency=nthreads)
 
                     except TypeError as e:
-                        print("ERROR uploading file ", src_file, " to ", dest_relpath, " with timeout ", timeout, "container ", dest_file.container)
+                        log.error(f"ERROR uploading file {src_file} to {dest_relpath} with timeout {timeout} container {dest_file.container} exception {e}")
                         
             else:
                 try:
@@ -700,11 +710,11 @@ class FileSystemHelper:
                 except shutil.SameFileError:
                     pass
                 except PermissionError as e:
-                    print("ERROR: permission issue copying file ", src_file, " to ", dest_file, " exception ", e)
+                    log.error(f"permission issue copying file {src_file} to {dest_file} exception {e}")
                 except Exception as e:
-                    print("ERROR: issue copying file ", src_file, " to ", dest_file, " exception ", e)
+                    log.error(f"issue copying file {src_file} to {dest_file} exception {e}")
         # start = time.time()
         # meta =  FileSystemHelper.get_metadata(path = dest_file, with_metadata = True, with_md5 = True)
         # md5 = meta['md5']
-        # print("INFO:  info time: ", time.time() - start, " size =", meta['size'], " md5 = ", md5)   
+        # log.info(f"info time: {time.time() - start} size = {meta['size']} md5 = {md5}")   
         

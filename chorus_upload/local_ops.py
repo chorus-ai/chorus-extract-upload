@@ -13,6 +13,17 @@ from chorus_upload.journaldb_ops import JournalDispatcher
 
 import parse
 
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger(__name__)
+
+
 # Futures ThreadPoolExecutor may not work since python has a global interpreter lock (GIL) that prevents thread based parallelism, at least until 3.13 (optional)
 # alternative: use asyncio?
 
@@ -58,7 +69,7 @@ def _get_modality_pattern(modality:str, modality_configs:dict):
         elif mod == "metadata":
             pattern = "Metadata/{filepath}"
             
-    # print(f"INFO: Using pattern for modality {modality}: {pattern} from config {modality_configs}")
+    # log.info(f"Using pattern for modality {modality}: {pattern} from config {modality_configs}")
     return pattern
 
 
@@ -75,7 +86,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         databasename (str, optional): The name of the database to store the journal. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
-    print("INFO: Creating journal. NOTE: this may take a while for md5 computation.", flush=True)
+    log.info("Creating journal. NOTE: this may take a while for md5 computation.")
     
     verbose = kwargs.get("verbose", False)
 
@@ -93,14 +104,14 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     page_size = kwargs.get("page_size", 1000)
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    print("INFO: Using ", nthreads, " threads")
+    log.info(f" Using {nthreads} threads")
 
     for modality in modalities:
         start = time.time()
             
         # paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
         # # paths += paths1
-        # print("Get File List took ", time.time() - start)
+        # log.info(f"Get File List took {time.time() - start}")
         
         pattern = _get_modality_pattern(modality, kwargs.get("modality_configs", {}))
         version_in_pattern = ("{version:w}" in pattern) or ("{version}" in pattern)
@@ -116,7 +127,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
 
                 for relpath in paths:
                     #if verbose:
-                    #    print("INFO: scanning ", relpath)
+                    #    log.info(f"scanning {relpath}")
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              {}, 
                                              compiled_pattern, None if version_in_pattern else new_version, **{'lock': lock})
@@ -129,24 +140,24 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                     status = myargs[8]
                     if status in ["ADDED", "MOVED", "UPDATED"]:
                         if verbose:
-                            print(f"INFO: {status} {rlpath}")
+                            log.info(f"{status} {rlpath}")
                         else:
                             print(".", end="", flush=True)
                         all_args.append(myargs)
                     elif status == "ERROR4":                    
-                        print("INFO: File does not fit pattern.", rlpath)                        
+                        log.info(f"File does not fit pattern. {rlpath}")                        
 
                 insert_count = JournalDispatcher.insert_journal_entries(databasename, all_args)
                 
                 total_count += len(all_args)
-                print(f"INFO: inserted {insert_count} of {len(all_args)}.  added {total_count} files to journal.db" )
+                log.info(f"inserted {insert_count} of {len(all_args)}.  added {total_count} files to journal.db" )
 
                 all_args = []
                 
                 perf.report()
         
         del perf
-        print("INFO: Journal Update took ", time.time() - start, "s")
+        log.info(f"Journal Update took {time.time() - start} s")
         
 
 def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, 
@@ -161,9 +172,9 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     if parsed is not None:
         personid = parsed.named.get("patient_id", None)
         version = version if version is not None else parsed.named.get("version", None)
-        # print("DEBUG: Parsed ", relpath, " person id ", personid, "version", version)
+        # log.debug(f"Parsed {relpath} person id {personid} version {version}")
     else:
-        # print("Info: pattern not matched. skipping ", relpath)
+        # log.info(f"pattern not matched. skipping {relpath}")
         return (None, relpath, modality, None, 0, None, curtimestamp, None, "ERROR4", None, None)
         
     # matched = PERSONID_REGEX.match(relpath)
@@ -175,10 +186,10 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
         
         # There should only be 1 active file according to the path in a well-formed 
         if (len(results) > 1):
-            # print("ERROR: Multiple active files with that path - journal is not consistent")
+            # log.error(f"Multiple active files with that path - journal is not consistent")
             return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR1", None, None)
         if (len(results) == 0):
-            # print("ERROR: File found but no metadata.", relpath)
+            # log.error(f"File found but no metadata. {relpath}")
             return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR2", None, None)
         
         if len(results) == 1:
@@ -196,11 +207,11 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
                     # files are very likely the same because of size and modtime match
                     
                     # del modality_files_to_inactivate[relpath]  # do not mark file as inactive.
-                    # print("SAME ", relpath )
+                    # log.info(f"SAME {relpath}")
                     return (personid, relpath, modality, oldmtime, oldsize, oldmd5, curtimestamp, oldsync, "KEEP", None, oldversion)
                 else:
                     #time stamp same but file size is different?
-                    # print("ERROR: File size is different but modtime is the same.", relpath)
+                    # log.error(f"File size is different but modtime is the same. {relpath}")
                     return (personid, relpath, modality, oldmtime, oldsize, oldmd5, curtimestamp, oldsync, "ERROR3", None, oldversion)
                 
             else:
@@ -222,7 +233,7 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
                     # files are different.  set the old file as invalid and add a new file.
                     myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "UPDATED", md5_time, version)
                     # if verbose:
-                    #     print("INFO: UPDATED ", relpath)
+                    #     log.info(f"UPDATED {relpath}")
                     # modified file. old one should be removed.
     else:
         # if DNE, add new file
@@ -258,7 +269,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     
     verbose = kwargs.get("verbose", False)
 
-    print("INFO: Updating journal...", databasename, flush=True)
+    log.info(f"Updating journal... {databasename}")
 
     # TODO:  
     # if amend, get the last version, and add files to that version.
@@ -267,7 +278,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     if amend: # get the last version
         journal_version = JournalDispatcher.get_latest_version(database_name=databasename)
         if journal_version is None:
-            print("ERROR: amend but there is not an existing version")
+            log.error(f"amend but there is not an existing version")
 
     perf = perf_counter.PerformanceCounter()
     
@@ -278,7 +289,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    print("INFO: Using ", nthreads, " threads")
+    log.info(f"Using {nthreads} threads")
 
     paths = []
     all_insert_args = []
@@ -299,7 +310,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                                                            version = None, 
                                                            modalities = [modality], 
                                                            **{'active': True} )
-        print(f"INFO: acivefiletuples: count {len(activefiletuples)}")
+        log.info(f"acivefiletuples: count {len(activefiletuples)}")
 
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
         modality_files_to_inactivate = {}
@@ -320,7 +331,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
                 for relpath in paths:
                     #if verbose:
-                    #    print("INFO: scanning ", relpath)
+                    #    log.info(f"scanning {relpath}")
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              modality_files_to_inactivate_rdonly, 
                                              compiled_pattern, journal_version if not version_in_pattern else None, **{'lock': lock})
@@ -333,30 +344,30 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     status = myargs[8]
                     rlpath = myargs[1]
                     if status == "ERROR1":
-                        print("ERROR: Multiple active files with that path - journal is not consistent", rlpath)
+                        log.error(f"Multiple active files with that path - journal is not consistent {rlpath}")
                     elif status == "ERROR2":
-                        print("ERROR: File found but no metadata.", rlpath)
+                        log.error(f"File found but no metadata. {rlpath}")
                     elif status == "ERROR3":
-                        print("ERROR: File size is different but modtime is the same.", rlpath)
+                        log.error(f"File size is different but modtime is the same. {rlpath}")
                     elif status == "ERROR4":
-                        print("ERROR: File does not fit pattern.", rlpath)
+                        log.error(f"File does not fit pattern. {rlpath}")
                     elif status == "KEEP":
                         #if verbose:
-                        #    print(f"INFO: {status} {rlpath}")
+                        #    log.info(f"{status} {rlpath}")
                         del modality_files_to_inactivate[rlpath]
                     elif status == "ADDED":
                         if verbose:
-                            print(f"INFO: {status} {rlpath}")
+                            log.info(f"{status} {rlpath}")
                         all_insert_args.append(myargs)
                     elif status in ["MOVED", "UPDATED"]:
                         if verbose:
-                            print(f"INFO: {status} {rlpath}")                        
+                            log.info(f"{status} {rlpath}")                        
                         all_insert_args.append(myargs)
                         # move the key-val pair to the new list.
                         modality_files_to_inactivate_in_iter[rlpath] = modality_files_to_inactivate[rlpath]
                         del modality_files_to_inactivate[rlpath]
                     else:
-                        print(f"INFO: unknown status:  {status}, {rlpath}")
+                        log.info(f"unknown status:  {status}, {rlpath}")
                     # back up only on upload
                     # backup_journal(databasename)
                     
@@ -366,18 +377,18 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     # check if there are non alphanumeric characters in the path
                     # if so, print out the path
                     if not (relpath.isalnum() or relpath.isascii()):
-                        print("INFO: Path contains non-alphanumeric characters:", relpath)
+                        log.info(f"Path contains non-alphanumeric characters: {relpath}")
 
                     for v in vals:
                         if (relpath in paths):
                             del_args_in_iter.append(("OUTDATED", v[0]))
                             if verbose:
-                                print("INFO: OUTDATED  ", relpath)
+                                log.info(f"OUTDATED  {relpath}")
                         elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
                             del_args_in_iter.append(("DELETED", v[0]))
                             if verbose:
-                                print("INFO: DELETED  ", relpath)
-                # print("SQLITE update arguments ", all_del_args)
+                                log.info(f"DELETED  {relpath}")
+                # log.debug(f"SQLITE update arguments {all_del_args}")
                 if (len(del_args_in_iter) > 0):
                     # back up only on upload
                     # backup_journal(databasename)
@@ -388,14 +399,14 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     
                     total_deleted += deleted
                     to_delete = len(del_args_in_iter)
-                    print(f"INFO: deleted/outdated {deleted} of {to_delete} from journal. total {total_deleted} inactivated" )
+                    log.info(f"deleted/outdated {deleted} of {to_delete} from journal. total {total_deleted} inactivated" )
                     
                     
                 # save to database
                 update_count = JournalDispatcher.insert_journal_entries(databasename, all_insert_args)
                 
                 total_count += len(all_insert_args)
-                print(f"INFO: inserted {update_count} of {len(all_insert_args)}.  added {total_count} files to journal.db" )
+                log.info(f"inserted {update_count} of {len(all_insert_args)}.  added {total_count} files to journal.db" )
 
                 all_insert_args = []
                 
@@ -407,20 +418,20 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 # check if there are non alphanumeric characters in the path
                 # if so, print out the path
                 if not (relpath.isalnum() or relpath.isascii()):
-                    print("INFO: Path contains non-alphanumeric characters:", relpath)
+                    log.info(f"Path contains non-alphanumeric characters: {relpath}")
 
                 for v in vals:
                     if (relpath in paths):
                         all_del_args.append(("OUTDATED", v[0]))
                         if verbose:
-                            print("INFO: OUTDATED  ", relpath)
+                            log.info(f"OUTDATED  {relpath}")
                     elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
                         all_del_args.append(("DELETED", v[0]))
                         if verbose:
-                            print("INFO: DELETED  ", relpath)
-            # print("SQLITE update arguments ", all_del_args)
+                            log.info(f"DELETED  {relpath}")
+            # log.info(f"SQLITE update arguments {all_del_args}")
             if (total_count == 0) and len(all_del_args) == 0:
-                print("INFO: Nothing to change in journal for modality ", modality)
+                log.info(f"Nothing to change in journal for modality {modality}")
             elif (len(all_del_args) > 0):
                 # back up only on upload
                 # backup_journal(databasename)
@@ -430,11 +441,11 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                                                        all_del_args)
                 total_deleted += deleted
                 to_delete = len(all_del_args)
-                print(f"INFO: deleted/outdated {deleted} of {to_delete} from journal." )
+                log.info(f"deleted/outdated {deleted} of {to_delete} from journal." )
             
         del perf
-        print("INFO: Total added ", total_count, "and inactivated", total_deleted, " files in journal.db")
-        print("INFO: Journal Update Elapsed time ", time.time() - start, "s")
+        log.info(f"Total added {total_count} and inactivated {total_deleted} files in journal.db")
+        log.info(f"Journal Update Elapsed time {time.time() - start} s")
 
 
 # explicitly mark files as deleted.  This is best used when the journaling mode is "append"
@@ -465,12 +476,12 @@ def mark_files_as_deleted(files_to_remove:List[str],
             to_inactivate = set.union(to_inactivate, set(active_files[f]))
             
     if verbose:
-        print("INFO: Inactivating (marking as deleted) ", len(all_del_args), " files")
+        log.info(f"Inactivating (marking as deleted) {len(all_del_args)} files")
         for f in to_inactivate:
-            print("INFO: DELETED ", f)
+            log.info(f"DELETED  {f}")
         
     if to_inactivate is None or len(to_inactivate) == 0:
-        print("No files to delete")
+        log.info("No files to delete")
         return
 
     all_del_args = [("DELTED", f) for f in to_inactivate]
@@ -485,7 +496,7 @@ def mark_files_as_deleted(files_to_remove:List[str],
                                              all_del_args)
     
     to_delete = len(all_del_args)
-    print(f"INFO: mark as deleted {deleted} of {to_delete} from journal." )
+    log.info(f"mark as deleted {deleted} of {to_delete} from journal." )
 
     
 
@@ -520,7 +531,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     
     
     if not table_exists:
-        print(f"ERROR: table journal does not exist in {databasename}.")
+        log.error(f"table journal does not exist in {databasename}.")
         return None, None, None
 
     # identify 3 subsets:   deleted, updated, and added.
@@ -536,7 +547,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
                                                         modalities = modalities,
                                                         **{'uploaded': False})
         
-    print("INFO: extracted files to upload for ", ("current" if version is None else version), " upload version and modalities =", 
+    log.info(f"extracted files to upload for {('current' if version is None else version)} upload version and modalities = {(','.join(modalities) if modalities is not None else 'all')}")
           (",".join(modalities) if modalities is not None else "all"))
     
     # this is pulling back only files with changes during since the last upload.  an old file may be inactivated but is in a previous upload
@@ -557,7 +568,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
         if invalidtime is None:
             # updated files or added files.  should be in the most recent version.
             if (fn in active_files.keys()):
-                print(f"ERROR: Inconsistent Journal.  Multiple active files with path {fn}", flush=True)
+                log.error(f"Inconsistent Journal.  Multiple active files with path {fn}")
             else:
                 central_fn = convert_local_to_central_path(fn, in_compiled_pattern = compiled_patterns.get(modality, None), 
                                                            modality = modality,
@@ -588,17 +599,17 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
         adds = all_active_files - updates
         deletes = all_inactive_files - updates
         for f in adds:
-            print("INFO: ADD ", f)
+            log.info(f"ADD {f}")
         for f in updates:
-            print("INFO: UPDATE ", f)
+            log.info(f"UPDATE {f}")
         for f in deletes:
-            print("INFO: DELETE ", f)
+            log.info(f"DELETE {f}")
             
     # sort the file-list
     # file_list.sort()
     
     if len(active_files) == 0:
-        print("INFO: No active files found")
+        log.info(f"No active files found")
     
     # do we need to delete files in central at all? NO.  journal will be updated.
     # we only need to add new files
@@ -663,7 +674,7 @@ def list_versions(databasename: str):
     """
     
     if not Path(databasename).exists():
-        print(f"ERROR: No journal exists for filename {databasename}")
+        log.error(f"ERROR: No journal exists for filename {databasename}")
         return None
     
     
@@ -672,11 +683,11 @@ def list_versions(databasename: str):
     versions = [u[0] for u in res]
     
     if (versions is not None) and (len(versions) > 0):
-        print("INFO: upload records in the database:")
+        log.info("upload records in the database:")
         for table in versions:
-            print("INFO:  ", table)
+            log.info(f"  {table}")
     else:
-        print("INFO: No uploads found in the database.")
+        log.info("No uploads found in the database.")
     
     return versions
 
@@ -697,7 +708,7 @@ def list_versions(databasename: str):
 #     """
     
 #     if not Path(databasename).exists():
-#         print(f"ERROR: No journal exists for filename {databasename}")
+#         log.error(f"No journal exists for filename {databasename}")
 #         return None
     
 #     con = sqlite3.connect(databasename, check_same_thread=False)
@@ -707,12 +718,12 @@ def list_versions(databasename: str):
 #     tables = [c[0] for c in cur.execute("SELECT name FROM sqlite_master WHERE type='table';").fetchall()]
     
 #     if tables:
-#         print("INFO: Journals in the database:")
+#         log.info("Journals in the database:")
 #         for table in tables:
 #             if table.startswith("journal"):
-#                 print("INFO:  ", table)
+#                 log.info(f"  {table}")
 #     else:
-#         print("INFO: No tables found in the database.")
+#         log.info("No tables found in the database.")
     
 #     con.close()
 
@@ -721,12 +732,12 @@ def list_versions(databasename: str):
 
 # def delete_journal(databasename: str, suffix:str = None):
 #     if (suffix is None) or (suffix == "") :
-#         print("ERROR: you must specify a suffix for the 'journal' table.")
+#         log.error(f"you must specify a suffix for the 'journal' table.")
 #         return None
     
 #     if not Path(databasename).exists():
 #         # os.remove(pushdir_name + ".db")
-#         print(f"ERROR: No journal exists for filename {databasename}")
+#         log.error(f"No journal exists for filename {databasename}")
 #         return None
 
 #     con = sqlite3.connect(databasename, check_same_thread=False)
@@ -737,7 +748,7 @@ def list_versions(databasename: str):
 
 #     cur.execute(f"DROP TABLE IF EXISTS {journalname}")
 
-#     print("NOTE: Dropped table ", journalname)
+#     log.info(f"Dropped table {journalname}")
 
 #     con.close()
     
@@ -763,14 +774,14 @@ def list_versions(databasename: str):
 #     """
 #     if not Path(databasename).exists():
 #         # os.remove(pushdir_name + ".db")
-#         print(f"ERROR: No journal exists for filename {databasename}")
+#         log.error(f"No journal exists for filename {databasename}")
 #         return None
 
 #     con = sqlite3.connect(databasename, check_same_thread=False)
 #     cur = con.cursor()
     
 #     if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='journal'").fetchone():
-#         print(f"ERROR: table journal does not exist to backup.")
+#         log.error(f"table journal does not exist to backup.")
 #         con.close()
 #         return None
 
@@ -780,7 +791,7 @@ def list_versions(databasename: str):
 #     cur.execute(f"DROP TABLE IF EXISTS {filesbackup}")
 #     cur.execute(f"CREATE TABLE {filesbackup} AS SELECT * FROM journal")
 
-#     print("INFO: backed up database journal to ", filesbackup)
+#     log.info(f"backed up database journal to {filesbackup}")
 
 #     con.close()
 
@@ -804,12 +815,12 @@ def list_versions(databasename: str):
 
 #     """
 #     if suffix is None:
-#         print("ERROR: previous version not specified.  please supply a suffix.")
+#         log.error("previous version not specified.  please supply a suffix.")
 #         return
     
 #     if not Path(databasename).exists():
 #         # os.remove(pushdir_name + ".db")
-#         print(f"ERROR: No journal exists for filename {databasename}")
+#         log.error(f"No journal exists for filename {databasename}")
 #         return
 
 #     con = sqlite3.connect(databasename, check_same_thread=False)
@@ -818,7 +829,7 @@ def list_versions(databasename: str):
 #     # check if the target table exists
 #     journalname = "journal_" + suffix
 #     if not cur.execute(f"SELECT name FROM sqlite_master WHERE type='table' AND name='{journalname}'").fetchone():
-#         print(f"ERROR:  backup table {journalname} does not exist.")
+#         log.error(f"backup table {journalname} does not exist.")
 #         con.close()
 #         return
 
@@ -829,7 +840,7 @@ def list_versions(databasename: str):
 #     cur.execute(f"DROP TABLE IF EXISTS journal")
 #     cur.execute(f"CREATE TABLE journal AS SELECT * FROM {journalname}")
 
-#     print("INFO: restored database journal from ", journalname)
+#     log.info(f"restored database journal from {journalname}")
 
 #     con.close()
 #     return journalname

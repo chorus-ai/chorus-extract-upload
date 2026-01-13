@@ -5,6 +5,17 @@ from pathlib import Path
 import shutil
 from chorus_upload.storage_helper import FileSystemHelper
 
+import logging
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger(__name__)
+
+
 #TODO: incrementally process the parameters.
 #TODO: check length of where clause.
 
@@ -31,7 +42,7 @@ class SQLiteDB:
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
         
         if len(where_str) > cls.max_where_clause:
-            print("WARNING: QUERY where clause is long")
+            log.warning(f"QUERY where clause is long")
         
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
@@ -79,7 +90,7 @@ class SQLiteDB:
 
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
         if len(where_str) > cls.max_where_clause:
-            print("WARNING: QUERY with LEFT JOIN where clause is long")
+            log.warning(f"QUERY with LEFT JOIN where clause is long")
 
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
@@ -111,10 +122,10 @@ class SQLiteDB:
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 if foreign_keys is not None:
-                    #print(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns}, {foreigns})")
+                    #log.debug(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns}, {foreigns})")
                     cur.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns}, {foreigns})")
                 else:
-                    #print(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
+                    #log.debug(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
                     cur.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
                 if index_on is not None:
                     cur.execute(f"CREATE INDEX IF NOT EXISTS {table_name}_idx ON {table_name} ({indexes})")
@@ -185,21 +196,21 @@ class SQLiteDB:
             with closing(conn.cursor()) as cur:
                 try:
                     if unique is not None and unique:
-                        #print(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})")
+                        #log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})")
                         cur.executemany(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})", params)
                     else:
-                        #print(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})")
+                        #log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})")
                         cur.executemany(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})", params)
                     inserted = cur.rowcount
                 except sqlite3.IntegrityError as e:
-                    print("ERROR: insert ", e)
-                    print(params)
+                    log.error(f"insert {e}")
+                    log.debug(params)
                 except sqlite3.InterfaceError as e:
-                    print("ERROR: insert ", e)
-                    print(params)
+                    log.error(f"insert {e}")
+                    log.debug(params)
                 except sqlite3.ProgrammingError as e:
-                    print("ERROR: insert ", e)
-                    print(params)
+                    log.error(f"insert {e}")
+                    log.debug(params)
 
             conn.commit()
         return inserted
@@ -226,22 +237,22 @@ class SQLiteDB:
             with closing(conn.cursor()) as cur:
                 try:
                     if unique:
-                        #print(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
+                        #log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
                         cur.execute(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
                     else:
-                        #print(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
+                        #log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
                         cur.execute(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
                     inserted = cur.rowcount
                     lastrowid = cur.lastrowid
                 except sqlite3.IntegrityError as e:
-                    print("ERROR: insert ", e)
-                    print(params)
+                    log.error(f"insert {e}")
+                    log.debug(params)
                 except sqlite3.InterfaceError as e:
-                    print("ERROR: insert ", e)
-                    print(params)
+                    log.error(f"insert {e}")
+                    log.debug(params)
                 except sqlite3.ProgrammingError as e:
-                    print("ERROR: insert ", e)
-                    print(params)
+                    log.error(f"insert {e}")
+                    log.debug(params)
 
             conn.commit()
         return inserted, lastrowid
@@ -261,29 +272,29 @@ class SQLiteDB:
         if (params is None) or (len(params) == 0):
             return 0
         
-        print("INFO: SQLiteDB updating ", table_name, " rows ", len(params))
+        log.info(f"SQLiteDB updating {table_name} rows {len(params)}")
         
         set_str = ', '.join(sets)
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
         if (len(where_str) > cls.max_where_clause):
-            print("WARNING: UPDATE where clause is long")
+            log.warning(f"UPDATE where clause is long")
         
         count = 0
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 try:
-                    #print(f"UPDATE {table_name} SET {set_str} {where_str}", flush = True)
+                    #log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
                     cur.executemany(f"UPDATE {table_name} SET {set_str} {where_str}", params)
                     count = cur.rowcount
                 except sqlite3.IntegrityError as e:
-                    print("ERROR: update ", e)
-                    print(params)
+                    log.error(f"update {e}")
+                    log.debug(params)
                 except sqlite3.InterfaceError as e:
-                    print("ERROR: update ", e)
-                    print(params)
+                    log.error(f"update {e}")
+                    log.debug(params)
                 except sqlite3.ProgrammingError as e:
-                    print("ERROR: update ", e)
-                    print(params)
+                    log.error(f"update {e}")
+                    log.debug(params)
                 
             conn.commit()
         return count
@@ -303,18 +314,18 @@ class SQLiteDB:
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 try:
-                    #print(f"UPDATE {table_name} SET {set_str} {where_str}", flush = True)
+                    #log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
                     cur.execute(f"UPDATE {table_name} SET {set_str} {where_str}")
                     count = cur.rowcount
                 except sqlite3.IntegrityError as e:
-                    print("ERROR: update ", e)
-                    print(sets)
+                    log.error(f"update {e}")
+                    log.debug(sets)
                 except sqlite3.InterfaceError as e:
-                    print("ERROR: update ", e)
-                    print(sets)
+                    log.error(f"update {e}")
+                    log.debug(sets)
                 except sqlite3.ProgrammingError as e:
-                    print("ERROR: update ", e)
-                    print(sets)
+                    log.error(f"update {e}")
+                    log.debug(sets)
                 
             conn.commit()
         return count
@@ -1345,13 +1356,13 @@ def _upgrade_journal(local_path, lock_path):
         new_journal_class = JournalTableV2
         old_ver = "V1"
     elif SQLiteDB.table_exists(local_fn, JournalTableV2.table_name):
-        print("INFO: Journal database is already at the latest version (v2).")
+        log.info(f"Journal database is already at the latest version (v2).")
         return None
     else:
-        print("ERROR: No journal table, or unsupported version to upgrade.")
+        log.error(f"No journal table, or unsupported version to upgrade.")
         return None
     
-    print(f"INFO: Found journal database version {old_ver} at {local_fn}")
+    log.info(f"Found journal database version {old_ver} at {local_fn}")
 
     # create a locak backup first.    
     orig_db_fn = local_fn.replace(".db", f"_{old_ver}.db")
@@ -1395,11 +1406,11 @@ def _upgrade_journal(local_path, lock_path):
         orig_db_fn.copy_file_to(backup_path)
     else: # already copied. 
         backup_path = orig_db_fn
-    print(f"INFO: backed up old journal database {local_fn} version {old_ver} as {backup_path}")
+    log.info(f"Backed up old journal database {local_fn} version {old_ver} as {backup_path}")
 
     # print some stats
-    print(f"INFO: Copied {len(history)} entries from {old_ver} cmd history database as {SQLiteDB.get_row_count(local_fn, new_cmd_hist_class.table_name)} new entries.")
-    print(f"INFO: Copied {len(journals)} entries from {old_ver} journal database as {SQLiteDB.get_row_count(local_fn, new_journal_class.table_name)} new entries.")
+    log.info(f"Copied {len(history)} entries from {old_ver} cmd history database as {SQLiteDB.get_row_count(local_fn, new_cmd_hist_class.table_name)} new entries.")
+    log.info(f"Copied {len(journals)} entries from {old_ver} journal database as {SQLiteDB.get_row_count(local_fn, new_journal_class.table_name)} new entries.")
     
 
     

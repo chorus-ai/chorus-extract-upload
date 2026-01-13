@@ -19,6 +19,16 @@ import parse
 
 from script_generators import _write_files
 
+import logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+log = logging.getLogger(__name__)
+
 
 # TODO: DONE need to support folder for different file types being located at different places.
 #       each location can be checked for specific set of file types.
@@ -67,8 +77,11 @@ from script_generators import _write_files
 # TODO: refactor script file generation to script_generators.py
 # TODO: support different journal transport methods.
 # TODO: support different upload methods.
-# TODO: change to require explicit checkout and checkin - other functions should work from journal.db.local file.
+# TODO: DONE change to require explicit checkout and checkin - other functions should work from journal.db.local file.
 # TODO: azcli needs account_name and should fail if that is not there...
+# TODO: DONE azure-azure copy requires {account_name}.blob.core.windows.net in the URL.
+# TODO: use logger instead of print.
+
 
 # create command processor that support subcommands
 # https://docs.python.org/3/library/argparse.html#sub-commands
@@ -130,7 +143,7 @@ def _update_journal(args, config, journal_fn):
         client, internal_host =storage_helper._make_client(mod_config)
         datafs = FileSystemHelper(config_helper.get_path_str(mod_config), client = client, internal_host = internal_host)
 
-        print("Update journal ", journal_fn, " for ", mod)
+        log.info(f"Update journal {journal_fn} for {mod}")
         update_journal(datafs, modalities = [mod], 
                        databasename = journal_fn, 
                        journaling_mode = journaling_mode,
@@ -142,7 +155,7 @@ def _update_journal(args, config, journal_fn):
 # helper to revert to a previous journal
 # def _revert_journal(args, config, journal_fn):
 #     revert_time = args.version
-#     print("Revert to: ", revert_time)
+#     log.info("Revert to: {revert_time}")
 #     restore_journal(journal_fn, revert_time)
     
 
@@ -165,7 +178,7 @@ def _select_files(args, config, journal_fn):
             mod_config = config_helper.get_site_config(config, mod)
 
             if mod_files is None:
-                print("No files found for modality ", mod)
+                log.info(f"No files found for modality {mod}")
                 continue
 
             for (version, files) in mod_files.items():
@@ -238,7 +251,7 @@ def _mark_as_deleted(args, config, journal_fn):
     elif (file is not None):
         local_ops.mark_files_as_deleted([file], databasename = journal_fn, version = version, verbose = args.verbose)
     else:
-        print("ERROR: must provide either --file or --file-list")
+        log.error("must provide either --file or --file-list")
     
     
 
@@ -269,7 +282,7 @@ def _upload_files(args, config, journal_fn):
     
 # helper to report file verification
 def _verify_files(args, config, journal_fn):
-    print("NOTE: This will NOT download files to verify md5.  It relies on file size and previously saved md5.")
+    log.info("This will NOT download files to verify md5.  It relies on file size and previously saved md5.")
     
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
@@ -289,9 +302,9 @@ def _verify_files(args, config, journal_fn):
     
     
 def _list_versions(args, config, journal_fn):
-    print("INFO: Uploads known in current journal: ")
+    log.info("Uploads known in current journal: ")
     local_ops.list_versions(journal_fn)
-    # print("INFO: Backed up journals: ")
+    # log.info("Backed up journals: ")
     # local_ops.list_journals(journal_fn)
 
 
@@ -443,7 +456,7 @@ if __name__ == "__main__":
                             ". please create one from the config.toml.template file,",
                             " or specify the config file with the -c option.")
         
-        print("INFO: Using config file: ", config_fn)
+        log.info(f"Using config file: {config_fn}")
         config = config_helper.load_config(config_fn)
         
         # get the configuration for profiling
@@ -474,6 +487,9 @@ if __name__ == "__main__":
             
             local_journal_fn = str(local_path.root)
 
+            if lock_path.is_cloud and lock_path.root.exists():
+                raise ValueError(f"ERROR: cannot upgrade journal because it is locked at {lock_path.root}.  Please unlock first.")
+
             # checkout journal            
             upload_ops.checkout_journal(journal_path, lock_path, local_path)
             
@@ -483,28 +499,28 @@ if __name__ == "__main__":
             journaldb_ops._upgrade_journal(local_path, lock_path)
             end = time.time()
             elapsed = end - start
-            print(f"Command Completed in {elapsed:.2f} seconds.")
+            log.info(f"Command Completed in {elapsed:.2f} seconds.")
     
             # push journal up.
             upload_ops.checkin_journal(journal_path, lock_path, local_path)
             
-        
         else:
-            if ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"])):
-                # purely local operation on the local file.
-                skip_checkout = True
-                skip_checkin = True
+            # if ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"])):
+            #     # purely local operation on the local file.
+            #     skip_checkout = True
+            #     skip_checkin = True
 
-            else:
-                # normal path - checkout, compute, checkin.
-                skip_checkout = False
-                skip_checkin = False
+            # else:
+            #     # normal path - checkout, compute, checkin.
+            #     skip_checkout = False
+            #     skip_checkin = False
                             
             local_journal_fn = str(local_path.root)
             
-            if not skip_checkout:
-                # checkout the journal
-                upload_ops.checkout_journal(journal_path, lock_path, local_path)
+            if lock_path.is_cloud and not lock_path.root.exists():
+                log.error(f"journal is not checked out.  Please checkout first.")
+                # # checkout the journal
+                # upload_ops.checkout_journal(journal_path, lock_path, local_path)
                             
             # === save command history
             args_dict = history_ops._strip_account_info(args)
@@ -518,14 +534,15 @@ if __name__ == "__main__":
             args.func(args, config, local_journal_fn)
             end = time.time()
             elapsed = end - start
-            print(f"Command Completed in {elapsed:.2f} seconds.")
+            log.info(f"Command Completed in {elapsed:.2f} seconds.")
 
             # save history runtime
             history_ops.update_command_completion(command_id, elapsed, local_journal_fn)
                 
             # and check in.
-            if not skip_checkin:
-                # push journal up.
-                upload_ops.checkin_journal(journal_path, lock_path, local_path)
-                
+            # if not skip_checkin:
+            #     # push journal up.
+            #     upload_ops.checkin_journal(journal_path, lock_path, local_path)
+            if lock_path.is_cloud:
+                log.info(f"operation completed.  please check in journal")
     
