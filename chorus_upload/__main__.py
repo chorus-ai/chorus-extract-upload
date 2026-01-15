@@ -15,13 +15,15 @@ import chorus_upload.storage_helper as storage_helper
 from chorus_upload.journaldb_ops import JournalDispatcher
 import chorus_upload.journaldb_ops as journaldb_ops
 
+from remote_file_ops import _list_remote_files, _upload_remote_files, _download_remote_files, _delete_remote_files
+
 import parse
 
 from script_generators import _write_files
 
 import logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler()
@@ -317,23 +319,22 @@ if __name__ == "__main__":
     subparsers = parser.add_subparsers(help="sub-command help", dest="command")
     subparsers.required = True
     
+    #------ help
     parser_help = subparsers.add_parser("usage", help = "show help information")
     parser_help.set_defaults(func = _print_usage)
     
-    #------ authentication help
+    #------ config file help
     parser_auth = subparsers.add_parser("config-help", help = "show help information about the configuration file")
     parser_auth.set_defaults(func = config_helper._print_config_usage)
     
-    #------- history
+    #------- history subparser
     parser_history = subparsers.add_parser("history", help = "show command history")
     parser_history.set_defaults(func = _show_history)
     
     #------ create subparsers
+    #------ create the parser for the "journal" command
     parser_journal = subparsers.add_parser("journal", help = "journal operations (update, list, checkout, checkin, unlock)")
     journal_subparsers = parser_journal.add_subparsers(help="sub-command help", dest="journal_command")
-    
-    parser_file = subparsers.add_parser("file", help = "file operations (list, upload, mark_as_uploaded_central, mark_as_uploaded_local, verify)")
-    file_subparsers = parser_file.add_subparsers(help="sub-command help", dest="file_command")
     
     
     #------ create the parser for the "update" command
@@ -376,6 +377,10 @@ if __name__ == "__main__":
     # parser_delete.add_argument("--version", help="datetime of an upload (use list to get date times).", required=False)
 
     # ----------- file stuff.
+    #------ create the parser for the "file" command
+    parser_file = subparsers.add_parser("file", help = "file operations (list, upload, mark_as_uploaded_central, mark_as_uploaded_local, verify)")
+    file_subparsers = parser_file.add_subparsers(help="sub-command help", dest="file_command")
+    
 
     # create the parser for the "select" command
     parser_select = file_subparsers.add_parser("list", help = "list files to upload")
@@ -433,6 +438,39 @@ if __name__ == "__main__":
                                required=False)
     parser_verify.set_defaults(func = _verify_files)
         
+    #------- remote file management    
+    #------ create the parser for the "file" command
+    parser_remote_file = subparsers.add_parser("remote", help = "remote file operations (list, upload, download, delete)")
+    remote_file_subparsers = parser_remote_file.add_subparsers(help="sub-command help", dest="remote_command")
+
+    # create the parser for the "list" command
+    parser_remote_list = remote_file_subparsers.add_parser("list", help = "list files to upload")
+    parser_remote_list.add_argument("file", nargs="?", help="file name, directory, or pattern to match files in Azure storage", default=None)
+    parser_remote_list.add_argument("--recursive", "-r", help="recursively list files in subdirectories", action="store_true", required=False)
+    parser_remote_list.set_defaults(func = _list_remote_files)
+    
+    # create the parse for "upload" command
+    parser_remote_upload = remote_file_subparsers.add_parser("upload", help = "upload file to central")
+    parser_remote_upload.add_argument("--overwrite", help="overwrite the file if it exists in Azure storage", action="store_true", required=False)
+    parser_remote_upload.add_argument("local", nargs="+", help="source filename pattern(s) or directory(ies) (trailing /) on local filesystem")
+    parser_remote_upload.add_argument("remote", help="destination directory in Azure storage with trailing /")
+    parser_remote_upload.add_argument("--recursive", "-r", help="recursively include files in subdirectories", action="store_true", required=False)
+    parser_remote_upload.set_defaults(func = _upload_remote_files)
+
+    # create the parser for "download" command
+    parser_remote_download = remote_file_subparsers.add_parser("download", help = "download files from central")
+    parser_remote_download.add_argument("--overwrite", help="overwrite the file if it exists on local filesystem", action="store_true", required=False)
+    parser_remote_download.add_argument("remote", nargs="+", help="source filename pattern, or directory (trailing /) on remote filesystem")
+    parser_remote_download.add_argument("local", help="destination file or directory in local storage (trailing /)")
+    parser_remote_download.add_argument("--recursive", "-r", help="recursively include files in subdirectories", action="store_true", required=False)
+    parser_remote_download.set_defaults(func = _download_remote_files)
+
+    # create the parser for "delete" command
+    parser_remote_delete = remote_file_subparsers.add_parser("delete", help = "delete files from central")
+    parser_remote_delete.add_argument("files", nargs="+", help="file name, directory, or pattern to match files in Azure storage", default=None)
+    parser_remote_delete.add_argument("--recursive", "-r", help="recursively delete files in subdirectories", action="store_true", required=False)
+    parser_remote_delete.set_defaults(func = _delete_remote_files)
+    
         
     # parse the arguments
     args = parser.parse_args()
@@ -503,6 +541,15 @@ if __name__ == "__main__":
     
             # push journal up.
             upload_ops.checkin_journal(journal_path, lock_path, local_path)
+        elif (args.command in ["remote"]):
+            local_journal_fn = str(local_path.root)
+            
+            # call the subcommand function.
+            start = time.time()
+            args.func(args, config, local_journal_fn)
+            end = time.time()
+            elapsed = end - start
+            log.info(f"Command Completed in {elapsed:.2f} seconds.")
             
         else:
             # if ((args.command in ["file"]) and (args.file_command in ["mark_as_uploaded_local"])):
