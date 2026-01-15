@@ -7,7 +7,7 @@ from chorus_upload.storage_helper import FileSystemHelper
 
 import logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler()

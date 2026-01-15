@@ -15,7 +15,7 @@ import parse
 
 import logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler()
@@ -548,7 +548,6 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
                                                         **{'uploaded': False})
         
     log.info(f"extracted files to upload for {('current' if version is None else version)} upload version and modalities = {(','.join(modalities) if modalities is not None else 'all')}")
-          (",".join(modalities) if modalities is not None else "all"))
     
     # this is pulling back only files with changes during since the last upload.  an old file may be inactivated but is in a previous upload
     # so we only see the "new" part, which would look like an add.

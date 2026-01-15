@@ -76,7 +76,7 @@ from urllib.parse import urlparse, urlunparse
 
 import logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler()
@@ -539,9 +539,26 @@ class FileSystemHelper:
             metadata["md5"] = md5_str
         return metadata
     
+    def convert_pattern(self, pattern: str, recursive: bool) -> str:
+        """
+        Convert a pattern from the "parse" package format to glob format.
+
+        Args:
+            pattern (str): The pattern to be converted.
+
+        Returns:
+            str: The converted pattern in glob format.
+        """
+        wildcard = "**/*" if recursive else "*"
+        glob_pattern = pattern if pattern is not None else wildcard
+        glob_pattern = glob_pattern.replace("{filepath}", wildcard)
+        glob_pattern = glob_pattern.replace("{patient_id:d}", "*").replace("{patient_id:w}", "*").replace("{patient_id}", "*")
+        glob_pattern = glob_pattern.replace("{version:d}", "*").replace("{version:w}", "*").replace("{version}", "*")
+        return glob_pattern
+    
     
     # not used.
-    def get_files(self, pattern : str = None ) -> list[str]:
+    def get_files(self, pattern : str = None , include_dirs: bool = False, recursive:bool = True) -> list[str]:
         """
         Returns a list of file paths within the specified subpath.
 
@@ -555,21 +572,20 @@ class FileSystemHelper:
         paths = []
         # all pathlib and cloudpathlib paths can use "/"
         
-        pattern = pattern if pattern is not None else "**/*"
-        # convert pattern from "parse" package format to glob format.
-        pattern = pattern.replace("{filepath}", "**/*")
-        pattern = pattern.replace("{patient_id:d}", "*").replace("{patient_id:w}", "*").replace("{patient_id}", "*")
-        pattern = pattern.replace("{version:d}", "*").replace("{version:w}", "*").replace("{version}", "*")
+        pattern = self.convert_pattern(pattern, recursive)
         # convert pattern to be case insensitive
-        log.info(f"INFO: getting list of files for {pattern}")
+        log.info(f"getting list of files for {pattern}")
         # not using rglob as it does too much matching.
         # case_sensitive is a pathlib 3.12+ feature.
         count = 0
         for f in self.root.glob(pattern, case_sensitive = False ):  # this may be inconsistently implemented in different clouds.
-            if not f.is_file():
+            if f.is_file():
+                paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client = self.client))
+            elif f.is_dir() and include_dirs:
+                paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client = self.client) + "/")  # add trailing slash to indicate directory
+            else:
                 continue
             
-            paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client = self.client))
             count += 1
             if (count % 1000) == 0:
                 log.info(f"Found {count} files")
@@ -579,7 +595,7 @@ class FileSystemHelper:
         return paths
     
 
-    def get_files_iter(self, pattern: str = None, page_size: int = 1000):
+    def get_files_iter(self, pattern: str = None, include_dirs : bool = False, recursive:bool = True, page_size: int = 1000):
         """
         Yields file paths within the specified subpath.
 
@@ -590,18 +606,39 @@ class FileSystemHelper:
             str: A file path relative to the root directory.
         """
 
-        glob_pattern = pattern if pattern is not None else "**/*"
-        glob_pattern = glob_pattern.replace("{filepath}", "**/*")
-        glob_pattern = glob_pattern.replace("{patient_id:d}", "*").replace("{patient_id:w}", "*").replace("{patient_id}", "*")
-        glob_pattern = glob_pattern.replace("{version:d}", "*").replace("{version:w}", "*").replace("{version}", "*")
-        log.info(f"INFO: getting list of files for {pattern} converted to {glob_pattern}")
+        # cloudpathlib infers directories, but present them as "files".  it is a prefix match up to a / delimiter or end of filename
+        # this means for foo/bar/test.txt,
+        #   foo/bar, matches, return as file
+        #   foo/bar/ matches, return as file
+        #   foo/ba does not match
+        #   foo/bar/test.txt matches, return as file
+        #   foo/bar/test.txt/ matches, return as file
+        # to properly check, we probably need to check EVERY file returned for existence (strip /, exist->file, not exist-> directory)
+        # or alternatively, post process the array.  problem is we are retrieving by batches.
+        # another alternative is to process by tracing the directories.
+        # check if pattern points to a directory
+
+        glob_pattern = self.convert_pattern(pattern, recursive)
+        log.info(f"getting list of files for {pattern} converted to {glob_pattern}")
         paths = []
         count = 0
+
+        log.warning(f"globbing: {self.root.cloud_prefix}{self.root.container}/{glob_pattern} with client {self.client}")
+        
         for f in self.root.glob(glob_pattern, case_sensitive = False):  # this may be inconsistently implemented in different clouds.
-            if not f.is_file():
-                continue
+            # check if file exists
             
-            paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client))
+            if f.exists():
+                log.warning(f"f {f}")
+                paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client))
+            else:
+                # elif f.is_dir(): # and include_dirs:
+                log.warning(f"d {f}")
+                paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client) + "/")  # add trailing slash to indicate directory
+            # else:
+            #     log.warning(f"? {f}")
+            #     continue
+            
             count += 1
             if count >= page_size:
                 #log.info(f"Found {count} files")

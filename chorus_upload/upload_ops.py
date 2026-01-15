@@ -21,7 +21,7 @@ import azure
 
 import logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler()
@@ -137,7 +137,7 @@ def checkout_journal(journal_path, lock_path, local_path, transport_method: str=
     # enforced restriction:  lock_path is cloud or None.  local_path is local.
     
     if (not journal_path.is_cloud):
-        log.info(f"INFO: journal is a local file: {str(journal_path.root)}. no locking needed.")
+        log.info(f"journal is a local file: {str(journal_path.root)}. no locking needed.")
         # local, ignore lock, and just copy if needed.
         # md5 = FileSystemHelper.get_metadata(journal_path.root, with_metadata = False, with_md5 = True)['md5']
         if journal_path.root.absolute() != local_path.root.absolute():
@@ -448,7 +448,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
         AssertionError: If some uploaded files are not in the journal or if there are mismatched files.
 
     """
-    log.info(f'INFO: UPLOAD_NEW uploading {max_num_files} files')
+    log.info(f'UPLOAD_NEW uploading {max_num_files} files')
     
     verbose = kwargs.get("verbose", False)
     modality_configs = kwargs.get("modality_configs", {})

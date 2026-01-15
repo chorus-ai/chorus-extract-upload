@@ -6,7 +6,7 @@ import platform
 
 import logging
 logging.basicConfig(
-    level=logging.DEBUG,
+    level=logging.WARNING,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler()
