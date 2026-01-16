@@ -1403,7 +1403,8 @@ def _upgrade_journal(local_path, lock_path):
     # copy the orig_db_path as a backup.
     if lock_path is not None:
         backup_path = str(lock_path.root).replace(".db", f"_{old_ver}.db")
-        orig_db_fn.copy_file_to(backup_path)
+        shutil.copy(lock_path, backup_path)
+        # orig_db_fn.copy_file_to(dest_path = backup_path)
     else: # already copied. 
         backup_path = orig_db_fn
     log.info(f"Backed up old journal database {local_fn} version {old_ver} as {backup_path}")

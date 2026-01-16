@@ -319,6 +319,7 @@ class FileSystemHelper:
                 # else:
                 #     return PureWindowsPath(pstr)
             else:
+                # TODO: incorporate client url into the path.
                 return path
         
         if isinstance(path, str):
@@ -351,7 +352,7 @@ class FileSystemHelper:
             return p.as_posix()
         else:
             # CloudPath does not provide as_posix() method, but should already be using "/" as separator.
-            return str(p)
+            return p
 
     
     def __init__(self, path: Union[str, CloudPath, Path], client : Optional[Client] = None, **kwargs):
@@ -623,17 +624,17 @@ class FileSystemHelper:
         paths = []
         count = 0
 
-        log.warning(f"globbing: {self.root.cloud_prefix}{self.root.container}/{glob_pattern} with client {self.client}")
+        # log.warning(f"globbing: {self.root.cloud_prefix}{self.root.container}/{glob_pattern} with client {self.client}")
         
         for f in self.root.glob(glob_pattern, case_sensitive = False):  # this may be inconsistently implemented in different clouds.
             # check if file exists
             
             if f.exists():
-                log.warning(f"f {f}")
+                # log.warning(f"f {f}")
                 paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client))
             else:
                 # elif f.is_dir(): # and include_dirs:
-                log.warning(f"d {f}")
+                # log.warning(f"d {f}")
                 paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client) + "/")  # add trailing slash to indicate directory
             # else:
             #     log.warning(f"? {f}")
@@ -697,6 +698,7 @@ class FileSystemHelper:
 
         if src_is_cloud:
             if dest_is_cloud:
+                log.debug(f"copying from cloud {src_file} to cloud {dest_file}")
                 src_uri = src_file.as_uri()
                 dest_uri = dest_file.as_uri()
                 
@@ -721,9 +723,11 @@ class FileSystemHelper:
                 
                 
             else:
+                log.debug(f"downloading from cloud {src_file} to local {dest_file}")
                 src_file.download_to(dest_file)
         else:
             if dest_is_cloud:
+                log.debug(f"uploading from local {src_file} to cloud {dest_file}")
                 # dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
                 dest_relpath = str(dest_file)[len("az://" + dest_file.container + "/"):] 
                 if verbose:
@@ -742,6 +746,7 @@ class FileSystemHelper:
                         log.error(f"ERROR uploading file {src_file} to {dest_relpath} with timeout {timeout} container {dest_file.container} exception {e}")
                         
             else:
+                log.debug(f"copying from local {src_file} to local {dest_file}")
                 try:
                     shutil.copy2(str(src_file), str(dest_file))
                 except shutil.SameFileError:
