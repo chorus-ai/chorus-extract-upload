@@ -1,29 +1,8 @@
 # chorus-extract-upload
 Scripts and tools for organizing uploads to the CHoRUS central data repository
 
-## IMPORTANT UPDATE 5/2/2025
-Please note that due to recent CHoRUS cloud network configuration changes, previous `config.toml` files need to be updated to reflect the new container name, the new storage account name.
-
-SAS tokens can be retrieved using a new process using site-specific 1Password URLs.  Please see "Getting Azure credential" section below.
-
-For new users, please follow the instructions below.
-
-For existing users, the changes are in the following sections of the `config.toml` file.
-
-```
-[journal]
-path : add "-temp" suffix to container name:  e.g. "az://emory/journal.db" to "az://emory-temp/journal.db"
-azure_account_name : "choruspilotstorage" -> "mghb2ailanding"
-azure_sas_token : retrieve using the 1password process.
-
-[central_path]
-path : add "-temp" suffix to container name:  e.g. "az://emory" to "az://emory-temp"
-Azure_container : add "-temp" suffix to container name:  e.g. "emory" to "emory-temp"
-azure_account_name : "choruspilotstorage" -> "mghb2ailanding"
-azure_sas_token : retrieve using the 1password process.
-```
-
-Also, previous change in `/etc/hosts` is no longer needed.  Please see step 4 below for instruction of undoing that change.
+## IMPORTANT UPDATE 1/22/2026
+Please note that due to CHoRUS cloud network configuration changes, web-based Active Directory login is now required instead of SAS tokens.  The `config.toml` file has been revised to allow this and related changes and therefore must be updated.  Please see the `Configuration` section to create or update the `config.toml` file.   AZ CLI will also be required for log in.
 
 
 ## Site-Specific Upload Environments
@@ -32,7 +11,7 @@ Also, previous change in `/etc/hosts` is no longer needed.  Please see step 4 be
 | ---- | ------------------ |
 | PITT | AZURE - Linux      |
 | UVA  | LOCAL - Windows    | 
-| EMRY | AWS/LOCAL - Linux        |
+| EMRY | LOCAL - Linux        |
 | TUFT | AZURE - Linux      |
 | SEA  | GCP - Linux        |
 | MGH  | LOCAL - Linux      |
@@ -48,13 +27,13 @@ Also, previous change in `/etc/hosts` is no longer needed.  Please see step 4 be
 
 ### Installation
 
-The `chorus-upload` tool is a Python package.  The package can be installed using pip.  The package requires Python 3.7 or later.  A virtual environment (venv or conda) is strongly recommended.  To install conda, please follow the [Conda Installation Instructions](https://docs.anaconda.com/miniconda/install/#quick-command-line-install)
+The `chorus-upload` tool is a Python package.  The package has been developed and tested using Python 3.12.  A virtual environment (venv or conda) is strongly recommended.  To install conda, please follow the [Conda Installation Instructions](https://docs.anaconda.com/miniconda/install/#quick-command-line-install)
 
-> **NOTE** Python 3.12 is now required.
+> **NOTE** Python 3.12 or later is required.
 
 1. Create and configure a conda environment: 
 ```
-conda create --name chorus python=3.12
+conda create -n chorus python=3.12
 
 conda activate chorus
 
@@ -91,37 +70,9 @@ flit install --symlink
 ```
 which allows changes in the code directory to be immediately reflected in the python environment.
 
-~~4. Configure /etc/hosts:~~
-~~The `/etc/hosts` modification that were previously required is no longer required for the `chorus-upload` tool. If you have previously added the following entry to your `/etc/hosts` file:~~
-
-~~```~~
-~~172.203.106.139             choruspilotstorage.blob.core.windows.net~~
-~~```~~
-
-~~please remove it to avoid potential conflicts or issues.~~
-
-~~On Linux or macOS, you can edit the `/etc/hosts` file using a text editor with root privileges:~~
-
-~~```~~
-~~sudo nano /etc/hosts~~
-~~```~~
-
-~~Locate the line containing `172.203.106.139 choruspilotstorage.blob.core.windows.net` and delete it. Save the file and exit the editor.~~
-
-~~On Windows, the equivalent file is located at:~~
-
-~~```~~
-~~C:\Windows\System32\drivers\etc\hosts~~
-~~```~~
-
-~~Open the file in a text editor with Administrator privileges, locate the same line, and remove it. Save the file and close the editor.~~
-
-~~After making these changes, no further `/etc/hosts` configuration is necessary for the tool to function correctly.~~
-
-
-> **Optional**
-> 5. AZ CLI installation (only when using `chorus-upload` generated azcli scripts):
-> You can configure the tool to use AZ CLI to upload files to the CHoRUS central cloud, or alternatively use the built in azure library for upload.   If you will be using AZ CLI, please install AZ CLI according to Microsoft instructions:
+> **REQUIRED**
+> 5. AZ CLI installation (required for Active Directory log in):
+> Please install AZ CLI according to Microsoft instructions:
 >
 > [Install Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
 
@@ -141,78 +92,59 @@ export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
 
 
 
-### Getting Azure credential
-
-**Using 1Password for SAS Token Retrieval**
-
-For institutions using 1Password to manage Azure credentials, follow these steps to retrieve your SAS token:
-
-1. Open your institution-specific 1Password URL in a web browser. The URL should be provided by your CHoRUS administrator.
-2. Log in to 1Password using your credentials.
-3. Search for the entry labeled with your institution's name and "Azure SAS Token."
-4. Copy the SAS token value from the entry.
-5. Paste the SAS token into the `azure_sas_token` field in your `config.toml` file.
-
-Ensure the SAS token is stored securely and not shared publicly. If you encounter any issues, contact your CHoRUS administrator for assistance.
-
-~~For users with CHoRUS cloud storage access via the Azure Portal, please generate a sas token for your container.  If you do not have access, please reach out to a member of the CHoRUS central cloud team.~~
-
-~~From the Azure Portal, navigate to `Storage Account` / `Containers`, and select your DGS container.  Please make note of the account name (should be `mghb2ailanding`) and the container name (should be a short name for your institution).  In the left menu, select `Settings` / `Shared access tokens`.  Create a new SAS token with `Read`, `Add`, `Create`, `Write`, `Move`, `Delete`, and `List` enabled (or just select all the options).  The expiration of the SAS token is recommended to be 1 month from the creation date.  Copy the SAS token string and save it in a secure location.  The SAS token will be used by the `chorus-upload` tool.~~
-
-If you are transferring files from a cloud account to CHoRUS, please refer to your institution's documentation to retrieve credentials for other storage clouds.  For a list of supported authentication mechanisms for each tested cloud providers, please see the `config.toml.template` file.
-
-
 ### Configuration:
-A `config.toml` file must be customized for each DGS.  A template is available as `chorus_upload/config.toml.template` in the `chorus-extract-upload` source tree.  Please see the template file for more details about each variable.   Below is an example illustrating different site_paths for different data types:  OMOP and Metadata are in versioned site directory, waveform data is in an on-prem directory, and image data are in S3 bucket.
+
+A `config.toml` file must be customized for each DGS.  A template is available as `chorus_upload/template.config.toml` in the `chorus-extract-upload` source tree.  Please see the template file for more details about each variable.   Below is an example illustrating different site_paths for different data types:  OMOP and Metadata are in versioned site directory, waveform data is in an on-prem directory, and image data are in S3 bucket.
+
+If you are transferring files from a cloud account to CHoRUS, please refer to your institution's documentation to retrieve credentials for other storage clouds.  For a list of supported authentication mechanisms for each tested cloud providers, please see the `template.config.toml` file.
+
+To edit the config.toml file, make a copy of `template.config.toml`, for example save as `config.toml`.  There are two REQUIRED edits, marked as `{CONTAINER}`, and `{LOCALPATH}`.  Replace all `{CONTAINER}` strings with site specific azure container name, for example `emory-temp`; note that `{` and `}` are also replaced.  The `{DATAPATH}` string should be replaced with the local file system path for the directory that contains `OMOP`, `Metadata`, and patient data directories.
+
+If the OMOP, Waveforms, Images, and Metadata directories are not placed in the same root level folder, the `template.config.toml` file allows additional customization of the path for each modality.  Please see the `template.config.toml` file for details.
+
+Example minimal `config.toml` file is show below
 
 ```
-# REQUIRED field are annotated as such
 
 [configuration]
+# common options.
+
 supported_modalities = "OMOP,Images,Waveforms,Metadata"
-
-# REQUIRED
-# journaling mode can be either "full" or "append". 
-# in full mode, the source data is assumed to be a full repo and journal is taking a snapshot.  Previous version file that are missing in the current file system are considered as deleted
-# in append mode, the source data is assumed to be new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  To delete a file, "file delete" has to be called.
-journaling_mode = "full"
-
-upload_method = "builtin"
-
-# flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
-
-auth_mode = "login"  # "login" or "sas_token"
+page_size = 1000
+num_threads = 12
 
 [journal]
-# REQUIRED.  location of the journal file.  defaults to chorus cloud storage.
-path = "az://emory-temp/journal.db"
+# REQUIRED  journaling mode can be either "full" or "append". 
+journaling_mode = "append"
 
-# REQUIRED if journal is in azure cloud.
-azure_account_name = "mghb2ailanding"
+  [journal.local]
+  path = "journal.v2.db"
 
-# REQUIRED if journal is in azure cloud.
-azure_sas_token = "sastoken"
+  [journal.source]
+  path = "az://emory-temp/journal.v2.db"
 
-# local path for downloaded journal file.  default is "journal.db"
-local_path = "journal.db"
+    [journal.source.auth]
+    auth_mode = "login" 
+    azure_account_url = "https://upload.chorus4ai.org"
+    azure_account_name = "mghb2ailanding"
 
 [central_path]
-# specify the central (target) container/path, to which files are uploaded.  
-# This is also the default location for the journal file
-# REQUIRED
+# REQUIRED specify the central (target) container/path, to which files are uploaded.  
 path = "az://emory-temp/"
 
-# REQUIRED
+# REQUIRED - container to store this in.
 azure_container = "emory-temp"
-# REQUIRED azure account credentials are specified as one or more of the following.
-azure_account_name = "mghb2ailanding"
-# REQUIRED azure account credentials are specified as one or more of the following.
-azure_sas_token = "sastoken"
+
+  [central_path.auth]
+  # CONDITIONAL if file is in cloud
+  # REQUIRED authentication mode.  either "login" or "sas_token"
+  auth_mode = "login" 
+  azure_account_url = "https://upload.chorus4ai.org"
+  azure_account_name = "mghb2ailanding"
 
 [site_path]
-
 # NOTE: LOCAL WINDOWS PATH should use either forward slash "/" or double backslash "\\"
-# each can have its own access credentials if in cloud.
+# each can have its own access credentials if in cloud.  These would not be inherited from default.
 
   [site_path.default]
   # REQUIRED specify the default site (source) path.
@@ -220,36 +152,13 @@ azure_sas_token = "sastoken"
 
   # OPTIONAL if same as default path.  
   [site_path.OMOP]
-  # REQUIRED if section present:  specific root paths for omop data
-  path = "/mnt/data/site"
-
-  # if true, OMOP is a subdirectory of patient directory:  "{patient_id:w}/OMOP/*.csv"
-  # if false, OMOP is a sibling directory of patients:  "OMOP/*.csv"
-  # default is false
-  # omop_per_patient = false
-
-  # indicates if the relative path is in a dated directory. default is false
-  versioned = true
-
-  # pattern for omop files.  defaults to "OMOP/{filepath}".  
-  # parsible variables are "version", "patient_id", and "filepath"
-  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
-  # modify to match the file organization under the root path.
-  pattern = "{version:w}/OMOP/{filepath}"
-
+  # OPTIONAL if section present:  specific root paths for omop data
+  # path = "/mnt/data/site"
 
   # OPTIONAL if same as default path.
   [site_path.Images]
-  # REQUIRED if section present:  specific root paths for images
-  path = "s3://container/path"
-  s3_container = "container"
-  aws_access_key_id = "access_key_id"
-  aws_secret_access_key = "secret_access"
-  
-  # indicates if the relative path is in a dated directory.  default is false
-  versioned = false
 
-  # pattern for Image files.  defaults to "{patient_id:w}/Images/{filepath}".  
+  # OPTIONAL pattern for Image files.  defaults to "{patient_id:w}/Images/{filepath}".  
   # parsible variables are "version", "patient_id", and "filepath"
   # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
   # modify to match the file organization under the root path.
@@ -257,36 +166,48 @@ azure_sas_token = "sastoken"
 
   # OPTIONAL if same as default path.  
   [site_path.Waveforms]
-  # REQUIRED if section present.  specifies root path of waveforms
-  path = "/mnt/another_datadir/site"
-
-  # indicates if the relative path is in a dated directory.  default is false
-  versioned = false
-
-  # pattern for Waveform files.  defaults to "{patient_id:w}/Waveforms/{filepath}".  
-  # parsible variables are "version", "patient_id", and "filepath"
-  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
-  # modify to match the file organization under the root path.
   pattern = "{patient_id:w}/Waveforms/{filepath}"
 
-  # OPTIONAL if same as default path.  
   [site_path.Metadata]
-  # REQUIRED if section present.  specifies root path of Metadata
-  path = "/mnt/another_datadir/site"
-
-  # indicates if the relative path is in a dated directory.  default is false
-  versioned = false
-
-  # pattern for Submission Metadata files.  defaults to "Metadata/{filepath}".  
-  # parsible variables are "version", "patient_id", and "filepath"
-  # use ":d" for digit only, or ":w" for digit, letter, and underscore. e.g. {patient_id:w}
-  # modify to match the file organization under the root path.
-  pattern = "{version:w}/Metadata/{filepath}"
+  pattern = "Metadata/{filepath}"
 
 ```
 
 
-### General Usage
+### Login
+
+First log in using the AZCLI tool, and 
+```
+az login --use-device-code
+```
+
+this will present an url and a code.  Visit the url and follow the prompt.  When instructed, return the the commandline.
+
+```
+To sign in, use a web browser to open the page https://microsoft.com/devicelogin and enter the code ELLBL72ZY to authenticate.
+```
+
+Which then would present a set of subscriptions.  Choose the one named `mgh-chorus-nonprod`.
+
+```
+Retrieving tenants and subscriptions for the selection...
+The following tenants don't contain accessible subscriptions. Use `az login --allow-no-subscriptions` to have tenant level access.
+e004fb9c-b0a4-424f-bcd0-xxxxxxxxxxxx 'Emory'
+93846777-7290-4ff3-a02d-xxxxxxxxxxxx 'MDIC'
+
+[Tenant and subscription selection]
+
+No     Subscription name    Subscription ID                       Tenant
+-----  -------------------  ------------------------------------  ---------------------------------
+[1] *  mgh-chorus-nonprod   2e7bd5a0-047d-44c9-a1eb-7f9f19622fd3  Mass General Brigham Incorporated
+
+The default is marked with an *; the default tenant is 'Mass General Brigham Incorporated' and subscription is 'mgh-chorus-nonprod' (2e7bd5a0-047d-44c9-a1eb-7f9f19622fd3).
+```
+
+The credential will be saved locally in the user's .azcli directory.  Once logged in, the chorus_upload tool will be able to access the appropriate container.
+
+
+### Usage
 
 First activate the python virtual environment:
 ```
@@ -301,8 +222,13 @@ The `chorus-upload` tool can be run from its source directory FOLLOWING THE GENE
 
 ```
 cd chorus-extract-upload
-python chorus_upload [params] <command> <subcommand> [subcommand params]
+python chorus_upload -c config.toml journal checkout 
+python chorus_upload -c config.toml <command> <subcommand> [subcommand params]
+python chorus_upload -c config.toml <command> <subcommand> [subcommand params]
+...
+python chorus_upload -c config.toml journal checkin 
 ```
+Not that we checkout the journal file, perform multiple local operations, and then checkin the journal file, which uploads the updated journal to the cloud container. 
 
 The `-h` parameter will display help information for the tool or each subcommand.
 
@@ -311,9 +237,14 @@ Different `config.toml` files can be specified by using the `-c` parameter
 
 ### Upload Process
 
-THERE ARE 2 STEPS:
+THERE ARE 4 STEPS:
 
-### 1. Create or Update Jounral
+### 1. check out the journal
+```
+python chorus_upload -c config.toml journal checkout 
+```
+
+### 2. Create or Update Jounral
 To create or an update journal, the following command can be run.  
 ```
 python chorus_upload -c config.toml journal update
@@ -334,11 +265,11 @@ The types of data (`OMOP`, `Images`, `Waveforms`) can be specified to restrict u
 python chorus_upload -c config.toml journal update --modalities OMOP,Images
 ```
 
-### 2. Upload files
+### 3. Upload files
 
-Files can be uploaded using either the integrated, multithreading file upload logic, or via a generated az-cli script.  Only files that have been added or modified since the last submission will be added.  
+Files can be uploaded using the integrated, multithreading file upload logic.  Only files that have been added or modified since the last submission will be uploaded.   
 
-#### Option 1: using integrated Azure Python SDK API  (RECOMMENDED)
+#### Using integrated Azure Python SDK API  (RECOMMENDED)
 
 From local file system
 ```
@@ -358,27 +289,6 @@ python chorus_upload -c config.toml journal checkin --local-journal {journal_fil
 then rerun the upload command.  The script will upload all the missed files plus up to 100 previously uploaded files.
 
 
-#### Option 2: using generated az-cli script
-A Linux bash script or a Windows batch file can be generated that includes all files that are submission candidates.  Executing this batch/shell script will invoke `az storage blob upload` to upload the files one by one.  Please note that this is currently single threaded.
-
-```
-python chorus_upload -c config.toml file list --output-file {output_file_name} --output-type azcli
-```
-
-Data types can be optionally specified via the `--modalities` flag.  For additional parameters, please see output of 
-```
-python chorus_upload -c config.toml file list -h
-```
-
-
-If the file upload is interrupted, and you need to restart, first locate the local journal file (`[journal] local_path` in the `config.toml` file), then call
-```
-python chorus_upload -c config.toml journal checkin --local-journal {journal_filename}
-```
-
-then rerun the `file list` command and execute the generated batch/shell script.  The `file list` command will generate a new batch/shell script with all the missed files plus up to 100 previously uploaded files.
-
-
 > **Optional**
 > ### Verify file uploads
 > This is not required as data upload also verifies the data upload.  Command below would verify the last version uploaded.
@@ -386,4 +296,8 @@ then rerun the `file list` command and execute the generated batch/shell script.
 > python chorus_upload -c config.toml file verify
 > ```
 
+### 4. Check in Journal file (REQUIRED)
+```
+python chorus_upload -c config.toml journal checkin 
+```
 

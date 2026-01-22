@@ -28,15 +28,16 @@ supported_modalities = "OMOP,Images,Waveforms,Metadata"
 # "full" mode: the source data is assumed to be a complete data repository and journal is taking a snapshot.  Previous version file that are missing in the current file system are considered as deleted
 # "append" mode: the source data is assumed to contain new or updated files only.  Previous version file that are missing in the current file system are NOT considered as deleted.  
 #       To delete a file, "file delete" has to be called.
-journaling_mode = "full"
+journaling_mode = "append"
 
   [journal.local]
   # OPTIONAL.  local path for downloaded journal file.  default is "journal.db"
-  path = "journal.db"
+  path = "journal.v2.db"
 
   [journal.source]
   # REQUIRED.  location of the journal file.  defaults to "journal.db" (local).
-  path = "az://container/journal.db"
+  # replace {CHANGEME} with your container name, e.g. "emory-temp"
+  path = "az://{CHANGEME}/journal.v2.db"
 
   # OPTIONAL if "builtin" then journal files will be transported using builtin python library will be used.  DO NOT CHANGE
   # upload_method = "builtin"
@@ -70,11 +71,12 @@ journaling_mode = "full"
 [central_path]
 # specify the central (target) container/path, to which files are uploaded.  
 # REQUIRED
-# example:  "az://container/path"
-path = "az://container/"
+# example:  "az://emory-temp/path"
+path = "az://{CHANGEME}/"
 
 # REQUIRED? - container to store this in.
-azure_container = "container"
+# example: emory-temp
+azure_container = "{CHANGEME}"
 
 # OPTIONAL flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
 # patient_first = true
@@ -112,7 +114,8 @@ azure_container = "container"
 
   [site_path.default]
   # REQUIRED specify the default site (source) path.
-  path = "/mnt/data/site"
+  # e.g. path = "/mnt/data/site"
+  path = "{CHANGEME}"
 
   # OPTIONAL if same as default path.  
   [site_path.OMOP]
