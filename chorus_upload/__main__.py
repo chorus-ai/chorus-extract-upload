@@ -452,7 +452,7 @@ if __name__ == "__main__":
     # create the parse for "upload" command
     parser_remote_upload = remote_file_subparsers.add_parser("upload", help = "upload file to central")
     parser_remote_upload.add_argument("--overwrite", help="overwrite the file if it exists in Azure storage", action="store_true", required=False)
-    parser_remote_upload.add_argument("local", nargs="+", help="source filename pattern(s) or directory(ies) (trailing /) on local filesystem")
+    parser_remote_upload.add_argument("local", nargs="+", help="source filename pattern(s) or directory(ies) (trailing /) in current working directory")
     parser_remote_upload.add_argument("remote", help="destination directory in Azure storage with trailing /")
     parser_remote_upload.add_argument("--recursive", "-r", help="recursively include files in subdirectories", action="store_true", required=False)
     parser_remote_upload.set_defaults(func = _upload_remote_files)

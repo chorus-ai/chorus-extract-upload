@@ -298,11 +298,11 @@ def _upload_and_verify(src_path : FileSystemHelper,
         
     if srcfile.exists():
         try:
-            src_path.copy_file_to((fn, destfn), dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
+            src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
         except azure.core.exceptions.ServiceResponseError as e:
             try:
                 log.warning(f"copy failed {fn}, retrying")
-                src_path.copy_file_to((fn, destfn), dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
+                src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
             except azure.core.exceptions.ServiceResponseError as e:                
                 log.error(f"copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
                 state = sync_state.MISSING_DEST
@@ -418,7 +418,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                 update_args = []
             
                 # backup intermediate file into the dated dest path.
-                # journal_path.copy_file_to(journal_fn, dated_dest_path)
+                # journal_path.copy_file_to(relpath=journal_fn, dest_path=dated_dest_path)
                 
                 perf.report()
                 
@@ -593,7 +593,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     for dated_dest_path in dated_dest_paths.values():
         if verbose:
             log.info(f"UPLOAD: backing up journal to {str(dated_dest_path.root)}")
-        journal_path.copy_file_to(journal_fn, dated_dest_path)
+        journal_path.copy_file_to(relpath=journal_fn, dest_path=dated_dest_path)
         
     # dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
     # journal_path.copy_file_to(journal_fn, dest_fn)
