@@ -23,13 +23,14 @@ from script_generators import _write_files
 
 import logging
 logging.basicConfig(
-    level=logging.WARNING,
+    level=logging.INFO,
     format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler()
     ]
 )
 log = logging.getLogger(__name__)
+logging.getLogger("azure").setLevel(logging.WARNING)
 
 
 # TODO: DONE need to support folder for different file types being located at different places.

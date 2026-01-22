@@ -1,14 +1,8 @@
 import time
 
 import logging
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
 log = logging.getLogger(__name__)
+
 
 class PerformanceCounter:
     def __print_total(self):

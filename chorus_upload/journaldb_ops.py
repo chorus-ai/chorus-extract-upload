@@ -6,14 +6,8 @@ import shutil
 from chorus_upload.storage_helper import FileSystemHelper
 
 import logging
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
 log = logging.getLogger(__name__)
+
 
 
 #TODO: incrementally process the parameters.

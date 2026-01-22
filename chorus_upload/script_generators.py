@@ -5,15 +5,7 @@ import os
 import platform
 
 import logging
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
 log = logging.getLogger(__name__)
-
 
 WINDOWS_STRINGS = {
     "eol": "\n",  # supposed to use "\n" reguardless of os.

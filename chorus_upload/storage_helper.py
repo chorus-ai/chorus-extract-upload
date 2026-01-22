@@ -75,13 +75,6 @@ from cloudpathlib import AzureBlobClient
 from urllib.parse import urlparse, urlunparse
 
 import logging
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
 log = logging.getLogger(__name__)
 
 
@@ -352,7 +345,7 @@ class FileSystemHelper:
             return p.as_posix()
         else:
             # CloudPath does not provide as_posix() method, but should already be using "/" as separator.
-            return p
+            return str(p)
 
     
     def __init__(self, path: Union[str, CloudPath, Path], client : Optional[Client] = None, **kwargs):
@@ -629,16 +622,15 @@ class FileSystemHelper:
         for f in self.root.glob(glob_pattern, case_sensitive = False):  # this may be inconsistently implemented in different clouds.
             # check if file exists
             
-            if f.exists():
+            if f.is_file():
                 # log.warning(f"f {f}")
                 paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client))
-            else:
-                # elif f.is_dir(): # and include_dirs:
+            elif f.is_dir() and include_dirs:
                 # log.warning(f"d {f}")
                 paths.append(FileSystemHelper._as_posix(f.relative_to(self.root), client=self.client) + "/")  # add trailing slash to indicate directory
-            # else:
+            else:
             #     log.warning(f"? {f}")
-            #     continue
+                continue
             
             count += 1
             if count >= page_size:

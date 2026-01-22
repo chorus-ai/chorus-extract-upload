@@ -265,6 +265,13 @@ The types of data (`OMOP`, `Images`, `Waveforms`) can be specified to restrict u
 python chorus_upload -c config.toml journal update --modalities OMOP,Images
 ```
 
+> **Optional**
+> ### Review files to be uploaded
+> This is not required but is a good practice.  Command below would list all files to be uploaded.  The `--modalities` parameter can be added to restrict to a type of files..
+> ```
+> python chorus_upload -c config.toml file list
+> ```
+
 ### 3. Upload files
 
 Files can be uploaded using the integrated, multithreading file upload logic.  Only files that have been added or modified since the last submission will be uploaded.   

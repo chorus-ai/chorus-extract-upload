@@ -14,13 +14,7 @@ from chorus_upload.journaldb_ops import JournalDispatcher
 import parse
 
 import logging
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
+
 log = logging.getLogger(__name__)
 
 
@@ -121,7 +115,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             lock = threading.Lock()
             
-            for paths in root.get_files_iter(pattern, page_size = page_size):
+            for paths in root.get_files_iter(pattern = pattern, page_size = page_size):
                 # list of relative paths in posix format and in string form.
                 futures = []
 
@@ -278,7 +272,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     if amend: # get the last version
         journal_version = JournalDispatcher.get_latest_version(database_name=databasename)
         if journal_version is None:
-            log.error(f"amend but there is not an existing version")
+            log.warning(f"amend without an existing version.  create new version.")
 
     perf = perf_counter.PerformanceCounter()
     
@@ -324,7 +318,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             lock = threading.Lock()
-            for paths in root.get_files_iter(pattern, page_size = page_size ):  # list of relative paths in posix format and in string form.
+            for paths in root.get_files_iter(pattern = pattern, page_size = page_size ):  # list of relative paths in posix format and in string form.
                 futures = []
                 modality_files_to_inactivate_in_iter = {}
                 

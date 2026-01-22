@@ -20,15 +20,7 @@ from chorus_upload.journaldb_ops import JournalDispatcher
 import azure
 
 import logging
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
 log = logging.getLogger(__name__)
-
 
 # TODO: DONE - Remove registry
 # TODO: DONE - Change schema of files to include modtime, filesize

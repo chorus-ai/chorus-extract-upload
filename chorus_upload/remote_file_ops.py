@@ -6,14 +6,8 @@ import concurrent.futures
 import threading
 
 import logging
-logging.basicConfig(
-    level=logging.WARNING,
-    format="%(asctime)s [%(levelname)s:%(name)s] %(message)s",
-    handlers=[
-        logging.StreamHandler()
-    ]
-)
 log = logging.getLogger(__name__)
+
 
 def _list_remote_files(args, config, journal_fn):
     central_config = config_helper.get_central_config(config)
@@ -31,7 +25,7 @@ def _list_remote_files(args, config, journal_fn):
     pattern = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
         
     print(f"Files matching pattern: {pattern}")
-    for paths in centralfs.get_files_iter(pattern, page_size=page_size, include_dirs=True):
+    for paths in centralfs.get_files_iter(pattern = pattern, page_size=page_size, include_dirs=True):
         for path in paths:
             print(f"{path}")
     
@@ -66,7 +60,7 @@ def __copy_files(srcfs, src_patterns, destfs, dest, nthreads, page_size, recursi
     file_list = set()
     for pattern in src_patterns:
         pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-        for paths in srcfs.get_files_iter(pat, page_size=page_size):
+        for paths in srcfs.get_files_iter(pattern = pat, page_size=page_size):
             file_list.update(paths)
                 
     if len(file_list) == 1:
@@ -202,12 +196,12 @@ def _delete_remote_files(args, config, journal_fn):
     count = 0
     for pattern in patterns:
         pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-        for paths in centralfs.get_files_iter(pat, page_size=page_size):
-            for path in paths:
-                if path.name.endswith("journal.db") or path.name.endswith("journal.db.locked"):
-                    print(f"Skipping journal file {path}.")
+        for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
+            for path_str in paths:
+                if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
+                    print(f"Skipping journal file {path_str}.")
                     continue
-                print(f"{path}")
+                print(f"{path_str}")
                 count += 1
 
     if count == 0:
@@ -221,12 +215,12 @@ def _delete_remote_files(args, config, journal_fn):
 
     for pattern in patterns:
         pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-        for paths in centralfs.get_files_iter(pat, page_size=page_size):
-            for path in paths:
-                if path.name.endswith("journal.db") or path.name.endswith("journal.db.locked"):
-                    print(f"Skipping journal file {path}.")
+        for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
+            for path_str in paths:
+                if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
+                    print(f"Skipping journal file {path_str}.")
                     continue
-                p = centralfs.root.joinpath(path)
+                p = centralfs.root.joinpath(path_str)
                 print(f"Deleting from {centralfs} {p}")
                 p.unlink()
                 
