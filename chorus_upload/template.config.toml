@@ -36,8 +36,8 @@ journaling_mode = "append"
 
   [journal.source]
   # REQUIRED.  location of the journal file.  defaults to "journal.db" (local).
-  # replace {CHANGEME} with your container name, e.g. "emory-temp"
-  path = "az://{CHANGEME}/journal.v2.db"
+  # replace {CONTAINER} with your container name, e.g. "emory-temp"
+  path = "az://{CONTAINER}/journal.v2.db"
 
   # OPTIONAL if "builtin" then journal files will be transported using builtin python library will be used.  DO NOT CHANGE
   # upload_method = "builtin"
@@ -72,11 +72,11 @@ journaling_mode = "append"
 # specify the central (target) container/path, to which files are uploaded.  
 # REQUIRED
 # example:  "az://emory-temp/path"
-path = "az://{CHANGEME}/"
+path = "az://{CONTAINER}/"
 
-# REQUIRED? - container to store this in.
+# REQUIRED - container to store this in.
 # example: emory-temp
-azure_container = "{CHANGEME}"
+azure_container = "{CONTAINER}"
 
 # OPTIONAL flag to indicate whether the central path should have modality as top level or patient a top level.  Default to patient_first = true 
 # patient_first = true
@@ -115,7 +115,7 @@ azure_container = "{CHANGEME}"
   [site_path.default]
   # REQUIRED specify the default site (source) path.
   # e.g. path = "/mnt/data/site"
-  path = "{CHANGEME}"
+  path = "{DATAPATH}"
 
   # OPTIONAL if same as default path.  
   [site_path.OMOP]
