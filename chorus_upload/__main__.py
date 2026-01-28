@@ -480,6 +480,10 @@ if __name__ == "__main__":
     # get the current script path
     if args.config is not None:
         config_fn = args.config
+        # Check if config_fn is absolute. If not, make it relative to the current directory.
+        if not Path(config_fn).is_absolute():
+            scriptdir = Path.cwd()
+            config_fn = str(scriptdir.joinpath(config_fn))
     else:
         scriptdir = Path(__file__).absolute().parent
         config_fn = str(scriptdir.joinpath("config.toml"))
