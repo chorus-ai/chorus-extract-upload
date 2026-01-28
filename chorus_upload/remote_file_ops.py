@@ -193,7 +193,7 @@ def _delete_remote_files(args, config, journal_fn):
     patterns = args.files
     # get the file name/pattern
     print(f"Files to be deleted matching pattern(s): {patterns}")
-    count = 0
+    files_to_delete = set()
     for pattern in patterns:
         pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
         for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
@@ -201,26 +201,36 @@ def _delete_remote_files(args, config, journal_fn):
                 if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
                     print(f"Skipping journal file {path_str}.")
                     continue
-                print(f"{path_str}")
-                count += 1
+                files_to_delete.add(path_str)
 
-    if count == 0:
+    if len(files_to_delete) == 0:
         print("No files found to delete.")
-        return  
+        return
+    else:
+        # inverse sort to hopefully delete files first before directories.
+        files_to_delete = sorted(files_to_delete, reverse=True)
+        print(f"Files to be deleted:")
+        for f in files_to_delete:
+            print(f"  {f}")
     
     print(f"Are you sure you want to delete these files? (y/n)")
     confirm = input().lower()
     if confirm == 'n':
         return
 
-    for pattern in patterns:
-        pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-        for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
-            for path_str in paths:
-                if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
-                    print(f"Skipping journal file {path_str}.")
-                    continue
-                p = centralfs.root.joinpath(path_str)
-                print(f"Deleting from {centralfs} {p}")
-                p.unlink()
+    for f in files_to_delete:
+        p = centralfs.root.joinpath(f)
+        print(f"Deleting from {centralfs} {p}")
+        p.unlink()
+
+    # for pattern in patterns:
+    #     pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
+    #     for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
+    #         for path_str in paths:
+    #             if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
+    #                 print(f"Skipping journal file {path_str}.")
+    #                 continue
+    #             p = centralfs.root.joinpath(path_str)
+    #             print(f"Deleting from {centralfs} {p}")
+    #             p.unlink()
                 
