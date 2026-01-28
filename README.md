@@ -295,6 +295,13 @@ python chorus_upload -c config.toml journal checkin --local-journal {journal_fil
 
 then rerun the upload command.  The script will upload all the missed files plus up to 100 previously uploaded files.
 
+> **Recommended**
+> ### Using nohup for long upload process
+> Uploading large amount of data may take a significant amount of time.  When using a remote linux machine to submit, `nohup` can be used to avoid the dropped ssh session causing upload to be interrupted.
+> ```
+> nohup python chorus_upload -c config.toml file upload &
+> ```
+
 
 > **Optional**
 > ### Verify file uploads

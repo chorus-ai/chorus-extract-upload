@@ -74,6 +74,10 @@ from cloudpathlib import AzureBlobClient
 #     from cloudpathlib import GoogleCloudClient
 from urllib.parse import urlparse, urlunparse
 
+from azure.core.pipeline.transport import RequestsTransport
+from requests.adapters import HTTPAdapter
+
+
 import logging
 log = logging.getLogger(__name__)
 
@@ -185,6 +189,10 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
     # so just put their keywords as name value pairs.  specifically, just set on BlobServiceClient the following:
     # connection_verify = False, connection_cert = None
 
+    # Create a custom transport with a bigger connection pool
+    adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
+    transport = RequestsTransport(connection_adapter=adapter)
+
     if azure_account_url:
         if azure_auth_mode == "login":
             # use login credential
@@ -196,6 +204,7 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
                     connection_cert = None,
                     max_single_get_size = AZURE_MAX_BLOCK_SIZE,
                     max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                    transport=transport,
                     ),
                 file_cache_mode = FileCacheMode.cloudpath_object)
         elif azure_auth_mode == "sas":
@@ -206,6 +215,7 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
                     connection_cert = None,
                     max_single_get_size = AZURE_MAX_BLOCK_SIZE,
                     max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                    transport=transport,
                     ),
                 file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string_env:
@@ -216,6 +226,7 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
                 connection_cert = None,
                 max_single_get_size = AZURE_MAX_BLOCK_SIZE,
                 max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                transport=transport,
                 ),
             file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
@@ -227,6 +238,7 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
                 connection_cert = None,
                 max_single_get_size = AZURE_MAX_BLOCK_SIZE,
                 max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                transport=transport,
                 ), 
             file_cache_mode = FileCacheMode.cloudpath_object)
     else:
