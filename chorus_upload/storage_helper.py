@@ -251,16 +251,17 @@ def __get_azure_internal_host(cloud_config:dict) -> Optional[str]:
     else:
         raise ValueError("Azure account name must be specified in the configuration toml file in each azure auth section.")
 
-# # internal helper to create the cloud client
-# def __make_gs_client(auth_params: dict):
-#     if google_application_credentials:
-#         # application credentials specified, then use it
-#         return GoogleCloudClient(application_credentials = google_application_credentials)
-#     elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-#         # application credentials specified in environment variables, then use it
-#         return GoogleCloudClient(application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
-#     else:
-#         raise ValueError("No viable Google application credentials to open connection")
+# internal helper to create the cloud client
+def __make_gs_client(auth_params: dict):
+    # if google_application_credentials:
+    #     # application credentials specified, then use it
+    #     return GoogleCloudClient(application_credentials = google_application_credentials)
+    # elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+        # application credentials specified in environment variables, then use it
+        return GoogleCloudClient(application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
+    else:
+        raise ValueError("No viable Google application credentials to open connection")
 
 # internal helper to create the cloud client
 def _make_client(cloud_config:dict):
@@ -272,10 +273,10 @@ def _make_client(cloud_config:dict):
         return __make_aws_client(cloud_params), None
     elif (path_str.startswith("az://")):
         return __make_az_client(cloud_params), __get_azure_internal_host(cloud_config)
-    # elif (path_str.startswith("gs://")):
-    #     return __make_gs_client(args, for_central = for_central)
+    elif (path_str.startswith("gs://")):
+        return __make_gs_client(cloud_params), None
     elif ("://" in path_str):
-        raise ValueError("Unknown cloud storage provider.  Supports s3, az")
+        raise ValueError("Unknown cloud storage provider.  Supports s3, az, gs")
     else:
         return None, None
     

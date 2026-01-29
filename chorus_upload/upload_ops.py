@@ -364,8 +364,10 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                      missing_dest, missing_src, matched, mismatched, replaced,
                      perf, nuploads, threads_per_file, verbose = False):
     dated_dest_paths = set()
+    nthreads = nuploads * threads_per_file
     with concurrent.futures.ThreadPoolExecutor(max_workers=nuploads) as executor:
         lock = threading.Lock()
+        
         
         futures = []
         for fn, info in files_to_upload.items():
