@@ -27,9 +27,9 @@ Please note that due to CHoRUS cloud network configuration changes, web-based Ac
 
 ### Installation
 
-The `chorus-upload` tool is a Python package.  The package has been developed and tested using Python 3.12.  A virtual environment (venv or conda) is strongly recommended.  To install conda, please follow the [Conda Installation Instructions](https://docs.anaconda.com/miniconda/install/#quick-command-line-install)
+The `chorus-upload` tool is a Python package.  The package has been developed and tested using Python 3.12, and is currently only compatible with 3.12.  A virtual environment (venv, conda, or mamba) is strongly recommended.  To install miniconda, please follow the [Conda Installation Instructions](https://docs.anaconda.com/miniconda/install/#quick-command-line-install).  To install micromamba, please follow the [Mamba Installation Instructions](https://mamba.readthedocs.io/en/latest/installation/micromamba-installation.html)
 
-> **NOTE** Python 3.12 or later is required.
+> **NOTE** Python 3.12 is required.  Other versions of python are not compatible.
 
 1. Create and configure a conda environment: 
 ```
@@ -40,7 +40,16 @@ conda activate chorus
 pip install flit
 ```
 
-or alternatively with python virtual environment
+or use micromamba:
+```
+micromamba create -n chorus python=3.12
+
+micromamba activate chorus
+
+pip install flit
+```
+
+or alternatively with python virtual environment if your system has python 3.12 
 ```
 python -m venv {venv_directory}
 source {venv_directory}/bin/activate
@@ -75,20 +84,6 @@ which allows changes in the code directory to be immediately reflected in the py
 > Please install AZ CLI according to Microsoft instructions:
 >
 > [Install Azure CLI](https://learn.microsoft.com/en-us/cli/azure/install-azure-cli)
-
-
-6. Setting environment variables:
-Also, please make sure that the following environment variable is set.  It is recommended that they are set in Linux .profiles file or as Windows user environment variable.
-
-Windows
-```
-set AZURE_CLI_DISABLE_CONNECTION_VERIFICATION 1
-```
-
-Linux
-```
-export AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
-```
 
 
 
@@ -215,6 +210,10 @@ conda activate chorus
 ```
 or
 ```
+micromamba activate chorus
+```
+or
+```
 source {venv_directory}/bin/activate
 ```
 
@@ -265,6 +264,8 @@ The types of data (`OMOP`, `Images`, `Waveforms`) can be specified to restrict u
 python chorus_upload -c config.toml journal update --modalities OMOP,Images
 ```
 
+### 3. Upload files
+
 > **Optional**
 > ### Review files to be uploaded
 > This is not required but is a good practice.  Command below would list all files to be uploaded.  The `--modalities` parameter can be added to restrict to a type of files..
@@ -272,7 +273,6 @@ python chorus_upload -c config.toml journal update --modalities OMOP,Images
 > python chorus_upload -c config.toml file list
 > ```
 
-### 3. Upload files
 
 Files can be uploaded using the integrated, multithreading file upload logic.  Only files that have been added or modified since the last submission will be uploaded.   
 
@@ -288,15 +288,12 @@ Optionally, the type of data (`OMOP`, `Images`, `Waveforms`) may be specified to
 python chorus_upload -c config.toml file upload -h
 ```
 
-If the file upload is interrupted, and you need to restart, first locate the local journal file (`[journal] local_path` in the `config.toml` file), then call
-```
-python chorus_upload -c config.toml journal checkin --local-journal {journal_filename}
-```
-
-then rerun the upload command.  The script will upload all the missed files plus up to 100 previously uploaded files.
+> If the file upload is interrupted, you can simply restart by calling the upload command 
+> again.  The script will upload all the missed files plus up to 100 previously uploaded 
+> files.
 
 > **Recommended**
-> ### Using nohup for long upload process
+> ### Using nohup and ssh on a remote server for long upload process 
 > Uploading large amount of data may take a significant amount of time.  When using a remote linux machine to submit, `nohup` can be used to avoid the dropped ssh session causing upload to be interrupted.
 > ```
 > nohup python chorus_upload -c config.toml file upload &
