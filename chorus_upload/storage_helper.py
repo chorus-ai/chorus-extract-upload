@@ -99,6 +99,21 @@ AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
 # alternatively, a Path or CloudPath can be passed in.
 
 
+# superclass patched cloudpathlib AzureBlobClient to avoid issue with 
+class PatchedAzureBlobClient(AzureBlobClient):
+    def __init__(self, blob_service_client, **kwargs):
+        super().__init__(blob_service_client=blob_service_client, **kwargs)
+        # bypass parent constructor entirely
+        self._client = blob_service_client
+
+    # override any method that tries to rebuild the client
+    def _get_service_client(self):
+        return self._client
+
+    def _get_container_client(self, container_name):
+        return self._client.get_container_client(container_name)
+
+
 # internal helper to create the cloud client
 def __make_aws_client(auth_params: dict) -> S3Client:
     # Azure format for account_url
@@ -190,56 +205,62 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
     # connection_verify = False, connection_cert = None
 
     # Create a custom transport with a bigger connection pool
-    adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
-    transport = RequestsTransport(connection_adapter=adapter)
+    # adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
+    # transport = RequestsTransport(connection_adapter=adapter)
+
+    transport = RequestsTransport( connection_pool_maxsize=100 )
 
     if azure_account_url:
         if azure_auth_mode == "login":
             # use login credential
-            return AzureBlobClient(
-                blob_service_client = BlobServiceClient(
-                    account_url=azure_account_url, 
-                    credential=credential,
-                    connection_verify = False, 
-                    connection_cert = None,
-                    max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-                    max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                    transport=transport,
-                    ),
-                file_cache_mode = FileCacheMode.cloudpath_object)
-        elif azure_auth_mode == "sas":
-            return AzureBlobClient(
-                blob_service_client = BlobServiceClient(
-                    account_url=azure_account_url, 
-                    connection_verify = False, 
-                    connection_cert = None,
-                    max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-                    max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                    transport=transport,
-                    ),
-                file_cache_mode = FileCacheMode.cloudpath_object)
-    elif azure_storage_connection_string_env:
-        return AzureBlobClient(
-            blob_service_client = BlobServiceClient.from_connection_string(
-                conn_str = azure_storage_connection_string_env, 
+            blob_service_client = BlobServiceClient(
+                account_url=azure_account_url, 
+                credential=credential,
                 connection_verify = False, 
                 connection_cert = None,
                 max_single_get_size = AZURE_MAX_BLOCK_SIZE,
                 max_single_put_size = AZURE_MAX_BLOCK_SIZE,
                 transport=transport,
-                ),
+                )
+            return PatchedAzureBlobClient(
+                blob_service_client = blob_service_client,
+                file_cache_mode = FileCacheMode.cloudpath_object)
+        elif azure_auth_mode == "sas":
+            blob_service_client = BlobServiceClient(
+                account_url=azure_account_url, 
+                connection_verify = False, 
+                connection_cert = None,
+                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+                transport=transport,
+                )
+            return PatchedAzureBlobClient(
+                blob_service_client = blob_service_client,
+                file_cache_mode = FileCacheMode.cloudpath_object)
+    elif azure_storage_connection_string_env:
+        blob_service_client = BlobServiceClient.from_connection_string(
+            conn_str = azure_storage_connection_string_env, 
+            connection_verify = False, 
+            connection_cert = None,
+            max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+            max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+            transport=transport,
+            )
+        return PatchedAzureBlobClient(
+            blob_service_client = blob_service_client,
             file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
         # connection string specified, then use it
-        return AzureBlobClient(
-            blob_service_client = BlobServiceClient.from_connection_string(
-                conn_str = azure_storage_connection_string, 
-                connection_verify = False, 
-                connection_cert = None,
-                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                transport=transport,
-                ), 
+        blob_service_client = BlobServiceClient.from_connection_string(
+            conn_str = azure_storage_connection_string, 
+            connection_verify = False, 
+            connection_cert = None,
+            max_single_get_size = AZURE_MAX_BLOCK_SIZE,
+            max_single_put_size = AZURE_MAX_BLOCK_SIZE,
+            transport=transport,
+            )
+        return PatchedAzureBlobClient(
+            blob_service_client = blob_service_client,
             file_cache_mode = FileCacheMode.cloudpath_object)
     else:
         raise ValueError("No viable Azure account info available to open connection")
