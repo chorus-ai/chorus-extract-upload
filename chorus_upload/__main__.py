@@ -532,7 +532,7 @@ if __name__ == "__main__":
             
             local_journal_fn = str(local_path.root)
 
-            if lock_path.is_cloud and lock_path.root.exists():
+            if lock_path is not None and lock_path.is_cloud and lock_path.root.exists():
                 raise ValueError(f"ERROR: cannot upgrade journal because it is locked at {lock_path.root}.  Please unlock first.")
 
             # checkout journal            
@@ -571,7 +571,7 @@ if __name__ == "__main__":
                             
             local_journal_fn = str(local_path.root)
             
-            if lock_path.is_cloud and not lock_path.root.exists():
+            if lock_path is not None and lock_path.is_cloud and not lock_path.root.exists():
                 log.error(f"journal is not checked out.  Please checkout first.")
                 # # checkout the journal
                 # upload_ops.checkout_journal(journal_path, lock_path, local_path)
@@ -597,6 +597,6 @@ if __name__ == "__main__":
             # if not skip_checkin:
             #     # push journal up.
             #     upload_ops.checkin_journal(journal_path, lock_path, local_path)
-            if lock_path.is_cloud:
+            if lock_path is not None and lock_path.is_cloud:
                 log.info(f"operation completed.  please check in journal")
     
