@@ -74,8 +74,8 @@ from cloudpathlib import AzureBlobClient
 #     from cloudpathlib import GoogleCloudClient
 from urllib.parse import urlparse, urlunparse
 
-from azure.core.pipeline.transport import RequestsTransport
-from requests.adapters import HTTPAdapter
+# from azure.core.pipeline.transport import RequestsTransport
+# from requests.adapters import HTTPAdapter
 
 
 import logging
@@ -99,19 +99,19 @@ AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
 # alternatively, a Path or CloudPath can be passed in.
 
 
-# superclass patched cloudpathlib AzureBlobClient to avoid issue with 
-class PatchedAzureBlobClient(AzureBlobClient):
-    def __init__(self, blob_service_client, **kwargs):
-        super().__init__(blob_service_client=blob_service_client, **kwargs)
-        # bypass parent constructor entirely
-        self._client = blob_service_client
+# # superclass patched cloudpathlib AzureBlobClient to avoid issue with 
+# class PatchedAzureBlobClient(AzureBlobClient):
+#     def __init__(self, blob_service_client, **kwargs):
+#         super().__init__(blob_service_client=blob_service_client, **kwargs)
+#         # bypass parent constructor entirely
+#         self._client = blob_service_client
 
-    # override any method that tries to rebuild the client
-    def _get_service_client(self):
-        return self._client
+#     # override any method that tries to rebuild the client
+#     def _get_service_client(self):
+#         return self._client
 
-    def _get_container_client(self, container_name):
-        return self._client.get_container_client(container_name)
+#     def _get_container_client(self, container_name):
+#         return self._client.get_container_client(container_name)
 
 
 # internal helper to create the cloud client
@@ -208,7 +208,7 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
     # adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
     # transport = RequestsTransport(connection_adapter=adapter)
 
-    transport = RequestsTransport( connection_pool_maxsize=100 )
+    # transport = RequestsTransport( connection_pool_maxsize=100 )
 
     if azure_account_url:
         if azure_auth_mode == "login":
@@ -220,9 +220,9 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
                 connection_cert = None,
                 max_single_get_size = AZURE_MAX_BLOCK_SIZE,
                 max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                transport=transport,
+                # transport=transport,
                 )
-            return PatchedAzureBlobClient(
+            return AzureBlobClient(
                 blob_service_client = blob_service_client,
                 file_cache_mode = FileCacheMode.cloudpath_object)
         elif azure_auth_mode == "sas":
@@ -232,9 +232,9 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
                 connection_cert = None,
                 max_single_get_size = AZURE_MAX_BLOCK_SIZE,
                 max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                transport=transport,
+                # transport=transport,
                 )
-            return PatchedAzureBlobClient(
+            return AzureBlobClient(
                 blob_service_client = blob_service_client,
                 file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string_env:
@@ -244,9 +244,9 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
             connection_cert = None,
             max_single_get_size = AZURE_MAX_BLOCK_SIZE,
             max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-            transport=transport,
+            # transport=transport,
             )
-        return PatchedAzureBlobClient(
+        return AzureBlobClient(
             blob_service_client = blob_service_client,
             file_cache_mode = FileCacheMode.cloudpath_object)
     elif azure_storage_connection_string:
@@ -257,9 +257,9 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
             connection_cert = None,
             max_single_get_size = AZURE_MAX_BLOCK_SIZE,
             max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-            transport=transport,
+            # transport=transport,
             )
-        return PatchedAzureBlobClient(
+        return AzureBlobClient(
             blob_service_client = blob_service_client,
             file_cache_mode = FileCacheMode.cloudpath_object)
     else:
