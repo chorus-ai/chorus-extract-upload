@@ -161,6 +161,8 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     # TODO need to handle version vs old version.
     lock = kwargs.get("lock", None)
     
+    relpath = relpath.replace("\\", "/")
+    
     # first item is personid.
     parsed = compiled_pattern.parse(relpath)
     if parsed is not None:
@@ -631,6 +633,8 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
         str: The central path, including version.
 
     """
+    
+    local_path = local_path.replace("\\", "/")
         
     parsed = in_compiled_pattern.parse(local_path)
     if parsed is None:
