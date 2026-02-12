@@ -46,18 +46,17 @@ RUN curl -LsS https://aka.ms/InstallAzureCLIDeb | bash && rm -rf /var/lib/apt/li
 # copy in the source code
 RUN git clone https://github.com/chorus-ai/chorus-extract-upload.git 
 WORKDIR /app/chorus-extract-upload
-ENV FLIT_ROOT_INSTALL=1
 
 # install chorus uploader
 RUN pip install --no-cache-dir flit && \
     git config --global --add safe.directory /app/chorus-extract-upload && \
-    flit install --symlink
+    export FLIT_ROOT_INSTALL=1 && flit install --symlink
 
 # copy in the config.toml file
 # COPY /app/chorus-extract-upload/chorus_upload/config.toml.template /app/chorus-extract-upload/config.toml
 
 # entrypoint in "exec" form
-ENV AZURE_CLI_DISABLE_CONNECTION_VERIFICATION 1
+ENV AZURE_CLI_DISABLE_CONNECTION_VERIFICATION=1
 
 # Can't mount here without saving the sas token.  has to be invoked from console.
 # RUN blobfuse2 mount all /mnt --config-file=/app/chorus-extract-upload/configurations/blobfuse2.yaml
