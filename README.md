@@ -254,10 +254,10 @@ By default, the current date and time is used as the submission version.  A spec
 python chorus_upload -c config.toml journal update --version 20241130080000
 ```
 
-The last version can be amended by using the --amend flag.   Multiple journal updates may be performed before a data submission.
+<!-- The last version can be amended by using the --amend flag.   Multiple journal updates may be performed before a data submission.
 ```
 python chorus_upload -c config.toml journal update --amend
-```
+``` -->
 
 The types of data (`OMOP`, `Images`, `Waveforms`) can be specified to restrict update to one or more data types.
 ```

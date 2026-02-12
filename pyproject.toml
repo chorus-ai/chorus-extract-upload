@@ -23,7 +23,8 @@ dependencies = [
     "cloudpathlib[azure] == 0.18.1",
     "azure-identity == 1.25.1",
     "tomli",
-    "parse"
+    "parse",
+    "tabulate"
 ]
 
 [project.optional-dependencies]

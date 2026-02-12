@@ -18,58 +18,83 @@ class SQLiteDB:
     chunk_size = 1000
     max_where_clause = 200000
     
-    # columns is a list of columns to retrieve from
-    # where_clause is a string in case  we have to deal with AND/OR, etc.
     @classmethod
-    def query(cls, 
-                database_name: str, 
-                table_name:str, 
-                columns : list, 
-                where_clause: str = None,
-                count:int = None):
-        
-        if (columns is None) or (len(columns) == 0):
-            fields = "*"
-        else:
-            fields = ', '.join(columns)
-            
+    def _make_select_stmt(cls, 
+                         table_or_subquery:str, 
+                         columns:list, 
+                         where_clause:str = None):
+        fields = ', '.join(columns) if (columns is not None) and (len(columns) > 0) else "*"
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
+        return f"SELECT {fields} FROM {table_or_subquery}{where_str}"
+    
+    
+    # # columns is a list of columns to retrieve from
+    # # where_clause is a string in case  we have to deal with AND/OR, etc.
+    # @classmethod
+    # def query(cls, 
+    #             database_name: str, 
+    #             table_name:str, 
+    #             columns : list, 
+    #             where_clause: str = None,
+    #             max_return:int = None):
         
-        if len(where_str) > cls.max_where_clause:
+    #     select_str = cls._make_select_stmt(table_name, columns, where_clause)
+
+    #     if where_clause is not None and (len(where_clause) > cls.max_where_clause):
+    #         log.warning(f"QUERY where clause is long")
+        
+    #     with sqlite3.connect(database_name, check_same_thread=False) as conn:
+    #         with closing(conn.cursor()) as cur:
+    #             res = cur.execute(select_str)
+    #             if (max_return is None) or (max_return == 0):
+    #                 # get all
+    #                 vals = res.fetchall()
+    #             elif max_return == 1:
+    #                 vals = res.fetchone()
+    #             else:
+    #                 vals = res.fetchmany(max_return)
+    #     return vals        
+
+    # columns and groupby should use the same naming convention - both should be list of strings.
+    @classmethod
+    def query(cls,
+                      database_name: str,
+                      table_name: str,
+                      columns : list, 
+                      where_clause: str = None,
+                      groupby : list = [],
+                      max_return:int = None):
+        
+        cols = set(columns).union(set(groupby))
+        
+        select_str = cls._make_select_stmt(table_name, cols, where_clause)
+
+        if where_clause is not None and (len(where_clause) > cls.max_where_clause):
             log.warning(f"QUERY where clause is long")
         
+        if (groupby is not None) and (len(groupby) > 0):
+            select_str += f" GROUP BY {','.join(groupby)}"
+        
+        print(select_str)
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
-                res = cur.execute(f"SELECT {fields} FROM {table_name} {where_str}")
-                if (count is None) or (count == 0):
+                res = cur.execute(select_str)
+                if (max_return is None) or (max_return == 0):
                     # get all
                     vals = res.fetchall()
-                elif count == 1:
+                elif max_return == 1:
                     vals = res.fetchone()
                 else:
-                    vals = res.fetchmany(count)
-        return vals        
+                    vals = res.fetchmany(max_return)
+        return vals    
+        
 
     @classmethod
-    def query_with_left_join(cls,
-                        database_name: str,
-                        table_name: str,
-                        columns: list,
-                        join_criteria: list = None,
-                        where_clause: str = None,
-                        count: int = None):
-        """
-        Query the database with a JOIN clause.
-        Parameters:
-        - database_name (str): The name of the database file to connect to.
-        - table_name (str): The name of the table to query.
-        - columns (list): The columns to retrieve from the table, in the form of (table.column, output name).
-        - join_criteria (list of tuples, optional): The JOIN criteria - tuples of parent table, childtable foreign key, parent table  key.
-        - where_clause (str, optional): The WHERE clause to use in the query.  operates on joined data
-        - count (int, optional): The number of rows to retrieve from the query.
-        Returns:
-        - list: A list of tuples containing the query results.
-        """
+    def _make_select_stmt_with_left_join(cls, 
+                         table_or_subquery:str, 
+                         columns:list, 
+                         join_criteria: list = None,
+                         where_clause:str = None):
         fields = []
         for (col, out) in columns:
             if out is None:
@@ -83,20 +108,46 @@ class SQLiteDB:
             join_clause += f" LEFT JOIN {join[0]} ON {join[1]} = {join[2]}"
 
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
-        if len(where_str) > cls.max_where_clause:
+        return f"SELECT {fields} FROM {table_or_subquery} {join_clause}{where_str}"
+    
+    @classmethod
+    def query_with_left_join(cls,
+                        database_name: str,
+                        table_name: str,
+                        columns: list,
+                        join_criteria: list = None,
+                        where_clause: str = None,
+                        max_return: int = None):
+        """
+        Query the database with a JOIN clause.
+        Parameters:
+        - database_name (str): The name of the database file to connect to.
+        - table_name (str): The name of the table to query.
+        - columns (list): The columns to retrieve from the table, in the form of (table.column, output name).
+        - join_criteria (list of tuples, optional): The JOIN criteria - tuples of parent table, childtable foreign key, parent table  key.
+        - where_clause (str, optional): The WHERE clause to use in the query.  operates on joined data
+        - max_return (int, optional): The number of rows to retrieve from the query.
+        Returns:
+        - list: A list of tuples containing the query results.
+        """
+        
+        select_stmt = cls._make_select_stmt_with_left_join(table_name, columns, join_criteria, where_clause)
+        if where_clause is not None and (len(where_clause) > cls.max_where_clause):
             log.warning(f"QUERY with LEFT JOIN where clause is long")
+
+        print(select_stmt)
 
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
-                res = cur.execute(f"SELECT {fields} FROM {table_name} {join_clause} {where_str}")
+                res = cur.execute(select_stmt)
                 
-                if (count is None) or (count == 0):
+                if (max_return is None) or (max_return == 0):
                     # get all
                     vals = res.fetchall()
-                elif count == 1:
+                elif max_return == 1:
                     vals = res.fetchone()
                 else:
-                    vals = res.fetchmany(count)
+                    vals = res.fetchmany(max_return)
         return vals
 
     # column_types is a list of tuples of form (column_name, column_type, column property)
@@ -337,35 +388,27 @@ class SQLiteDB:
                           database_name: str, 
                           table_name: str, 
                           column_name: str,
-                          count: int = None):
+                          max_return: int = None):
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 res = cur.execute(f"SELECT DISTINCT {column_name} FROM {table_name}")
-                if (count is None) or (count == 0):
+                if (max_return is None) or (max_return == 0):
                     # get all
                     vals = res.fetchall()
-                elif count == 1:
+                elif max_return == 1:
                     vals = res.fetchone()
                 else:
-                    vals = res.fetchmany(count)
+                    vals = res.fetchmany(max_return)
         return vals
 
-    @classmethod
-    def get_row_count(cls,
-                      database_name: str,
-                      table_name: str):
-        with sqlite3.connect(database_name, check_same_thread=False) as conn:
-            with closing(conn.cursor()) as cur:
-                val = cur.execute(f"SELECT COUNT(*) FROM {table_name}").fetchone()[0]
-        return val
-        
+
     @classmethod
     def table_exists(cls, database_name: str, table_name: str ) -> bool:
         table_exists = cls.query(database_name = database_name,
                                  table_name = "sqlite_master",
                                  columns = ["name"],
                                  where_clause = f"type='table' AND name='{table_name}'",
-                                 count = 1)
+                                 max_return = 1)
             
         return (table_exists is not None) and (table_exists[0] == table_name)
         
@@ -397,7 +440,7 @@ class CommandHistoryDispatcher:
         elif dbver == 2:
             CommandHistoryTableV2.create_command_history_table(database_name)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def insert_command_history_entry(cls, database_name: str, params: tuple) -> int:
@@ -407,7 +450,7 @@ class CommandHistoryDispatcher:
         elif dbver == 2:
             return CommandHistoryTableV2.insert_command_history_entry(database_name, params)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def get_command_history(cls, database_name: str):
@@ -417,7 +460,7 @@ class CommandHistoryDispatcher:
         elif dbver == 2:
             return CommandHistoryTableV2.get_command_history(database_name)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def update_command_completion(cls, database_name: str, command_id:int, duration:float):
@@ -427,7 +470,7 @@ class CommandHistoryDispatcher:
         elif dbver == 2:
             return CommandHistoryTableV2.update_command_completion(database_name, command_id, duration)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
 
 
 # create dispatch class
@@ -463,7 +506,7 @@ class JournalDispatcher:
         elif dbver == 2:
             JournalTableV2.create_journal_table(database_name)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def insert_journal_entries(cls, database_name: str, params: list) -> int:
@@ -473,7 +516,7 @@ class JournalDispatcher:
         elif dbver == 2:
             return JournalTableV2.insert_journal_entries(database_name, params)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def inactivate_journal_entries(cls, database_name: str, invalidate_time: int, file_states: list):
@@ -483,7 +526,7 @@ class JournalDispatcher:
         elif dbver == 2:
             return JournalTableV2.inactivate_journal_entries(database_name, invalidate_time, file_states)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def mark_as_uploaded_with_duration(cls, database_name: str, update_args: list):
@@ -493,7 +536,7 @@ class JournalDispatcher:
         elif dbver == 2:
             return JournalTableV2.mark_as_uploaded_with_duration(database_name, update_args)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def mark_as_uploaded(cls, database_name: str, version: str, upload_args: list):
@@ -511,7 +554,7 @@ class JournalDispatcher:
         elif dbver == 2:
             return JournalTableV2.get_latest_version(database_name)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod   
     def get_files_with_meta(cls, database_name: str, version: str, modalities: list, **kwargs):
@@ -521,7 +564,7 @@ class JournalDispatcher:
         elif dbver == 2:
             return JournalTableV2.get_files_with_meta(database_name, version, modalities, **kwargs)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
     
     @classmethod
     def get_files(cls, database_name: str, version: str, modalities: list, **kwargs):
@@ -531,7 +574,21 @@ class JournalDispatcher:
         elif dbver == 2:
             return JournalTableV2.get_files(database_name, version, modalities, **kwargs)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
+        
+    @classmethod
+    def get_stats(cls, 
+                    database_name: str, 
+                    version: str, 
+                    **kwargs):
+        
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
+            return JournalTableV1.get_stats(database_name, version, **kwargs)
+        elif dbver == 2:
+            return JournalTableV2.get_stats(database_name, version, **kwargs)
+        else:
+            raise ValueError(f"Unsupported Journal version {dbver}")
 
     @classmethod
     def get_versions(cls, database_name: str):
@@ -541,7 +598,7 @@ class JournalDispatcher:
         elif dbver == 2:
             return JournalTableV2.get_versions(database_name)
         else:
-            raise ValueError("Invalid version number")
+            raise ValueError(f"Unsupported Journal version {dbver}")
 
 class CommandHistoryTableV1:
     table_name = "command_history"
@@ -587,7 +644,7 @@ class CommandHistoryTableV1:
                          table_name = cls.table_name,
                          columns = None,
                          where_clause = None,
-                         count = None)
+                         max_return = None)
 
     @classmethod
     def update_command_completion(cls, 
@@ -726,11 +783,11 @@ class JournalTableV1:
             
             where_clause += "UPLOAD_DTSTR IS NOT NULL" if uploaded else "UPLOAD_DTSTR IS NULL"
             
-            
+
         if version is not None:
             if len(where_clause) > 0:
                 where_clause += " AND "
-            where_clause += f"version = '{version}'"
+            where_clause += f"VERSION = '{version}'"
         
 
         if (modalities is not None) and (len(modalities) > 0):
@@ -748,13 +805,13 @@ class JournalTableV1:
                        **kwargs):
         
         where_clause = cls._make_where_clause(version, modalities, **kwargs)
-        count = kwargs.get("count", None)
+        max_return = kwargs.get("count", None)
             
         return SQLiteDB.query(database_name = database_name,
                         table_name = cls.table_name,
                         columns = ["FILE_ID", "FILEPATH", "SRC_MODTIME_us", "SIZE", "MD5", "MODALITY", "TIME_INVALID_us", "VERSION", "UPLOAD_DTSTR"],
                         where_clause = where_clause,
-                        count = count)
+                        max_return = max_return)
 
 
     @classmethod
@@ -763,14 +820,47 @@ class JournalTableV1:
                        **kwargs):
         
         where_clause = cls._make_where_clause(version, modalities, **kwargs)
-        count = kwargs.get("count", None)
+        max_return = kwargs.get("count", None)
             
         return SQLiteDB.query(database_name = database_name,
                         table_name = cls.table_name,
                         columns = ["FILE_ID", "FILEPATH"],
                         where_clause = where_clause,
-                        count = count)
+                        max_return = max_return)
         
+    @classmethod
+    def get_stats(cls, 
+                    database_name: str, 
+                    version: str, 
+                    **kwargs):
+        
+        
+        groupby_list = ['VERSION', 'MODALITY']
+        group_list = ','.join(groupby_list)
+        
+        cols = group_list
+        cols.append("COUNT(FILE_ID) AS n_rows")
+        cols.append("COUNT(DISTINCT PERSON_ID) AS n_persons")
+        cols.append("COUNT(DISTINCT FILEPATH) AS n_files")
+        cols.append("SUM(TIME_INVALID_us IS NULL) AS n_active")
+        cols.append("SUM(TIME_INVALID_us IS NULL AND UPLOAD_DTSTR IS NULL) as n_upload")
+                            
+        where_clause = cls._make_where_clause_for_join(version, None, **kwargs)
+
+        # query = f"SELECT versions.VERSION as version, modalities.MODALITY as modality, g.row_count as row_count FROM {subquery}"
+        # query += f" LEFT JOIN versions ON versions.id = g.VERSION_ID"
+        # query += f" LEFT JOIN modalities ON modalities.id = g.MODALITY_ID"
+        # query += f" WHERE {cls._make_where_clause_for_join(version, modalities, **kwargs)}"
+            
+        results = SQLiteDB.query(database_name = database_name,
+                        table_name = cls.table_name,
+                        columns = cols,
+                        where_clause = where_clause,
+                        groupby = groupby_list,
+                        max_return = None)
+        # return results
+        return [(version, modality, n_rows, n_persons, n_files, n_active, n_upload) for (version, modality, n_rows, n_persons, n_files, n_active, n_upload) in results]
+    
         
     @classmethod
     def get_versions(cls, database_name: str):
@@ -823,7 +913,7 @@ class CommandHistoryTableV2:
                          table_name = cls.table_name,
                          columns = None,
                          where_clause = None,
-                         count = None)
+                         max_return = None)
 
     @classmethod
     def update_command_completion(cls, 
@@ -1146,7 +1236,7 @@ class JournalTableV2:
                        version: str, modalities: list, 
                        **kwargs):
         
-        count = kwargs.get("count", None)
+        max_return = kwargs.get("count", None)
         columns = [
             ("FILE_ID", None),
             ("srcpaths.SRC_PATH", "src_path"),
@@ -1172,7 +1262,7 @@ class JournalTableV2:
                         columns = columns,
                         join_criteria=join_criteria,
                         where_clause = where_clause,
-                        count = count)
+                        max_return = max_return)
 
         # create a generator to yield the results
         return [(fid, str(Path(srcpath) / fn), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
@@ -1182,7 +1272,7 @@ class JournalTableV2:
                        version: str, modalities: list, 
                        **kwargs):
         
-        count = kwargs.get("count", None)
+        max_return = kwargs.get("count", None)
         columns = [
             ("FILE_ID", None),
             ("srcpaths.SRC_PATH", "src_path"),
@@ -1191,6 +1281,14 @@ class JournalTableV2:
         join_criteria = [
             ("srcpaths", "srcpaths.id", f"{cls.table_name}.SRC_PATH_ID"),
         ]
+
+        if version is not None:
+            columns.append( ("versions.VERSION", "version"))
+            join_criteria.append( ("versions", "versions.id", f"{cls.table_name}.VERSION_ID") )
+        if (modalities is not None) and (len(modalities) > 0): 
+            columns.append( ("modalities.MODALITY", "modality"))
+            join_criteria.append( ("modalities", "modalities.id", f"{cls.table_name}.MODALITY_ID") )   
+        
         where_clause = cls._make_where_clause_for_join(version, modalities, **kwargs)
             
         result = SQLiteDB.query_with_left_join(database_name = database_name,
@@ -1198,10 +1296,59 @@ class JournalTableV2:
                         columns = columns,
                         join_criteria=join_criteria,
                         where_clause = where_clause,
-                        count = count)
+                        max_return = max_return)
 
         # create a generator to yield the results
         return [(fid, str(Path(srcpath) / fn)) for (fid, srcpath, fn) in result]
+    
+    @classmethod
+    def get_stats(cls, 
+                    database_name: str, 
+                    version: str, 
+                    **kwargs):
+        
+        groupby_list = ['VERSION_ID', 'MODALITY_ID']
+        group_list = ', '.join(groupby_list)
+        
+        subquery = f"(SELECT {group_list}, "
+        cols = [
+            "COUNT(FILE_ID) AS n_rows",
+            "COUNT(DISTINCT(PERSON_ID)) AS n_persons",
+            "COUNT(DISTINCT CAST(SRC_PATH_ID AS TEXT) || '|' || FILENAME) AS n_files",
+            "SUM(TIME_INVALID_us IS NULL) AS n_active",
+            "SUM(TIME_INVALID_us IS NULL AND UPLOAD_DT_ID IS NULL) AS n_upload",
+        ]
+        subquery += ", ".join(cols)
+        subquery += f" FROM {cls.table_name}"
+        subquery += f" GROUP BY {group_list}) AS g"
+
+        columns = [
+            ("versions.VERSION", "version"),
+            ("modalities.MODALITY", "modality")
+        ]        
+        columns.extend([
+            ("g.n_rows", "n_rows"),
+            ("g.n_persons", "n_persons"),
+            ("g.n_files", "n_files"),
+            ("g.n_active", "n_active"),
+            ("g.n_upload", "n_upload"),
+        ])
+        join_criteria = [
+            ("versions", "versions.id", "g.VERSION_ID"),
+            ("modalities", "modalities.id", "g.MODALITY_ID"),
+        ]
+        where_clause = cls._make_where_clause_for_join(version, None, **kwargs)
+
+        results = SQLiteDB.query_with_left_join(database_name = database_name,
+                        table_name = subquery,
+                        columns = columns,
+                        join_criteria=join_criteria,
+                        where_clause = where_clause,
+                        max_return = None)
+        return [(version, modality, n_rows, n_persons, n_files, n_active, n_upload) for (version, modality, n_rows, n_persons, n_files, n_active, n_upload) in results]
+        
+        # return results
+    
     
     @classmethod
     def get_versions(cls, database_name: str):
@@ -1209,7 +1356,7 @@ class JournalTableV2:
                          table_name = "versions",
                          columns = ["VERSION"],
                          where_clause = None,
-                         count = None)
+                         max_return = None)
 
 
 def _copy_journal_v1_to_v2(database_name: str, params: list) -> int:
@@ -1370,7 +1517,7 @@ def _upgrade_journal(local_path, lock_path):
                             table_name = old_cmd_hist_class.table_name,
                             columns = None,
                             where_clause = None,
-                            count = None)
+                            max_return = None)
 
     new_cmd_hist_class.create_command_history_table(local_fn)
     for (_, dt, common, command, param, src, dest, time) in history:
@@ -1387,7 +1534,7 @@ def _upgrade_journal(local_path, lock_path):
                             table_name = old_journal_class.table_name,
                             columns = None,
                             where_clause = None,
-                            count = None)
+                            max_return = None)
     
     if old_ver == "V1":
         count = _copy_journal_v1_to_v2(local_fn, journals)

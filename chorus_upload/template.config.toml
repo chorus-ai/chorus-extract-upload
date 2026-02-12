@@ -109,7 +109,7 @@ azure_container = "{CONTAINER}"
   # azure_connection_string = "connection_string"
 
 [site_path]
-# NOTE: LOCAL WINDOWS PATH should use either forward slash "/" or double backslash "\\"
+# NOTE: LOCAL WINDOWS PATH should use either forward slash "/" (preferred) or double backslash "\\"
 # each can have its own access credentials if in cloud.  These would not be inherited from default.
 
   [site_path.default]

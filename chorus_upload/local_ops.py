@@ -14,6 +14,7 @@ from chorus_upload.journaldb_ops import JournalDispatcher
 import parse
 
 import logging
+import pandas as pd
 
 log = logging.getLogger(__name__)
 
@@ -108,6 +109,9 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         # log.info(f"Get File List took {time.time() - start}")
         
         pattern = _get_modality_pattern(modality, kwargs.get("modality_configs", {}))
+        if "\\" in pattern:
+            raise ValueError(f"Please use forward slash as path separator in pattern.  Got {pattern} for modality {modality}")
+        
         version_in_pattern = ("{version:w}" in pattern) or ("{version}" in pattern)
         compiled_pattern = parse.compile(pattern)
        
@@ -154,6 +158,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         log.info(f"Journal Update took {time.time() - start} s")
         
 
+# only accept relpath with forward slash
 def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, 
                              modality_files_to_inactivate:dict, compiled_pattern:parse.Parser, version:str = None, 
                              **kwargs):
@@ -296,6 +301,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
         start = time.time()
         
         pattern = _get_modality_pattern(modality, kwargs.get("modality_configs", {}))
+        if "\\" in pattern:
+            raise ValueError(f"Please use forward slash as path separator in pattern.  Got {pattern} for modality {modality}")
         # if version is in the file name, then use that.
         version_in_pattern = ("{version:w}" in pattern) or ("{version}" in pattern)
         # compile the pattern
@@ -320,10 +327,10 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
             lock = threading.Lock()
-            for paths in root.get_files_iter(pattern = pattern, page_size = page_size ):  # list of relative paths in posix format and in string form.
+            for paths in root.get_files_iter(pattern = pattern, page_size = page_size ):  
+                # list of relative paths in posix format and in string form.
                 futures = []
                 modality_files_to_inactivate_in_iter = {}
-                
 
                 for relpath in paths:
                     #if verbose:
@@ -494,7 +501,7 @@ def mark_files_as_deleted(files_to_remove:List[str],
     to_delete = len(all_del_args)
     log.info(f"mark as deleted {deleted} of {to_delete} from journal." )
 
-    
+
 
 
 # all files to upload are marked with upload_dtstr = NULL. 
@@ -523,7 +530,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     compiled_patterns = {}
     for mod in modalities:
         compiled_patterns[mod] = parse.compile(_get_modality_pattern(mod, modality_configs))
-
+    
     
 
     if not table_exists:
@@ -633,9 +640,9 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
         str: The central path, including version.
 
     """
-    
+
     local_path = Path(local_path).as_posix()
-        
+
     parsed = in_compiled_pattern.parse(local_path)
     if parsed is None:
         raise ValueError(f"ERROR: Invalid local path {local_path}, pattern {in_compiled_pattern}")
@@ -654,8 +661,7 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
     # convert the local path to a central path
     return out_pattern.format(patient_id = patient_id, filepath = filepath)
 
-
-def list_versions(databasename: str):
+def list_versions(databasename: str, version: str):
     """
     Retrieve a list of unique upload dates from the journal database.
 
@@ -674,19 +680,44 @@ def list_versions(databasename: str):
         log.error(f"ERROR: No journal exists for filename {databasename}")
         return None
     
-    
     # List unique values in upload_dtstr column in journal table
-    res = JournalDispatcher.get_versions(databasename)
-    versions = [u[0] for u in res]
-    
+    # res = JournalDispatcher.get_versions(databasename)
+    # versions = [u[0] for u in res]
+    versions = JournalDispatcher.get_stats(databasename, version = version)
+  
     if (versions is not None) and (len(versions) > 0):
-        log.info("upload records in the database:")
-        for table in versions:
-            log.info(f"  {table}")
+        vers = pd.DataFrame(versions, columns = ["version", "modality", "rows", "person", 
+                                                 "files", "active", "upload"])
+        
+        # reformulate the dataframe.  first sum by version
+        agg_totals = vers.groupby("version")[["rows", "person", "files", "active", "upload"]].sum()
+        # next pivot using modality.
+        pivot = vers.pivot_table(index="version", columns="modality", values=["files", "active", "upload"], aggfunc="sum").fillna(0)
+        
+        # flatten the multi-index columns
+        pivot.columns = [f"{modality}_{metric}" for metric, modality in pivot.columns]
+        
+        # join the tables
+        final = agg_totals.join(pivot)
+
+        # ordering the columns
+        ordered = ["version", "rows", "person", "files", "active", "upload"]
+        modalities = sorted(set(vers['modality']))
+        for modality in modalities:
+            for metric in ["files", "active", "upload"]:
+                col_name = f"{modality}_{metric}"
+                if col_name in pivot.columns:
+                    ordered.append(col_name)
+        final = final.reset_index()[ordered]
+        
+        print("Journal versions in the database:")
+        print(f"{final.to_markdown()}")
+        return final
+
     else:
-        log.info("No uploads found in the database.")
+        log.info("No journal versions found in the database.")
+        return None
     
-    return versions
 
 
 # def list_journals(databasename: str):

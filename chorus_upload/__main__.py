@@ -130,10 +130,44 @@ def _print_usage(args, config, journal_fn):
         
 # helper to call update journal
 def _update_journal(args, config, journal_fn):
-    journal_version = args.version
-    amend = args.amend
+    
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
+    journal_version = args.version if ("version" in vars(args)) and (args.version is not None) else None
+    # first print it
+    vers_df = local_ops.list_versions(journal_fn, version = journal_version)
+    
+    # now print the user to select a version.  make amend always true.
+    print("Current journal versions: ")
+    all_vers = vers_df['version'].unique() if vers_df is not None else []
+    # if user specified a target version and it's in the journal, then use it, else create it.
+    if (journal_version is not None):
+        if (journal_version in all_vers):
+            log.info(f"Amending specified version: {journal_version}")
+            amend = True
+        else:
+            log.info(f"Specified version {journal_version} not found.  creating.")
+            amend = False
+    else:
+        # user did not specify a version. choose.
+        all_vers.sort()
+        for i, ver in enumerate(all_vers):
+            print(f"\t{i}: {ver}")
+        print(f"\tn: create new version")    
+        target_version = input("Enter the id of the version to amend, n to create a new version, or Enter for the latest version: ")
+        if (target_version is None) or (target_version.strip() == ""):
+            journal_version = all_vers[-1] if len(all_vers) > 0 else time.strftime("%Y%m%d%H%M%S")
+            amend = True
+        elif (target_version.strip().lower() == "n"):
+            journal_version = time.strftime("%Y%m%d%H%M%S")
+            amend = False
+        else:
+            if target_version.isdigit() and int(target_version) < len(all_vers):
+                journal_version = all_vers[int(target_version)]
+                amend = True
+            else:
+                raise ValueError(f"Invalid input for version selection: {target_version}")
+        
     # get the config path for each modality.  if not matched, use default.
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
     journaling_mode = config_helper.get_journaling_mode(config)
@@ -148,7 +182,7 @@ def _update_journal(args, config, journal_fn):
         client, internal_host =storage_helper._make_client(mod_config)
         datafs = FileSystemHelper(config_helper.get_path_str(mod_config), client = client, internal_host = internal_host)
 
-        log.info(f"Update journal {journal_fn} for {mod}")
+        log.info(f"Update journal {journal_fn} version {journal_version} for {mod}")
         update_journal(datafs, modalities = [mod], 
                        databasename = journal_fn, 
                        journaling_mode = journaling_mode,
@@ -189,7 +223,7 @@ def _select_files(args, config, journal_fn):
                 continue
 
             for (version, files) in mod_files.items():
-                print("files for version: ", version, " root at ", config_helper.get_path_str(mod_config), " for ", mod)
+                print(f"{len(files)} files for version: ", version, " root at ", config_helper.get_path_str(mod_config), " for ", mod)
                 print("\n".join(files))
     else:
         # generate a script for uploading files.
@@ -312,7 +346,8 @@ def _verify_files(args, config, journal_fn):
     
 def _list_versions(args, config, journal_fn):
     log.info("Uploads known in current journal: ")
-    local_ops.list_versions(journal_fn)
+    version = args.version if ("version" in vars(args)) and (args.version is not None) else None
+    local_ops.list_versions(journal_fn, version=version)
     # log.info("Backed up journals: ")
     # local_ops.list_journals(journal_fn)
 
@@ -352,13 +387,19 @@ if __name__ == "__main__":
     parser_update.add_argument("--version", 
                                help="version string for the upcoming upload.  If not specified, the current datetime in YYYYMMDDHHMMSS format is used.", 
                                required=False)
-    parser_update.add_argument("--amend", 
-                               help="amend the last journal update.  If this flag is set but the version is not provided, then the last version is used.", 
-                               action="store_true")
+    # parser_update.add_argument("--amend", 
+    #                            help="amend the last journal update.  If this flag is set but the version is not provided, then the last version is used.", 
+    #                            action="store_true")
     parser_update.set_defaults(func = _update_journal)
     
     # create the parser for the "list" command
     parser_list = journal_subparsers.add_parser("list", help = "list the versions in a journal database")
+    parser_list.add_argument("--modalities", 
+                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP,Metadata'.  case sensitive.", 
+                               required=False)
+    parser_list.add_argument("--version", 
+                               help="version string for the upcoming upload.  If not specified, the current datetime in YYYYMMDDHHMMSS format is used.", 
+                               required=False)
     parser_list.set_defaults(func = _list_versions)
     
     parser_checkout = journal_subparsers.add_parser("checkout", help = "checkout a cloud journal file and create a local copy named journal.db")
@@ -572,12 +613,12 @@ if __name__ == "__main__":
             # else:
             #     # normal path - checkout, compute, checkin.
             #     skip_checkout = False
-            #     skip_checkin = False
+            #     skip_checkin = False                            
                             
             local_journal_fn = str(local_path.root)
             
             if lock_path is not None and lock_path.is_cloud and not lock_path.root.exists():
-                log.error(f"journal is not checked out.  Please checkout first.")
+                raise ValueError(f"journal is not checked out.  Please checkout first.")
                 # # checkout the journal
                 # upload_ops.checkout_journal(journal_path, lock_path, local_path)
                             
