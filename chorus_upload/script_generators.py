@@ -378,7 +378,7 @@ def _write_file_upload(root:str, fn:str, info:dict, is_linux: bool, auth_mode: s
         local_fn = "\\".join([root, fn])
         local_fn = local_fn.replace("/", "\\")
     else:
-        local_fn = "/".join([root, fn])
+        local_fn = str(Path(root) / fn)
         
     central_fn = info['central_path']
 
@@ -608,7 +608,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
         if (out_type != "azcli") and (out_type != "azcopy"):
             for _, (config, fninfos) in file_list.items():
                 root = config_helper.get_path_str(config)            
-                filenames = ["/".join([root, fn]) for fn in fninfos.keys()]
+                filenames = [str(Path(root) / fn) for fn in fninfos.keys()]
                 if is_windows:
                     fns = [fn.replace("/", "\\") for fn in filenames]
                 else:

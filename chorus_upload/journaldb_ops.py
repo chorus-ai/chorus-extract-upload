@@ -926,8 +926,7 @@ class JournalTableV2:
         parent_paths = set()
         for (pid, fpath, mod, mtime, size, md5, valid_time, upload, state, md5_dur, ver) in params:
             # get file parent path and filename using pathlib
-            path = Path(fpath)
-            parent_paths.add(str(path.parent))
+            parent_paths.add(Path(fpath).parent.as_posix())
             modalities.add(mod)
             if upload is not None:
                 uploads.add(upload)
@@ -964,7 +963,7 @@ class JournalTableV2:
         filenames = set()
         for (pid, fpath, mod, mtime, size, md5, valid_time, upload, state, md5_dur, ver) in params:
             path = Path(fpath)
-            parent_id = parent_paths[str(path.parent)]
+            parent_id = parent_paths[path.parent.as_posix()]
             mod_id = modalities[mod]
             upload_id = uploads[upload] if upload is not None else None
             ver_id = versions[ver]
@@ -1176,7 +1175,7 @@ class JournalTableV2:
                         count = count)
 
         # create a generator to yield the results
-        return [(fid, "/".join([srcpath, fn]), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
+        return [(fid, str(Path(srcpath) / fn), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
 
     @classmethod
     def get_files(cls, database_name: str, 
@@ -1202,7 +1201,7 @@ class JournalTableV2:
                         count = count)
 
         # create a generator to yield the results
-        return [(fid, "/".join([srcpath, fn])) for (fid, srcpath, fn) in result]
+        return [(fid, str(Path(srcpath) / fn)) for (fid, srcpath, fn) in result]
     
     @classmethod
     def get_versions(cls, database_name: str):
@@ -1221,8 +1220,7 @@ def _copy_journal_v1_to_v2(database_name: str, params: list) -> int:
     parent_paths = set()
     for (fid, pid, fpath, mod, mtime, size, md5, valid, invalid, upload, ver, state, md5_dur, upload_dur, verify_dur ) in params:
         # get file parent path and filename using pathlib
-        path = Path(fpath)
-        parent_paths.add(str(path.parent))
+        parent_paths.add(Path(fpath).parent.as_posix())
         modalities.add(mod)
         if upload is not None:
             uploads.add(upload)
@@ -1259,7 +1257,7 @@ def _copy_journal_v1_to_v2(database_name: str, params: list) -> int:
     filenames = set()
     for (fid, pid, fpath, mod, mtime, size, md5, valid, invalid, upload, ver, state, md5_dur, upload_dur, verify_dur ) in params:
         path = Path(fpath)
-        parent_id = parent_paths[str(path.parent)]
+        parent_id = parent_paths[path.parent.as_posix()]
         mod_id = modalities[mod]
         upload_id = uploads[upload] if upload is not None else None
         ver_id = versions[ver]

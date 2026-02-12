@@ -461,7 +461,8 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     # files_to_upload is a filename to info mapping
     # previously, it was a version to filename mapping.
     _, files_to_upload, files_to_mark_deleted = list_files_with_info(databasename, version=None, modalities=modalities, 
-                                                                    verbose = False, modality_configs = modality_configs)
+                                                                    verbose = False, modality_configs = modality_configs,
+                                                                    **{'uploaded': False})
     if (files_to_upload is None) or (len(files_to_upload) == 0):
         log.info("no files to upload.  Done")
         return None, max_num_files

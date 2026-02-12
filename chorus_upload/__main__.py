@@ -178,8 +178,10 @@ def _select_files(args, config, journal_fn):
 
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
+            uploaded = args.uploaded if 'uploaded' in vars(args) else False
             mod_files, _, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod],
-                                                   verbose=args.verbose, modality_configs = modality_configs)
+                                                verbose=args.verbose, modality_configs = modality_configs,
+                                                **{'uploaded': uploaded})
             mod_config = config_helper.get_site_config(config, mod)
 
             if mod_files is None:
@@ -195,8 +197,10 @@ def _select_files(args, config, journal_fn):
         
         file_list = {}
         for mod in mods:
+            uploaded = args.uploaded if 'uploaded' in vars(args) else False
             _, active_files, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod], 
-                                                   verbose=args.verbose, modality_configs = modality_configs)
+                                                   verbose=args.verbose, modality_configs = modality_configs,
+                                                   **{'uploaded': uploaded})
             mod_config = config_helper.get_site_config(config, mod)
 
             file_list[mod] = (mod_config, active_files)
@@ -392,6 +396,7 @@ if __name__ == "__main__":
     parser_select.add_argument("--output-file", help="output file", required=False)
     parser_select.add_argument("--output-type", help="the output file type: [list | azcli | azcopy].  azcli and azcopy are executable scripts.", required=False)
     parser_select.add_argument("--max-num-files", help="maximum number of files to list.", required=False)
+    parser_select.add_argument("--uploaded", help="list uploaded files", action="store_true", required=False)
     parser_select.set_defaults(func = _select_files)
     
     

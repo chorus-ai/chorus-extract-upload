@@ -161,7 +161,7 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     # TODO need to handle version vs old version.
     lock = kwargs.get("lock", None)
     
-    relpath = relpath.replace("\\", "/")
+    relpath = Path(relpath).as_posix()
     
     # first item is personid.
     parsed = compiled_pattern.parse(relpath)
@@ -525,7 +525,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
         compiled_patterns[mod] = parse.compile(_get_modality_pattern(mod, modality_configs))
 
     
-    
+
     if not table_exists:
         log.error(f"table journal does not exist in {databasename}.")
         return None, None, None
@@ -541,7 +541,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     files_to_update = JournalDispatcher.get_files_with_meta(database_name = databasename, 
                                                         version = version,
                                                         modalities = modalities,
-                                                        **{'uploaded': False})
+                                                        **kwargs)
         
     log.info(f"extracted files to upload for {('current' if version is None else version)} upload version and modalities = {(','.join(modalities) if modalities is not None else 'all')}")
     
@@ -634,7 +634,7 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
 
     """
     
-    local_path = local_path.replace("\\", "/")
+    local_path = Path(local_path).as_posix()
         
     parsed = in_compiled_pattern.parse(local_path)
     if parsed is None:
