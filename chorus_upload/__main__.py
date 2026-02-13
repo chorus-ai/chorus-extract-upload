@@ -147,7 +147,7 @@ def _update_journal(args, config, journal_fn):
  
         # now print the user to select a version.  If using curent date time, let journaldb_ops handle it.
         print("Current journal versions: ")
-        all_vers = vers_df['version'].unique() if vers_df is not None else []
+        all_vers = list(vers_df['version'].unique()) if vers_df is not None else []
         # if user specified a target version and it's in the journal, then use it, else create it.
         if (journal_version is not None):
             if (journal_version in all_vers):
