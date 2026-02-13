@@ -32,8 +32,7 @@ def update_journal(root : FileSystemHelper, modalities: list[str],
                    amend: bool = False,
                    **kwargs):
     
-    
-    table_exists = JournalDispatcher.table_exists(database_name = databasename)
+    table_exists = JournalDispatcher.table_exists(database_name = databasename) if Path(databasename).exists() else False
 
     # check if journal table exists
     if table_exists:
@@ -70,7 +69,7 @@ def _get_modality_pattern(modality:str, modality_configs:dict):
 
 def _gen_journal(root : FileSystemHelper, modalities: list[str], 
                   databasename: str, 
-                  version:str = None, 
+                  version:str, 
                   **kwargs):
     """
     Generate a journal for the given root directory and subdirectories.
@@ -85,8 +84,12 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     
     verbose = kwargs.get("verbose", False)
 
-    # TODO: set the version to either the supplied version name, or with current time.
-    new_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
+    # set the version to either the supplied version name, or with current time.
+    if version is None:
+        raise ValueError("version should have been set by in the _update_journal_ function in __main__.py")
+    
+    # new_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
+    new_version = version
         
     perf = perf_counter.PerformanceCounter()
         
@@ -160,8 +163,11 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
 
 # only accept relpath with forward slash
 def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, curtimestamp:int, 
-                             modality_files_to_inactivate:dict, compiled_pattern:parse.Parser, version:str = None, 
+                             modality_files_to_inactivate:dict, compiled_pattern:parse.Parser, 
+                             version:str = None, 
                              **kwargs):
+    
+    # version can be none only if version is embedded in the path.
     
     # TODO need to handle version vs old version.
     lock = kwargs.get("lock", None)
@@ -254,8 +260,8 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
 # record is a mess with a file-wise traversal. Files need to be grouped by unique record ID (visit_occurence?)
 def _update_journal(root: FileSystemHelper, modalities: list[str],
                     databasename : str,
+                    version: str,
                     journaling_mode = "append",
-                    version: str = None,
                     amend:bool = False, 
                     **kwargs):
     """
@@ -272,14 +278,21 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
     log.info(f"Updating journal... {databasename}")
 
-    # TODO:  
-    # if amend, get the last version, and add files to that version.
-    # if not amend, create a new version - either with supplied version name, or with current time.
-    journal_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
-    if amend: # get the last version
-        journal_version = JournalDispatcher.get_latest_version(database_name=databasename)
-        if journal_version is None:
-            log.warning(f"amend without an existing version.  create new version.")
+    # a version is required. 
+    if version is None:
+        raise ValueError("version should have been set by in the _update_journal_ function in __main__.py")
+    # because a version is specified, amend is not meaningful.
+
+    journal_version = version
+    
+    # # if amend, get the last version, and add files to that version.
+    # # if not amend, create a new version - either with supplied version name, or with current time.
+    # journal_version = version if version is not None else time.strftime("%Y%m%d%H%M%S")
+    # if amend: # get the last version
+    #     journal_version = JournalDispatcher.get_latest_version(database_name=databasename)
+    #     if journal_version is None:
+    #         log.warning(f"amend without an existing version.  create new version.")
+    
 
     perf = perf_counter.PerformanceCounter()
     
@@ -322,6 +335,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 modality_files_to_inactivate[fpath] = [ (fid, size, modtime, md5, uploadtime, ver), ]
             else:
                 modality_files_to_inactivate[fpath].append((fid, size, modtime, md5, uploadtime, ver))
+        # log.info(f"filenames count = {len(modality_files_to_inactivate)}, {modality_files_to_inactivate.keys()}")
 
         modality_files_to_inactivate_rdonly = dict(modality_files_to_inactivate)
 
@@ -337,7 +351,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     #    log.info(f"scanning {relpath}")
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              modality_files_to_inactivate_rdonly, 
-                                             compiled_pattern, journal_version if not version_in_pattern else None, **{'lock': lock})
+                                             compiled_pattern, None if version_in_pattern else journal_version , **{'lock': lock})
                     futures.append(future)
                 
                 for future in concurrent.futures.as_completed(futures):

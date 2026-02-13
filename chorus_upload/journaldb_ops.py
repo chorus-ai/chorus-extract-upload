@@ -65,7 +65,11 @@ class SQLiteDB:
                       groupby : list = [],
                       max_return:int = None):
         
-        cols = set(columns).union(set(groupby))
+        # cannot use set because order need to be preserved.
+        cols = columns
+        for c in groupby:
+            if c not in cols:
+                cols.append(c)
         
         select_str = cls._make_select_stmt(table_name, cols, where_clause)
 
@@ -75,7 +79,7 @@ class SQLiteDB:
         if (groupby is not None) and (len(groupby) > 0):
             select_str += f" GROUP BY {','.join(groupby)}"
         
-        print(select_str)
+        # print(select_str)
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 res = cur.execute(select_str)
@@ -135,7 +139,7 @@ class SQLiteDB:
         if where_clause is not None and (len(where_clause) > cls.max_where_clause):
             log.warning(f"QUERY with LEFT JOIN where clause is long")
 
-        print(select_stmt)
+        # print(select_stmt)
 
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
@@ -205,8 +209,8 @@ class SQLiteDB:
                         params=insert_args,
                         unique=True)
         # query to fill the dictionary
+        value_ids = []
         if lookup is not None and (len(lookup) > 0):
-            value_ids = []
             for i in range(0, len(lookup), cls.chunk_size):
                 batch = lookup_list[i:min(i + cls.chunk_size, len(lookup_list))]
                 where_clause = column_name + " in (" + ",".join([f"'{val}'" for val in batch]) + ")"
@@ -1016,34 +1020,36 @@ class JournalTableV2:
         parent_paths = set()
         for (pid, fpath, mod, mtime, size, md5, valid_time, upload, state, md5_dur, ver) in params:
             # get file parent path and filename using pathlib
+            # print(f"add parent path from {fpath} as {Path(fpath).parent.as_posix()}")
             parent_paths.add(Path(fpath).parent.as_posix())
             modalities.add(mod)
             if upload is not None:
                 uploads.add(upload)
             versions.add(ver)
+        # print(f"parents : {parent_paths}")
 
         # insert modalities if it does not already exist and retrieve the ids for all entries in the dictionary
-        modalities = SQLiteDB.insert_lookup_table(database_name = database_name,
+        modalities_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                     table_name = "modalities",
                                                     column_name = "MODALITY",
                                                     lookup = modalities)
         # insert uploads if it does not already exist and retrieve the ids for all entries in the dictionary
         if len(uploads) > 0:
-            uploads = SQLiteDB.insert_lookup_table(database_name = database_name,
+            uploads_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                     table_name = "uploads",
                                                         column_name = "UPLOAD_DT",
                                                         lookup = uploads)
         else:
-            uploads = None
+            uploads_dict = None
             
         # insert versions if it does not already exist and retrieve the ids for all entries in the dictionary
-        versions = SQLiteDB.insert_lookup_table(database_name = database_name,
+        versions_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                     table_name = "versions",
                                                      column_name = "VERSION",
                                                      lookup = versions)
         
         # insert parent paths if it does not already exist and retrieve the ids for all entries in the dictionary
-        parent_paths = SQLiteDB.insert_lookup_table(database_name = database_name,
+        parent_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                         table_name = "srcpaths",
                                                         column_name = "SRC_PATH",
                                                         lookup = parent_paths)
@@ -1053,10 +1059,12 @@ class JournalTableV2:
         filenames = set()
         for (pid, fpath, mod, mtime, size, md5, valid_time, upload, state, md5_dur, ver) in params:
             path = Path(fpath)
-            parent_id = parent_paths[path.parent.as_posix()]
-            mod_id = modalities[mod]
-            upload_id = uploads[upload] if upload is not None else None
-            ver_id = versions[ver]
+            # print(f"path {fpath} parent {path.parent.as_posix()} name {path.name}.  parent_paths {parent_paths}, parent_dict {parent_dict} ")
+            
+            parent_id = parent_dict[path.parent.as_posix()]
+            mod_id = modalities_dict[mod]
+            upload_id = uploads_dict[upload] if upload is not None else None
+            ver_id = versions_dict[ver]
             new_params.append( (pid, parent_id, path.name, mod_id, mtime, size, md5, valid_time, upload_id, ver_id))
             
             filenames.add(fpath)
@@ -1265,7 +1273,7 @@ class JournalTableV2:
                         max_return = max_return)
 
         # create a generator to yield the results
-        return [(fid, str(Path(srcpath) / fn), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
+        return [(fid, (Path(srcpath) / fn).as_posix(), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
 
     @classmethod
     def get_files(cls, database_name: str, 
@@ -1299,7 +1307,7 @@ class JournalTableV2:
                         max_return = max_return)
 
         # create a generator to yield the results
-        return [(fid, str(Path(srcpath) / fn)) for (fid, srcpath, fn) in result]
+        return [(fid, (Path(srcpath) / fn).as_posix()) for (fid, srcpath, fn) in result]
     
     @classmethod
     def get_stats(cls, 
@@ -1374,27 +1382,27 @@ def _copy_journal_v1_to_v2(database_name: str, params: list) -> int:
         versions.add(ver)
 
     # insert modalities if it does not already exist and retrieve the ids for all entries in the dictionary
-    modalities = SQLiteDB.insert_lookup_table(database_name = database_name,
+    modalities_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                 table_name = "modalities",
                                                 column_name = "MODALITY",
                                                 lookup = modalities)
     # insert uploads if it does not already exist and retrieve the ids for all entries in the dictionary
     if len(uploads) > 0:
-        uploads = SQLiteDB.insert_lookup_table(database_name = database_name,
+        uploads_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                 table_name = "uploads",
                                                     column_name = "UPLOAD_DT",
                                                     lookup = uploads)
     else:
-        uploads = None
+        uploads_dict = None
         
     # insert versions if it does not already exist and retrieve the ids for all entries in the dictionary
-    versions = SQLiteDB.insert_lookup_table(database_name = database_name,
+    versions_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                 table_name = "versions",
                                                     column_name = "VERSION",
                                                     lookup = versions)
     
     # insert parent paths if it does not already exist and retrieve the ids for all entries in the dictionary
-    parent_paths = SQLiteDB.insert_lookup_table(database_name = database_name,
+    parent_dict = SQLiteDB.insert_lookup_table(database_name = database_name,
                                                     table_name = "srcpaths",
                                                     column_name = "SRC_PATH",
                                                     lookup = parent_paths)
@@ -1404,10 +1412,10 @@ def _copy_journal_v1_to_v2(database_name: str, params: list) -> int:
     filenames = set()
     for (fid, pid, fpath, mod, mtime, size, md5, valid, invalid, upload, ver, state, md5_dur, upload_dur, verify_dur ) in params:
         path = Path(fpath)
-        parent_id = parent_paths[path.parent.as_posix()]
-        mod_id = modalities[mod]
-        upload_id = uploads[upload] if upload is not None else None
-        ver_id = versions[ver]
+        parent_id = parent_dict[path.parent.as_posix()]
+        mod_id = modalities_dict[mod]
+        upload_id = uploads_dict[upload] if upload is not None else None
+        ver_id = versions_dict[ver]
         new_params.append( (pid, parent_id, path.name, mod_id, mtime, size, md5, valid, invalid, upload_id, ver_id))
         
         filenames.add(fpath)

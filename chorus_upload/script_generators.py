@@ -374,11 +374,7 @@ def _write_journal_download(is_linux: bool, auth_mode: str, f, **kwargs):
 def _write_file_upload(root:str, fn:str, info:dict, is_linux: bool, auth_mode: str, f, **kwargs):
     submit_version = info['version']
     
-    if not is_linux:
-        local_fn = "\\".join([root, fn])
-        local_fn = local_fn.replace("/", "\\")
-    else:
-        local_fn = str(Path(root) / fn)
+    local_fn = (Path(root) / fn).as_posix()
         
     central_fn = info['central_path']
 
@@ -608,7 +604,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
         if (out_type != "azcli") and (out_type != "azcopy"):
             for _, (config, fninfos) in file_list.items():
                 root = config_helper.get_path_str(config)            
-                filenames = [str(Path(root) / fn) for fn in fninfos.keys()]
+                filenames = [(Path(root) / fn).as_posix() for fn in fninfos.keys()]
                 if is_windows:
                     fns = [fn.replace("/", "\\") for fn in filenames]
                 else:

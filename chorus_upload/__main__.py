@@ -134,37 +134,45 @@ def _update_journal(args, config, journal_fn):
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     journal_version = args.version if ("version" in vars(args)) and (args.version is not None) else None
-    # first print it
-    vers_df = local_ops.list_versions(journal_fn, version = journal_version)
     
-    # now print the user to select a version.  make amend always true.
-    print("Current journal versions: ")
-    all_vers = vers_df['version'].unique() if vers_df is not None else []
-    # if user specified a target version and it's in the journal, then use it, else create it.
-    if (journal_version is not None):
-        if (journal_version in all_vers):
-            log.info(f"Amending specified version: {journal_version}")
-            amend = True
-        else:
-            log.info(f"Specified version {journal_version} not found.  creating.")
-            amend = False
+    table_exists = JournalDispatcher.table_exists(database_name = journal_fn) if Path(journal_fn).exists() else False
+
+    if not table_exists:
+        log.info(f"Journal {journal_fn} does not exist.  creating new journal with version {journal_version if journal_version is not None else 'default current datetime'}")
+        journal_version = journal_version if journal_version is not None else time.strftime("%Y%m%d%H%M%S")
+        amend = False
     else:
-        # user did not specify a version. choose.
-        all_vers.sort()
-        for i, ver in enumerate(all_vers):
-            print(f"\t{i}: {ver}")
-        print(f"\tn: create new version")    
-        target_version = input("Enter the id of the version to amend, n to create a new version, or Enter for the latest version: ")
-        if (target_version is None) or (target_version.strip() == ""):
-            journal_version = all_vers[-1] if len(all_vers) > 0 else time.strftime("%Y%m%d%H%M%S")
-            amend = True
-        elif (target_version.strip().lower() == "n"):
+        # first print it
+        vers_df = local_ops.list_versions(journal_fn, version = journal_version)
+ 
+        # now print the user to select a version.  If using curent date time, let journaldb_ops handle it.
+        print("Current journal versions: ")
+        all_vers = vers_df['version'].unique() if vers_df is not None else []
+        # if user specified a target version and it's in the journal, then use it, else create it.
+        if (journal_version is not None):
+            if (journal_version in all_vers):
+                log.info(f"Amending specified version: {journal_version}")
+                amend = True
+            else:
+                log.info(f"Specified version {journal_version} not found.  creating.")
+                amend = False
+        elif (len(all_vers) == 0): # journal_version not specified, and no versions in journal. create
+            log.info(f"No existing versions found in journal.  creating new version.")
             journal_version = time.strftime("%Y%m%d%H%M%S")
             amend = False
-        else:
-            if target_version.isdigit() and int(target_version) < len(all_vers):
-                journal_version = all_vers[int(target_version)]
+        else: # journal_version not specified but there exists at least 1 version in journal.
+            # user did not specify a version. choose.
+            all_vers.sort()
+            print(f"Modifiable versions:")
+            print(f"\t{all_vers[-1]} [latest, default version to amend]")
+            print(f"\tn: create new version")    
+            target_version = input("Press 'n' to create a new version, or 'Enter' for the latest version: ")
+            if (target_version is None) or (target_version.strip() == ""):
+                journal_version = all_vers[-1]
                 amend = True
+            elif (target_version.strip().lower() == "n"):
+                journal_version = time.strftime("%Y%m%d%H%M%S")
+                amend = False
             else:
                 raise ValueError(f"Invalid input for version selection: {target_version}")
         
