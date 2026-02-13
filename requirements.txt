@@ -2,7 +2,7 @@ numpy>=1.26.4
 pandas==2.2.2
 # 0.20 has problems with constructing paths with cloud credentials leading to 
 #"azure.core.exceptions.ClientAuthenticationError: Server failed to authenticate the request. Make sure the value of Authorization header is formed correctly including the signature."
-cloudpathlib==0.18.1
+cloudpathlib==0.23.0
 cloudpathlib[azure]
 cloudpathlib[gs]
 cloudpathlib[s3]
