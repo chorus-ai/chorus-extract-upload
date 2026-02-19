@@ -133,7 +133,7 @@ def _update_journal(args, config, journal_fn):
     
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
-    mods_known = list(set(default_modalities).intersection(set(mods_user)))  # only keep valid modalities
+    mods_known = list(set(default_modalities).intersection(set(mods)))  # only keep valid modalities
     if len(set(mods).difference(set(mods_known))) > 0:
         log.warning(f"Warning: the modalities are not known, but will be processed: {set(mods).difference(set(mods_known))}")
     journal_version = args.version if ("version" in vars(args)) and (args.version is not None) else None
@@ -216,7 +216,7 @@ def _select_files(args, config, journal_fn):
     # get the local path and central path and credentials
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
-    mods_known = list(set(default_modalities).intersection(set(mods_user)))  # only keep valid modalities
+    mods_known = list(set(default_modalities).intersection(set(mods)))  # only keep valid modalities
     if len(set(mods).difference(set(mods_known))) > 0:
         log.warning(f"Warning: the modalities are not known, but will be processed: {set(mods).difference(set(mods_known))}")
     modality_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
@@ -318,7 +318,7 @@ def _upload_files(args, config, journal_fn):
 
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
-    mods_known = list(set(default_modalities).intersection(set(mods_user)))  # only keep valid modalities
+    mods_known = list(set(default_modalities).intersection(set(mods)))  # only keep valid modalities
     if len(set(mods).difference(set(mods_known))) > 0:
         log.warning(f"Warning: the modalities are not known, but will be processed: {set(mods).difference(set(mods_known))}")
     # get the config path for each modality.  if not matched, use default.
@@ -346,7 +346,7 @@ def _verify_files(args, config, journal_fn):
     
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
-    mods_known = list(set(default_modalities).intersection(set(mods_user)))  # only keep valid modalities
+    mods_known = list(set(default_modalities).intersection(set(mods)))  # only keep valid modalities
     if len(set(mods).difference(set(mods_known))) > 0:
         log.warning(f"Warning: the modalities are not known, but will be processed: {set(mods).difference(set(mods_known))}")
     # get the config path for each modality.  if not matched, use default.
