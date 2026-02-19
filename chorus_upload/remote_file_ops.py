@@ -25,9 +25,16 @@ def _list_remote_files(args, config, journal_fn):
     pattern = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
         
     print(f"Files matching pattern: {pattern}")
-    for paths in centralfs.get_files_iter(pattern = pattern, page_size=page_size, include_dirs=True):
-        for path in paths:
-            print(f"{path}")
+    if "*" in pattern or "?" in pattern:
+        for paths in centralfs.get_files_iter(pattern = pattern, page_size=page_size, include_dirs=True):
+            for path in paths:
+                print(f"{path}")
+    else:
+        p = centralfs.root.joinpath(pattern)
+        if p.exists():
+            print(f"{pattern}")
+        else:
+            print(f"No files found matching {pattern}")
     
     
 # copy list of files from src_fs to dest_path, which should be directory.
@@ -60,8 +67,16 @@ def __copy_files(srcfs, src_patterns, destfs, dest, nthreads, page_size, recursi
     file_list = set()
     for pattern in src_patterns:
         pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-        for paths in srcfs.get_files_iter(pattern = pat, page_size=page_size):
-            file_list.update(paths)
+        if "*" in pattern or "?" in pattern:
+            for paths in srcfs.get_files_iter(pattern = pat, page_size=page_size):
+                file_list.update(paths)
+        else:
+            # if no wildcard, check if file exists and add to list.
+            p = srcfs.root.joinpath(pattern)
+            if p.exists():
+                file_list.add(pattern)
+            else:
+                print(f"File {pattern} does not exist and will be skipped.")
                 
     if len(file_list) == 1:
         print(f"Only one file to copy: {file_list}")
@@ -196,12 +211,27 @@ def _delete_remote_files(args, config, journal_fn):
     files_to_delete = set()
     for pattern in patterns:
         pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-        for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
-            for path_str in paths:
-                if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
-                    print(f"Skipping journal file {path_str}.")
-                    continue
-                files_to_delete.add(path_str)
+        if "*" not in pattern and "?" not in pattern:
+            for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
+                for path_str in paths:
+                    if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
+                        print(f"Skipping journal file {path_str}.")
+                        continue
+                    files_to_delete.add(path_str)
+        else:
+            p = centralfs.root.joinpath(pattern)
+            if p.exists():
+                if p.is_file():
+                    files_to_delete.add(pattern)
+                else:
+                    for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
+                        for path_str in paths:
+                            if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
+                                print(f"Skipping journal file {path_str}.")
+                                continue
+                            files_to_delete.add(path_str)
+            else:
+                print(f"No files found matching {pattern}")
 
     if len(files_to_delete) == 0:
         print("No files found to delete.")
