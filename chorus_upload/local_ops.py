@@ -534,7 +534,9 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
 
     Returns:
-        dict: The dictionary of {version: list[filenames]}.
+        dict: dictionary of {version: list[filenames]}.
+        dict: dictionary of {active_filename: file info}.
+        dict: dictinoary of {inactive_filename: file id}
     """
     # when listing files, looking for version match if specified, and upload_dtstr is NULL.
         
