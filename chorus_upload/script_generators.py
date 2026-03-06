@@ -560,7 +560,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     
 
     if (not dest_config['path'].startswith("az://")):
-        log.warning(f"Destination is not an azure path.  cannot generate azcli script, but can genearete a list of source files")
+        log.warning(f"Destination is not an azure path.  cannot generate azcli script.  Listing source files instead")
         out_type = "list"
     
  
@@ -573,14 +573,14 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     source_paths = set(config['path'] for _, (config, _) in file_list.items())
     source_is_cloud = any([(p.startswith("az://")) or (p.startswith("s3://")) or (p.startswith("gs://")) for p in source_paths])
     if (out_type == "azcli") and source_is_cloud:
-        log.warning(f"WARNING: source path is in the cloud, cannot generate azcli script.  using 'azcopy' instead")
+        log.warning(f"source path is in the cloud, cannot generate azcli script.  using 'azcopy' instead")
         out_type = "azcopy"
         
     # get output file name.
     p = Path(filename)
     # fn = "_".join([p.stem, upload_datetime]) + p.suffix
     fn = filename
-    log.info(f"list writing to {fn}")
+    log.info(f"list is being written to {fn}")
 
     is_windows = (os.name == 'nt')
     # is_windows = True

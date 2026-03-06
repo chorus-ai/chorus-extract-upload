@@ -479,7 +479,7 @@ class FileSystemHelper:
             info = curr.stat()
             metadata["path"] = FileSystemHelper._as_posix(rel)
             if ("\\" in metadata["path"]):
-                log.warning(f"WARNING:  path contains backslashes: {metadata['path']}")
+                log.warning(f"path contains backslashes: {metadata['path']}")
             metadata["size"] = info.st_size
 
             # in cloudpathlib, only size and mtime are populated, mtime is the time of last upload, in second granularity, so not super useful
@@ -511,17 +511,17 @@ class FileSystemHelper:
                         md5_str = md5.hexdigest() if md5 else None
                         if lock is not None:
                             with lock:
-                                log.info(f"Missing md5 for {curr}. setting with computed MD5. hex= {md5_str}")
+                                log.debug(f"Missing md5 for {curr}. setting with computed MD5. hex= {md5_str}")
                         else:
-                            log.info(f"Missing md5 for {curr}. setting with computed MD5. hex= {md5_str}")
+                            log.debug(f"Missing md5 for {curr}. setting with computed MD5. hex= {md5_str}")
 
                     else:
                         md5_str = local_md5
                         if lock is not None:
                             with lock:
-                                log.info(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
+                                log.debug(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
                         else:
-                            log.info(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
+                            log.debug(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
                         
                     set_md5 = True
                         
@@ -543,9 +543,9 @@ class FileSystemHelper:
                             else:
                                 if lock is not None:
                                     with lock:
-                                        log.info(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
+                                        log.warning(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
                                 else:
-                                    log.info(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
+                                    log.warning(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
                         # else md5 matches.  no action needed.
                     
                     # else no local_md5, no action needed.
@@ -602,7 +602,7 @@ class FileSystemHelper:
         
         pattern = self.convert_pattern(pattern, recursive)
         # convert pattern to be case insensitive
-        log.info(f"getting list of files for {pattern}")
+        log.debug(f"getting list of files for {pattern}")
         # not using rglob as it does too much matching.
         # case_sensitive is a pathlib 3.12+ feature.
         count = 0
@@ -616,7 +616,7 @@ class FileSystemHelper:
             
             count += 1
             if (count % 1000) == 0:
-                log.info(f"Found {count} files")
+                log.info(f"Found {count} files in {pattern}")
             
         log.info("completed retrieving files.")
         # return relative path
@@ -668,7 +668,7 @@ class FileSystemHelper:
             
             count += 1
             if count >= page_size:
-                #log.info(f"Found {count} files")
+                log.info(f"Found {count} files in {pattern}")
                 yield paths
                 paths = []
                 count = 0
@@ -757,7 +757,7 @@ class FileSystemHelper:
                 # dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
                 dest_relpath = str(dest_file)[len("az://" + dest_file.container + "/"):] 
                 if verbose:
-                    log.info(f"upload to {dest_relpath} with {str(nthreads) if nthreads > 0 else 'default number of'} threads")
+                    log.debug(f"upload to {dest_relpath} with {str(nthreads) if nthreads > 0 else 'default number of'} threads")
 
                 blob_serv_client = dest_file.client.service_client
                 container_client = blob_serv_client.get_container_client(dest_file.container)
@@ -769,7 +769,7 @@ class FileSystemHelper:
                             container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True, max_concurrency=nthreads)
 
                     except TypeError as e:
-                        log.error(f"ERROR uploading file {src_file} to {dest_relpath} with timeout {timeout} container {dest_file.container} exception {e}")
+                        log.error(f"uploading file {src_file} to {dest_relpath} with timeout {timeout} container {dest_file.container} exception {e}")
                         
             else:
                 log.debug(f"copying from local {src_file} to local {dest_file}")
@@ -784,5 +784,5 @@ class FileSystemHelper:
         # start = time.time()
         # meta =  FileSystemHelper.get_metadata(path = dest_file, with_metadata = True, with_md5 = True)
         # md5 = meta['md5']
-        # log.info(f"info time: {time.time() - start} size = {meta['size']} md5 = {md5}")   
+        # log.debug(f"info time: {time.time() - start} size = {meta['size']} md5 = {md5}")   
         

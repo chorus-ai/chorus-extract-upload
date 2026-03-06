@@ -63,7 +63,6 @@ def _get_modality_pattern(modality:str, modality_configs:dict):
         elif mod == "metadata":
             pattern = "Metadata/{filepath}"
             
-    # log.info(f"Using pattern for modality {modality}: {pattern} from config {modality_configs}")
     return pattern
 
 
@@ -80,7 +79,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         databasename (str, optional): The name of the database to store the journal. Defaults to "journal.db".
         verbose (bool, optional): Whether to print verbose output. Defaults to False.
     """
-    log.info("Creating journal. NOTE: this may take a while for md5 computation.")
+    log.info("")
     
     verbose = kwargs.get("verbose", False)
 
@@ -102,14 +101,10 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     page_size = kwargs.get("page_size", 1000)
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    log.info(f" Using {nthreads} threads")
+    log.info(f"Scanning files to create journal. Calculating MD5 using {nthreads} threads")
 
     for modality in modalities:
         start = time.time()
-            
-        # paths = root.get_files(pattern)  # list of relative paths in posix format and in string form.
-        # # paths += paths1
-        # log.info(f"Get File List took {time.time() - start}")
         
         pattern = _get_modality_pattern(modality, kwargs.get("modality_configs", {}))
         if "\\" in pattern:
@@ -128,7 +123,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
 
                 for relpath in paths:
                     #if verbose:
-                    #    log.info(f"scanning {relpath}")
+                    log.debug(f"scanning {relpath}")
                     future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
                                              {}, 
                                              compiled_pattern, None if version_in_pattern else new_version, **{'lock': lock})
@@ -141,12 +136,12 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                     status = myargs[8]
                     if status in ["ADDED", "MOVED", "UPDATED"]:
                         if verbose:
-                            log.info(f"{status} {rlpath}")
+                            log.debug(f"{status} {rlpath}")
                         else:
                             print(".", end="", flush=True)
                         all_args.append(myargs)
                     elif status == "ERROR4":                    
-                        log.info(f"File does not fit pattern. {rlpath}")                        
+                        log.debug(f"File does not fit pattern. {rlpath}")                        
 
                 insert_count = JournalDispatcher.insert_journal_entries(databasename, all_args)
                 
@@ -179,9 +174,8 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     if parsed is not None:
         personid = parsed.named.get("patient_id", None)
         version = version if version is not None else parsed.named.get("version", None)
-        # log.debug(f"Parsed {relpath} person id {personid} version {version}")
+        log.debug(f"Parsed {relpath} person id {personid} version {version}")
     else:
-        # log.info(f"pattern not matched. skipping {relpath}")
         return (None, relpath, modality, None, 0, None, curtimestamp, None, "ERROR4", None, None)
         
     # matched = PERSONID_REGEX.match(relpath)
@@ -193,10 +187,8 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
         
         # There should only be 1 active file according to the path in a well-formed 
         if (len(results) > 1):
-            # log.error(f"Multiple active files with that path - journal is not consistent")
             return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR1", None, None)
         if (len(results) == 0):
-            # log.error(f"File found but no metadata. {relpath}")
             return (personid, relpath, modality, None, 0, None, curtimestamp, None, "ERROR2", None, None)
         
         if len(results) == 1:
@@ -214,11 +206,10 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
                     # files are very likely the same because of size and modtime match
                     
                     # del modality_files_to_inactivate[relpath]  # do not mark file as inactive.
-                    # log.info(f"SAME {relpath}")
+                    log.debug(f"SAME {relpath}")
                     return (personid, relpath, modality, oldmtime, oldsize, oldmd5, curtimestamp, oldsync, "KEEP", None, oldversion)
                 else:
                     #time stamp same but file size is different?
-                    # log.error(f"File size is different but modtime is the same. {relpath}")
                     return (personid, relpath, modality, oldmtime, oldsize, oldmd5, curtimestamp, oldsync, "ERROR3", None, oldversion)
                 
             else:
@@ -240,7 +231,7 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
                     # files are different.  set the old file as invalid and add a new file.
                     myargs = (personid, relpath, modality, modtimestamp, filesize, mymd5, curtimestamp, None, "UPDATED", md5_time, version)
                     # if verbose:
-                    #     log.info(f"UPDATED {relpath}")
+                    #     log.debug(f"UPDATED {relpath}")
                     # modified file. old one should be removed.
     else:
         # if DNE, add new file
@@ -276,8 +267,6 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     
     verbose = kwargs.get("verbose", False)
 
-    log.info(f"Updating journal... {databasename}")
-
     # a version is required. 
     if version is None:
         raise ValueError("version should have been set by in the _update_journal_ function in __main__.py")
@@ -303,7 +292,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    log.info(f"Using {nthreads} threads")
+    log.info(f"Updating journal {databasename} using {nthreads} threads")
 
     paths = []
     all_insert_args = []
@@ -326,7 +315,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                                                            version = None, 
                                                            modalities = [modality], 
                                                            **{'active': True} )
-        log.info(f"acivefiletuples: count {len(activefiletuples)}")
+        log.info(f"known active, existing files in journal: count {len(activefiletuples)}")
 
         # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
         modality_files_to_inactivate = {}
@@ -369,22 +358,22 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     elif status == "ERROR4":
                         log.error(f"File does not fit pattern. {rlpath}")
                     elif status == "KEEP":
-                        #if verbose:
-                        #    log.info(f"{status} {rlpath}")
+                        if verbose:
+                           log.debug(f"{status} {rlpath}")
                         del modality_files_to_inactivate[rlpath]
                     elif status == "ADDED":
                         if verbose:
-                            log.info(f"{status} {rlpath}")
+                            log.debug(f"{status} {rlpath}")
                         all_insert_args.append(myargs)
                     elif status in ["MOVED", "UPDATED"]:
                         if verbose:
-                            log.info(f"{status} {rlpath}")                        
+                            log.debug(f"{status} {rlpath}")                        
                         all_insert_args.append(myargs)
                         # move the key-val pair to the new list.
                         modality_files_to_inactivate_in_iter[rlpath] = modality_files_to_inactivate[rlpath]
                         del modality_files_to_inactivate[rlpath]
                     else:
-                        log.info(f"unknown status:  {status}, {rlpath}")
+                        log.debug(f"unknown status:  {status}, {rlpath}")
                     # back up only on upload
                     # backup_journal(databasename)
                     
@@ -394,17 +383,17 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     # check if there are non alphanumeric characters in the path
                     # if so, print out the path
                     if not (relpath.isalnum() or relpath.isascii()):
-                        log.info(f"Path contains non-alphanumeric characters: {relpath}")
+                        log.warning(f"Path contains non-alphanumeric characters: {relpath}")
 
                     for v in vals:
                         if (relpath in paths):
                             del_args_in_iter.append(("OUTDATED", v[0]))
                             if verbose:
-                                log.info(f"OUTDATED  {relpath}")
+                                log.debug(f"OUTDATED  {relpath}")
                         elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
                             del_args_in_iter.append(("DELETED", v[0]))
                             if verbose:
-                                log.info(f"DELETED  {relpath}")
+                                log.debug(f"DELETED  {relpath}")
                 # log.debug(f"SQLITE update arguments {all_del_args}")
                 if (len(del_args_in_iter) > 0):
                     # back up only on upload
@@ -435,17 +424,17 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 # check if there are non alphanumeric characters in the path
                 # if so, print out the path
                 if not (relpath.isalnum() or relpath.isascii()):
-                    log.info(f"Path contains non-alphanumeric characters: {relpath}")
+                    log.warning(f"Path contains non-alphanumeric characters: {relpath}")
 
                 for v in vals:
                     if (relpath in paths):
                         all_del_args.append(("OUTDATED", v[0]))
                         if verbose:
-                            log.info(f"OUTDATED  {relpath}")
+                            log.debug(f"OUTDATED  {relpath}")
                     elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
                         all_del_args.append(("DELETED", v[0]))
                         if verbose:
-                            log.info(f"DELETED  {relpath}")
+                            log.debug(f"DELETED  {relpath}")
             # log.info(f"SQLITE update arguments {all_del_args}")
             if (total_count == 0) and len(all_del_args) == 0:
                 log.info(f"Nothing to change in journal for modality {modality}")
@@ -492,10 +481,10 @@ def mark_files_as_deleted(files_to_remove:List[str],
         if f in active_files.keys():
             to_inactivate = set.union(to_inactivate, set(active_files[f]))
             
+    log.info(f"Inactivating (marking as deleted) {len(all_del_args)} files")
     if verbose:
-        log.info(f"Inactivating (marking as deleted) {len(all_del_args)} files")
         for f in to_inactivate:
-            log.info(f"DELETED  {f}")
+            log.debug(f"DELETED  {f}")
         
     if to_inactivate is None or len(to_inactivate) == 0:
         log.info("No files to delete")
@@ -566,7 +555,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
                                                         modalities = modalities,
                                                         **kwargs)
         
-    log.info(f"extracted files to upload for {('current' if version is None else version)} upload version and modalities = {(','.join(modalities) if modalities is not None else 'all')}")
+    log.info(f"extracted files to upload for {('current' if version is None else version)} version and modalities = {(','.join(modalities) if modalities is not None else 'all')}")
     
     # this is pulling back only files with changes during since the last upload.  an old file may be inactivated but is in a previous upload
     # so we only see the "new" part, which would look like an add.
@@ -617,18 +606,15 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
         adds = all_active_files - updates
         deletes = all_inactive_files - updates
         for f in adds:
-            log.info(f"ADD {f}")
+            log.debug(f"ADD {f}")
         for f in updates:
-            log.info(f"UPDATE {f}")
+            log.debug(f"UPDATE {f}")
         for f in deletes:
-            log.info(f"DELETE {f}")
+            log.debug(f"DELETE {f}")
             
     # sort the file-list
     # file_list.sort()
-    
-    if len(active_files) == 0:
-        log.info(f"No active files found")
-    
+        
     # do we need to delete files in central at all? NO.  journal will be updated.
     # we only need to add new files
                 
@@ -693,7 +679,7 @@ def list_versions(databasename: str, version: str):
     """
     
     if not Path(databasename).exists():
-        log.error(f"ERROR: No journal exists for filename {databasename}")
+        log.error(f"No journal exists for filename {databasename}")
         return None
     
     # List unique values in upload_dtstr column in journal table
@@ -731,7 +717,7 @@ def list_versions(databasename: str, version: str):
         return final
 
     else:
-        log.info("No journal versions found in the database.")
+        print("No journal versions found in the database.")
         return None
     
 

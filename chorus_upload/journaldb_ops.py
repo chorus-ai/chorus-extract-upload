@@ -74,7 +74,7 @@ class SQLiteDB:
         select_str = cls._make_select_stmt(table_name, cols, where_clause)
 
         if where_clause is not None and (len(where_clause) > cls.max_where_clause):
-            log.warning(f"QUERY where clause is long")
+            log.warning(f"QUERY where clause is long: {where_clause}")
         
         if (groupby is not None) and (len(groupby) > 0):
             select_str += f" GROUP BY {','.join(groupby)}"
@@ -137,7 +137,7 @@ class SQLiteDB:
         
         select_stmt = cls._make_select_stmt_with_left_join(table_name, columns, join_criteria, where_clause)
         if where_clause is not None and (len(where_clause) > cls.max_where_clause):
-            log.warning(f"QUERY with LEFT JOIN where clause is long")
+            log.warning(f"QUERY with LEFT JOIN where clause is long: {where_clause}")
 
         # print(select_stmt)
 
@@ -171,10 +171,10 @@ class SQLiteDB:
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 if foreign_keys is not None:
-                    #log.debug(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns}, {foreigns})")
+                    log.debug(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns}, {foreigns})")
                     cur.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns}, {foreigns})")
                 else:
-                    #log.debug(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
+                    log.debug(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
                     cur.execute(f"CREATE TABLE IF NOT EXISTS {table_name} ({columns})")
                 if index_on is not None:
                     cur.execute(f"CREATE INDEX IF NOT EXISTS {table_name}_idx ON {table_name} ({indexes})")
@@ -245,10 +245,10 @@ class SQLiteDB:
             with closing(conn.cursor()) as cur:
                 try:
                     if unique is not None and unique:
-                        #log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})")
+                        log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})")
                         cur.executemany(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})", params)
                     else:
-                        #log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})")
+                        log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})")
                         cur.executemany(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})", params)
                     inserted = cur.rowcount
                 except sqlite3.IntegrityError as e:
@@ -286,10 +286,10 @@ class SQLiteDB:
             with closing(conn.cursor()) as cur:
                 try:
                     if unique:
-                        #log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
+                        log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
                         cur.execute(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
                     else:
-                        #log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
+                        log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
                         cur.execute(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
                     inserted = cur.rowcount
                     lastrowid = cur.lastrowid
@@ -326,13 +326,13 @@ class SQLiteDB:
         set_str = ', '.join(sets)
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
         if (len(where_str) > cls.max_where_clause):
-            log.warning(f"UPDATE where clause is long")
+            log.warning(f"UPDATE where clause is long: {where_clause}")
         
         count = 0
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 try:
-                    #log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
+                    log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
                     cur.executemany(f"UPDATE {table_name} SET {set_str} {where_str}", params)
                     count = cur.rowcount
                 except sqlite3.IntegrityError as e:
@@ -363,7 +363,7 @@ class SQLiteDB:
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
             with closing(conn.cursor()) as cur:
                 try:
-                    #log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
+                    log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
                     cur.execute(f"UPDATE {table_name} SET {set_str} {where_str}")
                     count = cur.rowcount
                 except sqlite3.IntegrityError as e:
@@ -1503,7 +1503,7 @@ def _upgrade_journal(local_path, lock_path):
         new_journal_class = JournalTableV2
         old_ver = "V1"
     elif SQLiteDB.table_exists(local_fn, JournalTableV2.table_name):
-        log.info(f"Journal database is already at the latest version (v2).")
+        log.error(f"Journal database is already at the latest version (v2).")
         return None
     else:
         log.error(f"No journal table, or unsupported version to upgrade.")

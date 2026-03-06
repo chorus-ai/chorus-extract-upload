@@ -71,7 +71,7 @@ def _get_paths_for_history(args, config):
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
     mods_known = list(set(default_modalities).intersection(set(mods)))  # only keep valid modalities
     if len(set(mods).difference(set(mods_known))) > 0:
-        log.warning(f"Warning: the modalities are not known, but will be processed: {set(mods).difference(set(mods_known))}")
+        log.warning(f"The modalities are not known, but will be processed: {set(mods).difference(set(mods_known))}")
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }        
     if (((command == "file") and 
          (args.file_command in ["upload"])) or 

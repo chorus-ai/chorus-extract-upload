@@ -21,7 +21,7 @@ class PerformanceCounter:
             else:
                 log.info(f"TIMING: {cur_t:.2f} Total elapsed: {elapsed:.2f} seconds, with {self.file_count} files ({file_throughput:.2f} files/s) and {size:.2f} MB ({size_throughput:.2f} MB/s).")
         else:
-            log.warning(f"TIMING: {cur_t:.2f} Warning: total elapsed time is 0")
+            log.info(f"TIMING: {cur_t:.2f} Warning: total elapsed time is 0")
             
     def __print_session(self):
         cur_t = time.time()
@@ -32,7 +32,7 @@ class PerformanceCounter:
             file_throughput = float(self.session_file_count) / elapsed
             log.info(f"TIMING: {cur_t:.2f} Session elapsed: {elapsed:.2f} seconds, with {self.session_file_count} files ({file_throughput:.2f} files/s) and {size:.2f} MB ({size_throughput:.2f} MB/s)")
         else:
-            log.warning(f"TIMING: {cur_t:.2f} Warning: session elapsed time is 0")        
+            log.info(f"TIMING: {cur_t:.2f} Warning: session elapsed time is 0")        
 
     
     def __init__(self, total_file_count: int = None):

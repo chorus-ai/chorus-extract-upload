@@ -15,11 +15,11 @@ import chorus_upload.storage_helper as storage_helper
 from chorus_upload.journaldb_ops import JournalDispatcher
 import chorus_upload.journaldb_ops as journaldb_ops
 
-from remote_file_ops import _list_remote_files, _upload_remote_files, _download_remote_files, _delete_remote_files
+from chorus_upload.remote_file_ops import _list_remote_files, _upload_remote_files, _download_remote_files, _delete_remote_files
 
 import parse
 
-from script_generators import _write_files
+from chorus_upload.script_generators import _write_files
 
 
 import logging
@@ -33,6 +33,7 @@ logging.basicConfig(
 log = logging.getLogger(__name__)
 logging.getLogger("azure").setLevel(logging.ERROR)
 logging.getLogger("urllib3").setLevel(logging.ERROR)
+logging.getLogger("chorus_upload.PerformanceCounter").setLevel(logging.INFO)
 
 
 # TODO: DONE need to support folder for different file types being located at different places.
@@ -149,24 +150,23 @@ def _update_journal(args, config, journal_fn):
         vers_df = local_ops.list_versions(journal_fn, version = journal_version)
  
         # now print the user to select a version.  If using curent date time, let journaldb_ops handle it.
-        print("Current journal versions: ")
         all_vers = list(vers_df['version'].unique()) if vers_df is not None else []
         # if user specified a target version and it's in the journal, then use it, else create it.
         if (journal_version is not None):
             if (journal_version in all_vers):
-                log.info(f"Amending specified version: {journal_version}")
+                log.info(f"Amend specified version: {journal_version}")
                 amend = True
             else:
                 log.info(f"Specified version {journal_version} not found.  creating.")
                 amend = False
         elif (len(all_vers) == 0): # journal_version not specified, and no versions in journal. create
-            log.info(f"No existing versions found in journal.  creating new version.")
+            log.info(f"Empty journal.  creating new version.")
             journal_version = time.strftime("%Y%m%d%H%M%S")
             amend = False
         else: # journal_version not specified but there exists at least 1 version in journal.
             # user did not specify a version. choose.
             all_vers.sort()
-            print(f"Modifiable versions:")
+            print(f"Current journal modifiable versions:")
             print(f"\t{all_vers[-1]} [latest, default version to amend]")
             print(f"\tn: create new version")    
             target_version = input("Press 'n' to create a new version, or 'Enter' for the latest version: ")
@@ -365,7 +365,6 @@ def _verify_files(args, config, journal_fn):
     
     
 def _list_versions(args, config, journal_fn):
-    log.info("Uploads known in current journal: ")
     version = args.version if ("version" in vars(args)) and (args.version is not None) else None
     local_ops.list_versions(journal_fn, version=version)
     # log.info("Backed up journals: ")
@@ -664,5 +663,5 @@ if __name__ == "__main__":
             #     # push journal up.
             #     upload_ops.checkin_journal(journal_path, lock_path, local_path)
             if lock_path is not None and lock_path.is_cloud:
-                log.info(f"operation completed.  please check in journal")
+                log.info(f"operation completed.  please check in journal if no further operations are needed.")
     

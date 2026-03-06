@@ -129,7 +129,7 @@ def checkout_journal(journal_path, lock_path, local_path, transport_method: str=
     # enforced restriction:  lock_path is cloud or None.  local_path is local.
     
     if (not journal_path.is_cloud):
-        log.info(f"journal is a local file: {str(journal_path.root)}. no locking needed.")
+        log.debug(f"journal is a local file: {str(journal_path.root)}. no locking needed.")
         # local, ignore lock, and just copy if needed.
         # md5 = FileSystemHelper.get_metadata(journal_path.root, with_metadata = False, with_md5 = True)['md5']
         if journal_path.root.absolute() != local_path.root.absolute():
@@ -201,14 +201,14 @@ def checkin_journal(journal_path, lock_path, local_path, transport_method: str="
     # lock_path is cloud or None.  local_path is local.
     
     if not journal_path.is_cloud:
-        log.info(f"journal is a local file: {str(journal_path.root)}. no unlocking needed.")
+        log.debug(f"journal is a local file: {str(journal_path.root)}. no unlocking needed.")
         # not cloud, if local path is not the same as journal path, copy back
         if journal_path.root.absolute() != local_path.root.absolute():
             local_path.copy_file_to(relpath = None, dest_path = journal_path.root)
         return
 
     if (lock_path is None):
-        log.info(f"no lock file specified.  prob local journal.")
+        log.debug(f"no lock file specified.  prob local journal.")
         return
     
     lock_file = lock_path.root
@@ -216,7 +216,7 @@ def checkin_journal(journal_path, lock_path, local_path, transport_method: str="
     # first copy local to cloud as lockfile. (with overwrite)
     # since each lock is dated, unlikely to have conflicts.
     if not lock_file.exists():
-        log.info(f"no lock file, unable to checkin.")
+        log.error(f"no lock file, unable to checkin.")
         return
     
     # then rename lock back to journal.
@@ -232,10 +232,10 @@ def checkin_journal(journal_path, lock_path, local_path, transport_method: str="
 def unlock_journal(journal_path, lock_path, transport_method: str="builtin"):
     # lock file is none or cloud
     
-    log.debug(f"unlocking journal {journal_path} with lock {lock_path if lock_path is not None else 'None'}")
+    log.info(f"unlocking journal {journal_path} with lock {lock_path if lock_path is not None else 'None'}")
     
     if (lock_path is None):
-        log.info(f"no lock file specified.  prob local journal.")
+        log.debug(f"no lock file specified.  prob local journal.")
         return
     
     if (not journal_path.is_cloud):
@@ -248,19 +248,18 @@ def unlock_journal(journal_path, lock_path, transport_method: str="builtin"):
     has_lock = locked_file.exists()
     if has_journal:
         if (has_lock):
-            log.info(f"journal and lock files both present.  Keeping journal and removing lock")
+            log.warning(f"journal and lock files both present.  Keeping journal and removing lock")
             locked_file.unlink()
         else:
-            log.info(f"journal {str(journal_file)} is not locked.")
+            log.debug(f"journal {str(journal_file)} is not locked.")
     else:
         if (has_lock):
-            log.debug(f"journal file {str(journal_file)} missing, but lock file {str(locked_file)} present.  restoring journal from lock.")
             lock_path.copy_file_to(relpath = None, dest_path = journal_file)
             locked_file.unlink()
             # locked_file.rename(journal_file)
-            log.info(f"force unlocked {str(journal_file)}")
+            log.warning(f"journal file {str(journal_file)} missing, but lock file {str(locked_file)} present.  force unlocking.")
         else:
-            log.info("no journal or lock file.  okay to create")
+            log.debug("no journal or lock file.  okay to create")
     
 
 class sync_state(Enum):
@@ -407,7 +406,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                     # del_args += [(upload_dt_str, fid) for fid in del_list]
                     # replaced.append(fn2)
                 if verbose:
-                    log.info(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
+                    log.debug(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
                 else:
                     print(".", end="", flush=True)
             elif state == sync_state.MISMATCHED:
@@ -417,7 +416,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             # update the journal - likely not parallelizable.
             if len(update_args) >= step:
                 if verbose:
-                    log.info(f"UPLOAD updating journal {len(update_args)}")
+                    log.debug(f"UPLOAD updating journal {len(update_args)}")
                 # handle additions and updates
                 JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
                 update_args = []
@@ -457,7 +456,8 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
         AssertionError: If some uploaded files are not in the journal or if there are mismatched files.
 
     """
-    log.info(f'UPLOAD_NEW uploading {max_num_files} files')
+    if max_num_files is not None:
+        log.info(f'UPLOAD uploading {max_num_files} files')
     
     verbose = kwargs.get("verbose", False)
     modality_configs = kwargs.get("modality_configs", {})
@@ -481,6 +481,8 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     if (files_to_upload is None) or (len(files_to_upload) == 0):
         log.info("no files to upload.  Done")
         return None, max_num_files
+    else:
+        log.info(f"uploading {len(files_to_upload)} files to {str(dest_path.root)}")
 
     if max_num_files is not None:
         upload_count = min(max_num_files, len(files_to_upload))
@@ -710,7 +712,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     # procssPoolExecutor seems to work better with remote files.
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    log.info(f"Using {nthreads} threads")
+    log.info(f"Verifying files using {nthreads} threads")
     with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
         lock = threading.Lock()
         futures = []
@@ -729,7 +731,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
 
             if (size == dest_meta['size']) and (md5 == dest_md5):
                 if verbose:
-                    log.info(f"Verified upload {dtstr} {fn} {fid}")
+                    log.debug(f"Verified upload {dtstr} {fn} {fid}")
                 else:
                     print(".", end="", flush=True)
                 matched.append(fn)
@@ -793,7 +795,7 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
 
         if (size == dest_meta['size']) and (md5 == dest_md5):
             if verbose:
-                log.info(f"marking as uploaded {version} {fn} {fid}")
+                log.debug(f"marking as uploaded {version} {fn} {fid}")
             else:
                 print(".", end="", flush=True)
             matched.append((fid,))
