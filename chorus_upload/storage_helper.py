@@ -309,7 +309,8 @@ class FileSystemHelper:
     # account_url + credential, or account_url with embedded SAS token
     # connection_string, explicit or in environment variable.  With embedded SAS token or credential
     # existing blob_service_client
-        
+    
+    page_size = 1000
     
     # S3 client ways to sign in - create client using 
     #  access and secret keys (provided, or via env-var)
@@ -615,15 +616,18 @@ class FileSystemHelper:
                 continue
             
             count += 1
-            if (count % 1000) == 0:
+            if (count % cls.page_size) == 0:
                 log.info(f"Found {count} files in {pattern}")
+                
+        if (count > 0):
+            log.info(f"Found {count} files in {pattern}")
             
         log.info("completed retrieving files.")
         # return relative path
         return paths
     
 
-    def get_files_iter(self, pattern: str = None, include_dirs : bool = False, recursive:bool = True, page_size: int = 1000):
+    def get_files_iter(self, pattern: str = None, include_dirs : bool = False, recursive:bool = True, page_size: int = cls.page_size) -> list[str]:
         """
         Yields file paths within the specified subpath.
 

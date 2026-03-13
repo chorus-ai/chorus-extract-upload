@@ -15,7 +15,7 @@ def _list_remote_files(args, config, journal_fn):
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
     
     recursive = args.recursive
     wildcard = "**/*" if recursive else "*"
@@ -105,7 +105,7 @@ def _upload_remote_files(args, config, journal_fn):
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
     
     if args.remote is None or len(args.remote) == 0:
         print("Please specify the remote file/directory to upload to.")
@@ -146,7 +146,7 @@ def _download_remote_files(args, config, journal_fn):
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
     
     if args.local is None or len(args.local) == 0:
         print("Please specify the local file/directory to download to.")
@@ -195,7 +195,7 @@ def _delete_remote_files(args, config, journal_fn):
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
     
     if args.files is None or len(args.files) == 0:
         log.error("Please specify at least one file/directory to delete.")

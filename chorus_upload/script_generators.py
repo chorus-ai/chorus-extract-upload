@@ -555,7 +555,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     dest_config = kwargs.get('dest_config', {})
     pattern = re.compile(r"az://[^/]+/(.+)")
     # cloud_journal = kwargs.get('cloud_journal', "journal.db")
-    page_size = kwargs.get('page_size', 1000)  
+    page_size = kwargs.get('page_size', 100)  
     max_upload_count = kwargs.get('max_num_files', None)  
     
 

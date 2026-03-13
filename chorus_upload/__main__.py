@@ -184,7 +184,7 @@ def _update_journal(args, config, journal_fn):
     journaling_mode = config_helper.get_journaling_mode(config)
 
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
 
     # for each modality, create the file system help and process
     first = True
@@ -222,7 +222,7 @@ def _select_files(args, config, journal_fn):
     modality_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
     # do one modality at a time
     ver = args.version if ('version' in vars(args)) and (args.version is not None) else time.strftime("%Y%m%d%H%M%S")
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
 
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
@@ -329,7 +329,7 @@ def _upload_files(args, config, journal_fn):
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
     
     remaining = max_upload_count
     for mod, mod_config in mod_configs.items():
@@ -358,7 +358,7 @@ def _verify_files(args, config, journal_fn):
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', 1000)
+    page_size = config_helper.get_config(config).get('page_size', 100)
     
     upload_ops.verify_files(centralfs, journal_fn, version = args.version, modalities = mods,
                             **{'num_threads': nthreads, 'page_size': page_size, 'verbose' : args.verbose, 'modality_configs': mod_configs, 'compiled_patterns': compiled_patterns})
