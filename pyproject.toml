@@ -24,7 +24,9 @@ dependencies = [
     "azure-identity == 1.25.1",
     "tomli",
     "parse",
-    "tabulate"
+    "tabulate",
+    "aiofiles",
+    "aiohttp"
 ]
 
 [project.optional-dependencies]

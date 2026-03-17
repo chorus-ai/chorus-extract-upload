@@ -8,7 +8,7 @@ from azure.identity import DefaultAzureCredential
 from azure.storage.filedatalake import DataLakeServiceClient
 
 from cloudpathlib import AzureBlobClient
-from chorus_upload.storage_helper import FileSystemHelper
+# from chorus_upload.storage_helper import FileSystemHelper
 
 
 #%%
@@ -22,15 +22,19 @@ abc= AzureBlobClient(blob_service_client = bsc, file_cache_mode = FileCacheMode.
 # account_info = bsc.get_account_information()  # 
 # print(f"Account kind: {account_info['account_kind']}")
 
-#%% check azureBlobClient glob operation.
+#%% check azureBlobClient glob operation.  this would appear to work because it is checking for url response, and return false if 404
 cp = AzureBlobPath("az://emory-temp/20251217115855/journal_test.db", client=abc)
 print(f"does it exist {cp.exists()}")
 print(f"is dir?  is file? {cp.is_dir()} {cp.is_file()}")
 
 #%% try the file system client
+# can connect to DataLake Service, 
 dlc = DataLakeServiceClient(account_url="https://upload.chorus4ai.org", credential=cred, connection_verify=False, connection_cert = None)
+# this part works - can list the containers (file systems)
 for fs in dlc.list_file_systems():
     print(f"fs - {fs.name}")
+    
+# but this part does not work - cannot even create teh file system client.
 fsc = dlc.get_file_system_client(file_system="emory-temp")
 paths = fsc.get_paths(path="20251217115855", recursive=True)
 for path in paths:

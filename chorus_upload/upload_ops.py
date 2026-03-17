@@ -8,8 +8,9 @@ from time import strftime, gmtime
 from enum import Enum
 import concurrent.futures
 import threading
-from chorus_upload.local_ops import list_files_with_info, convert_local_to_central_path
 from itertools import islice
+
+from chorus_upload.local_ops import list_files_with_info, convert_local_to_central_path
 # from chorus_upload.local_ops import backup_journal
 import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
@@ -18,6 +19,11 @@ import chorus_upload.perf_counter as perf_counter
 from chorus_upload.journaldb_ops import JournalDispatcher
 
 import azure
+
+import asyncio
+import aiofiles.os
+from cloudpathlib import AzureBlobClient
+from azure.storage.blob.aio import BlobServiceClient as AsyncBlobServiceClient
 
 import logging
 log = logging.getLogger(__name__)
@@ -356,39 +362,48 @@ def _upload_and_verify(src_path : FileSystemHelper,
     # if verified:
     #     del_list = list(all_deleted.get(fn, set()))
 
-    return (fn, info, state, 
+    return (fn, info, state, dated_dest_path,
             # del_list, 
             copy_time, verify_time)
 
 
-def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
-                     files_to_upload, 
-                    #  files_to_mark_deleted, 
-                     databasename, upload_dt_str, update_args, 
-                    #  del_args, 
+def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
+                     files_to_upload,
+                    #  files_to_mark_deleted,
+                     databasename, upload_dt_str, update_args,
+                    #  del_args,
                      step,
                     #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
                      perf, nuploads, threads_per_file, verbose = False):
-    dated_dest_paths = set()    
-    nthreads = nuploads * threads_per_file
+    dated_dest_paths = set()
+
+    # Each worker thread gets its own cloned Azure client via thread-local storage.
+    # The main thread's client must NOT be shared across workers.
+    thread_local = threading.local()
+    orig_client = dest_path.client
+    dest_root = dest_path.root
+    int_host = dest_path.internal_host
+
+    def upload_task(fn, info):
+        if not hasattr(thread_local, 'client'):
+            thread_local.client = storage_helper._clone_client(orig_client)
+        dated_dest_path = FileSystemHelper(dest_root.joinpath(info['version']), client=thread_local.client, internal_host=int_host)
+        return _upload_and_verify(src_path, fn, info, dated_dest_path,
+                                  nthreads=threads_per_file, lock=lock)
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=nuploads) as executor:
         lock = threading.Lock()
-        
-        
+
         futures = []
         for fn, info in files_to_upload.items():
-            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']), client = dest_path.client, internal_host = dest_path.internal_host)
-            future = executor.submit(_upload_and_verify, src_path, fn, info, dated_dest_path, 
-                                    #  files_to_mark_deleted, 
-                                     **{'nthreads': threads_per_file, "lock": lock})
+            future = executor.submit(upload_task, fn, info)
             futures.append(future)
     
         for future in concurrent.futures.as_completed(futures):
-            (fn2, info, state, 
+            (fn2, info, state, dated_dest_path,
             #  del_list, 
              copy_time, verify_time) = future.result()
             
-            dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']), client = dest_path.client, internal_host = dest_path.internal_host)
             dated_dest_paths.add(dated_dest_path)
             perf.add_file(info['size'])
             
@@ -431,6 +446,222 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             perf, 
             # missing_dest, missing_src, matched, mismatched, replaced, 
             dated_dest_paths)
+
+
+
+async def _async_upload_and_verify(src_path : FileSystemHelper,
+                       fn : str, info: dict,
+                       dated_dest_path : FileSystemHelper,
+                       **kwargs):
+    state = sync_state.UNKNOWN
+    destfn = info['central_path']
+    size = info['size']
+    md5 = info['md5']
+
+    # ======= copy
+    start = time.time()
+    srcfile = src_path.root.joinpath(fn)
+    nthreads = kwargs.get('nthreads', 0)
+    if await aiofiles.os.path.exists(srcfile):
+        try:
+            await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
+                                               nthreads=nthreads)
+        except azure.core.exceptions.ServiceResponseError as e:
+            try:
+                log.warning(f"copy failed {fn}, retrying")
+                await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
+                                                   nthreads=nthreads)
+            except azure.core.exceptions.ServiceResponseError as e:
+                log.error(f"copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
+                state = sync_state.MISSING_DEST
+    else:
+        state = sync_state.MISSING_SRC
+    copy_time = time.time() - start
+    verify_time = None
+
+    # ======= verify
+    if state == sync_state.UNKNOWN:
+        start = time.time()
+        dest_meta = await dated_dest_path.async_get_metadata(
+            path=destfn, with_metadata=True, with_md5=True, local_md5=md5)
+        verify_time = time.time() - start
+        if dest_meta is None:
+            state = sync_state.MISSING_DEST
+
+    if state == sync_state.UNKNOWN:
+        if (size == dest_meta['size']) and (md5 == dest_meta['md5']):
+            state = sync_state.MATCHED
+        else:
+            state = sync_state.MISMATCHED
+
+    return (fn, info, state, dated_dest_path, copy_time, verify_time)
+
+
+def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
+                   files_to_upload,
+                  #  files_to_mark_deleted,
+                   databasename, upload_dt_str, update_args,
+                  #  del_args,
+                   step,
+                  #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
+                   perf, concurrency, verbose = False, *, connections_per_file: int = 1):
+    
+    if src_path.is_cloud:
+        raise ValueError("Async upload is only supported for local source path.")
+    if not isinstance(dest_path.client, AzureBlobClient):
+        raise ValueError("Async upload is only supported for Azure Blob Storage destination.")
+    
+    dated_dest_paths = set()
+
+    async def process_uploads():
+        svc = dest_path.client.service_client
+        async with AsyncBlobServiceClient(account_url=svc.url,
+                                          credential=svc.credential,
+                                          api_version=svc.api_version) as async_client:
+            await _run_uploads(async_client)
+
+    async def _run_uploads(async_client):
+        semaphore = asyncio.Semaphore(concurrency)
+
+        async def upload_file(fn, info):
+            async with semaphore:
+                dated_dest_path = FileSystemHelper(
+                    dest_path.root.joinpath(info['version']),
+                    client=dest_path.client,
+                    internal_host=dest_path.internal_host,
+                    async_azclient=async_client,
+                )
+                return await _async_upload_and_verify(src_path, fn, info, dated_dest_path,
+                                                       nthreads=connections_per_file)
+
+        tasks = [upload_file(fn, info) for fn, info in files_to_upload.items()]
+
+        for coro in asyncio.as_completed(tasks):
+            (fn2, info, state, dated_dest_path,
+             # del_list,
+             copy_time, verify_time) = await coro
+
+            dated_dest_paths.add(dated_dest_path)
+            perf.add_file(info['size'])
+
+            if state == sync_state.MISSING_DEST:
+                log.error(f"missing file at destination {fn2}")
+            elif state == sync_state.MISSING_SRC:
+                log.error(f"file not found {fn2}")
+            elif state == sync_state.MATCHED:
+                update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
+                if verbose:
+                    log.info(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
+                else:
+                    print(".", end="", flush=True)
+            elif state == sync_state.MISMATCHED:
+                log.error(f"mismatched upload file {fn2} upload failed? fileid {info['file_id']}")
+
+            if len(update_args) >= step:
+                if verbose:
+                    log.info(f"UPLOAD updating journal {len(update_args)}")
+                JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
+                update_args.clear()
+                perf.report()
+
+    asyncio.run(process_uploads())
+
+    return (
+        update_args,
+        #  del_args,
+        perf,
+        #  missing_dest, missing_src, matched, mismatched, replaced,
+        dated_dest_paths,
+    )
+
+
+def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
+                     files_to_upload, 
+                    #  files_to_mark_deleted, 
+                     databasename, upload_dt_str, update_args, 
+                    #  del_args, 
+                     step,
+                    #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
+                     perf, nthreads:int, verbose = False):
+    dated_dest_paths = set()
+    
+    # size limits (file sizes in bytes), for nthreads=32:
+    # group    size       type    concurrency  conn/file  total conns
+    # small   <   1MB    async       128    ×     1     =    128
+    # medium  <   8MB    async        64    ×     1     =     64
+    # large   <  64MB    async        32    ×     1     =     32
+    # xlarge  < 128MB    async        16    ×     2     =     32
+    # xxlarge < 256MB    thread        8    ×     4     =     32
+    # huge    >= 256MB   thread        4    ×     8     =     32
+
+    # Split files by size into groups with different concurrency levels
+    size_groups = {
+        'small':   ('async',  0,       2**20,  128),  # <   1MB: 128 concurrent
+        'medium':  ('async',  2**20,   2**23,   64),  # <   8MB:  64 concurrent
+        'large':   ('async',  2**23,   2**26,   32),  # <  64MB:  32 concurrent
+        'xlarge':  ('async',  2**26,   2**27,   16),  # < 128MB:  16 concurrent
+        'xxlarge': ('thread', 2**27,   2**28,    8),  # < 256MB:   8 concurrent
+        'huge':    ('thread', 2**28,   float('inf'), 4),  # >= 256MB:  4 concurrent
+    }
+
+    dated_paths = set()
+
+    for group_name, (concur_type, min_size, max_size, concurrency) in size_groups.items():
+        group_files = {fn: info for fn, info in files_to_upload.items() 
+                       if min_size <= info['size'] < max_size}
+        
+        if len(group_files) == 0:
+            continue
+        
+        if concur_type == 'async':
+            # Per-file block parallelism: scales up as per-task concurrency falls,
+            # so that large-file groups still saturate available bandwidth.
+            # e.g. nthreads=32, xlarge (concurrency=16) → connections_per_file=2
+            connections_per_file = max(1, nthreads // concurrency)
+            log.info(f"UPLOAD {len(group_files)} files in {group_name} group, async, "
+                     f"{concurrency} concurrent × {connections_per_file} conn/file")
+            (update_args,
+                #  del_args,
+                perf,
+                #  missing_dest, missing_src, matched, mismatched, replaced,
+                _dated_paths) = \
+                _async_upload(src_path, dest_path,
+                                group_files,
+                                # files_to_mark_deleted,
+                                databasename, upload_dt_str, update_args,
+                                # del_args,
+                                step,
+                                # missing_dest, missing_src, matched, mismatched, replaced,
+                                perf, concurrency, verbose,
+                                connections_per_file=connections_per_file)
+            dated_paths.update(_dated_paths)
+        elif concur_type == 'thread':
+            nuploads = min(concurrency, nthreads)
+            threads_per_file = max(1, nthreads // nuploads)
+            (update_args,
+                #  del_args,
+                perf,
+                #  missing_dest, missing_src, matched, mismatched, replaced,
+                _dated_paths) = \
+                _thread_upload(src_path, dest_path,
+                                group_files,
+                                # files_to_mark_deleted,
+                                databasename, upload_dt_str, update_args,
+                                # del_args,
+                                step,
+                                # missing_dest, missing_src, matched, mismatched, replaced,
+                                perf, nuploads, threads_per_file, verbose)
+            dated_paths.update(_dated_paths)
+        else:
+            raise ValueError(f"Unknown concurrency type {concur_type} for group {group_name}")
+
+        
+    return (update_args, 
+            # del_args, 
+            perf, 
+            # missing_dest, missing_src, matched, mismatched, replaced, 
+            dated_paths)
+
 
 # new version, pull list once.
 def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHelper,
@@ -523,58 +754,24 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
     # Question - do we copy the journal into the source directory? YES for now (in case of overwrite)
     journal_fn = os.path.basename(databasename)
 
-    # for fn, info in files_to_upload.items():  # only the active files.
-    #     # create a dated root directory to receive the files
-    #     dated_dest_path = FileSystemHelper(dest_path.root.joinpath(info['version']), client = dest_path.client, internal_host = dest_path.internal_host)
-    #     (fn2, info, state, del_list, copy_time, verify_time) = _upload_and_verify( src_path, fn, info, dated_dest_path, files_to_mark_deleted)
-
-    # split set to small and large files by AZURE block size.
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    
-    # smaller files - more concurrent threads.
-    for threads_per_file in range(1, (nthreads // 2 + 1)):
-        files = { fn: info for fn, info in files_to_upload.items() 
-                 if (info['size'] > storage_helper.AZURE_MAX_BLOCK_SIZE * (threads_per_file-1)) and
-                    (info['size'] <= storage_helper.AZURE_MAX_BLOCK_SIZE * threads_per_file) }
 
-        nuploads = nthreads // threads_per_file        
-        if len(files) > 0:
-            log.info(f"UPLOAD {len(files)} files,  sizes {storage_helper.AZURE_MAX_BLOCK_SIZE * (threads_per_file-1)} to {storage_helper.AZURE_MAX_BLOCK_SIZE * threads_per_file}, {nuploads} concurrent uploads")
-        
-            (update_args, 
-            #  del_args, 
-             perf, 
-            #  missing_dest, missing_src, matched, mismatched, replaced, 
-             dated_paths) = \
-                _parallel_upload(src_path, dest_path,
-                                files, 
-                                # files_to_mark_deleted,
-                                databasename, upload_dt_str, update_args, 
-                                # del_args, 
-                                step,
-                                # missing_dest, missing_src, matched, mismatched, replaced,
-                                perf, nuploads, threads_per_file, verbose)
-            for dp in dated_paths:
-                dated_dest_paths[str(dp.root)] = dp
-    
-    files = { fn: info for fn, info in files_to_upload.items() 
-                if (info['size'] > storage_helper.AZURE_MAX_BLOCK_SIZE * (nthreads // 2)) }
-    log.info(f"UPLOAD {len(files)} files, size > {storage_helper.AZURE_MAX_BLOCK_SIZE * (nthreads // 2)}, 2 concurrent uploads")
-    if len(files) > 0:
+    log.info(f"UPLOAD {len(files_to_upload)} files")
+    if len(files_to_upload) > 0:
         (update_args, 
         #  del_args, 
          perf, 
         #  missing_dest, missing_src, matched, mismatched, replaced, 
          dated_paths) = \
             _parallel_upload(src_path, dest_path,
-                            files, 
+                            files_to_upload, 
                             # files_to_mark_deleted,
                             databasename, upload_dt_str, update_args, 
                             # del_args, 
                             step,
                             # missing_dest, missing_src, matched, mismatched, replaced,
-                            perf, 2, nthreads, verbose)
+                            perf, nthreads, verbose)
         for dp in dated_paths:
             dated_dest_paths[str(dp.root)] = dp
     
@@ -716,7 +913,7 @@ def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db",
     with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
         lock = threading.Lock()
         futures = []
-        for (fid, filepath, modtime, size, md5, modality, invalidtime, vresion, uploadtime) in files_to_verify:
+        for (fid, filepath, modtime, size, md5, modality, invalidtime, version, uploadtime) in files_to_verify:
             file_info = (fid, filepath, size, md5, modality)
             future = executor.submit(_get_file_info, dated_dest_path, file_info, **{**kwargs, "lock": lock})
             futures.append(future)

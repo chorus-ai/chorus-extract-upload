@@ -64,6 +64,10 @@ import shutil
 from chorus_upload import config_helper
 import base64
 
+import asyncio
+import aiofiles
+from azure.core.exceptions import ResourceNotFoundError
+
 import urllib3
 urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
@@ -71,8 +75,9 @@ from cloudpathlib import S3Client
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from cloudpathlib import AzureBlobClient
-#     from cloudpathlib import GoogleCloudClient
+# from cloudpathlib import GoogleCloudClient
 from urllib.parse import urlparse, urlunparse
+from azure.storage.blob.aio import BlobServiceClient as AsyncBlobServiceClient
 
 # from azure.core.pipeline.transport import RequestsTransport
 # from requests.adapters import HTTPAdapter
@@ -273,16 +278,16 @@ def __get_azure_internal_host(cloud_config:dict) -> Optional[str]:
         raise ValueError("Azure account name must be specified in the configuration toml file in each azure auth section.")
 
 # internal helper to create the cloud client
-def __make_gs_client(auth_params: dict):
-    # if google_application_credentials:
-    #     # application credentials specified, then use it
-    #     return GoogleCloudClient(application_credentials = google_application_credentials)
-    # elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-    if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-        # application credentials specified in environment variables, then use it
-        return GoogleCloudClient(application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
-    else:
-        raise ValueError("No viable Google application credentials to open connection")
+# def __make_gs_client(auth_params: dict):
+#     # if google_application_credentials:
+#     #     # application credentials specified, then use it
+#     #     return GoogleCloudClient(application_credentials = google_application_credentials)
+#     # elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+#     if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+#         # application credentials specified in environment variables, then use it
+#         return GoogleCloudClient(application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
+#     else:
+#         raise ValueError("No viable Google application credentials to open connection")
 
 # internal helper to create the cloud client
 def _make_client(cloud_config:dict):
@@ -294,13 +299,73 @@ def _make_client(cloud_config:dict):
         return __make_aws_client(cloud_params), None
     elif (path_str.startswith("az://")):
         return __make_az_client(cloud_params), __get_azure_internal_host(cloud_config)
-    elif (path_str.startswith("gs://")):
-        return __make_gs_client(cloud_params), None
+    # elif (path_str.startswith("gs://")):
+    #     return __make_gs_client(cloud_params), None
     elif ("://" in path_str):
         raise ValueError("Unknown cloud storage provider.  Supports s3, az, gs")
     else:
         return None, None
     
+    
+def _clone_client(client):
+    if isinstance(client, S3Client):
+        return __clone_aws_client(client)    
+    elif isinstance(client, AzureBlobClient):
+        return __clone_az_client(client)
+    # elif isinstance(client, GoogleCloudClient):
+    #     return __clone_gs_client(client)
+    else:
+        raise ValueError("Unknown client type.  Supports S3Client, AzureBlobClient, GoogleCloudClient")
+
+def __clone_aws_client(orig: S3Client) -> S3Client:
+    # Extract the constructor parameters CloudPathLib stores
+    params = {
+        "aws_session_token": orig.aws_session_token,
+        "profile_name": orig.profile_name,
+        "access_key_id": orig.access_key_id,
+        "secret_access_key": orig.secret_access_key,
+        "file_cache_mode": orig.file_cache_mode,
+    }
+
+    # Remove None values so we pass only the active auth method
+    params = {k: v for k, v in params.items() if v is not None}
+
+    # Recreate the client
+    return S3Client(**params)
+
+def __clone_az_client(orig: AzureBlobClient) -> AzureBlobClient:
+    # Extract the constructor parameters CloudPathLib stores
+    params = {
+        "account_name": orig.account_name,
+        "account_key": orig.account_key,
+        "sas_token": orig.sas_token,
+        "connection_string": orig.connection_string,
+        "managed_identity": orig.managed_identity,
+        "tenant_id": orig.tenant_id,
+        "client_id": orig.client_id,
+        "client_secret": orig.client_secret,
+        "credential": orig.credential,
+        "settings": orig.settings,
+    }
+
+    # Remove None values so we pass only the active auth method
+    params = {k: v for k, v in params.items() if v is not None}
+
+    # Recreate the client
+    return AzureBlobClient(**params)
+
+# def __clone_gs_client(orig: GoogleCloudClient) -> GoogleCloudClient:
+#     # Extract the constructor parameters CloudPathLib stores
+#     params = {
+#         "application_credentials": orig.application_credentials,
+#         "file_cache_mode": orig.file_cache_mode,
+#     }
+
+#     # Remove None values so we pass only the active auth method
+#     params = {k: v for k, v in params.items() if v is not None}
+
+#     # Recreate the client
+#     return GoogleCloudClient(**params) 
 
 
 class FileSystemHelper:
@@ -382,7 +447,9 @@ class FileSystemHelper:
             return str(p)
 
     
-    def __init__(self, path: Union[str, CloudPath, Path], client : Optional[Client] = None, **kwargs):
+    def __init__(self, path: Union[str, CloudPath, Path], 
+                 client : Optional[Client] = None,
+                 **kwargs):
         """
         Initialize the StoragePath object.
 
@@ -394,7 +461,16 @@ class FileSystemHelper:
         
         # check if data is in kwargs
         self.client = client
+        # async_azclient must be created inside an active event loop (e.g. via
+        # `async with AsyncBlobServiceClient(...)`) and passed in explicitly.
+        # Never create it here: __init__ runs outside any event loop and the
+        # resulting client would be bound to a closed loop on the next asyncio.run().
+        self.async_azclient = kwargs.get('async_azclient')
         self.root = FileSystemHelper._make_path(path, client = client)  # supports either pathlib.Path or cloudpathlib.CloudPath
+        if isinstance(self.root, CloudPath):
+            self.container = self.root.container
+        else:
+            self.container = None
         # If no client, then environment variable, or default profile (s3) is used.            
         self.is_cloud = isinstance(self.root, CloudPath)
         # self.is_dir = self.root.is_dir()  what is the path is mean to be a directory but does not exist yet?  can't tell if it's a directory.
@@ -436,7 +512,102 @@ class FileSystemHelper:
             
         return md5
 
-                       
+    async def async_get_metadata(self, path: Union[str, CloudPath, Path] = None,
+                                 with_metadata: bool = True,
+                                 with_md5: bool = False,
+                                 local_md5: str = None,
+                                 **kwargs) -> dict:
+        """Async version of get_metadata. Supports local paths and Azure Blob Storage.
+        Returns None if the file/blob does not exist."""
+        lock = kwargs.get("lock", None)
+
+        curr = self.root.joinpath(path) if path is not None else self.root
+        rel  = path if path is not None else self.root
+
+        metadata = {'md5': None, 'size': None, 'create_time_us': None, 'modify_time_us': None, 'path': None}
+
+        if isinstance(curr, AzureBlobPath):
+            blob_client = self.async_azclient.get_blob_client(
+                container=curr.container, blob=curr.blob)
+            try:
+                props = await blob_client.get_blob_properties()
+            except ResourceNotFoundError:
+                return None
+
+            if with_metadata:
+                metadata["path"] = FileSystemHelper._as_posix(rel)
+                if "\\" in metadata["path"]:
+                    log.warning(f"path contains backslashes: {metadata['path']}")
+                metadata["size"] = props.size
+                metadata["modify_time_us"] = int(math.floor(props.last_modified.timestamp() * 1e6)) if props.last_modified else None
+                metadata["create_time_us"] = int(math.floor(props.creation_time.timestamp() * 1e6)) if props.creation_time else None
+
+            if with_md5:
+                set_md5 = False
+                cloud_md5_bytes = props.content_settings.content_md5  # bytes or None
+
+                if cloud_md5_bytes is None:
+                    if local_md5 is None:
+                        # blob has no md5 and none supplied — leave as None
+                        md5_str = None
+                    else:
+                        md5_str = local_md5
+                        if lock is not None:
+                            with lock:
+                                log.info(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
+                        else:
+                            log.info(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
+                        set_md5 = True
+                else:
+                    md5_str = cloud_md5_bytes.hex()
+                    if local_md5 is not None and md5_str != local_md5:
+                        if base64.b64decode(cloud_md5_bytes).hex() == local_md5:
+                            if lock is not None:
+                                with lock:
+                                    log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(cloud_md5_bytes).hex()}")
+                            else:
+                                log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(cloud_md5_bytes).hex()}")
+                            md5_str = local_md5
+                            set_md5 = True
+                        else:
+                            if lock is not None:
+                                with lock:
+                                    log.info(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
+                            else:
+                                log.info(f"cloud and supplied local md5 are different for {curr} cloud {md5_str}, local {local_md5}")
+
+                if set_md5:
+                    content_settings = props.content_settings
+                    content_settings.content_md5 = bytes.fromhex(md5_str)
+                    await blob_client.set_http_headers(content_settings=content_settings)
+
+                metadata["md5"] = md5_str
+
+        elif isinstance(curr, Path):
+            if not await aiofiles.os.path.exists(curr):
+                return None
+
+            if with_metadata:
+                stat_result = await aiofiles.os.stat(curr)
+                metadata["path"] = FileSystemHelper._as_posix(rel)
+                if "\\" in metadata["path"]:
+                    log.warning(f"path contains backslashes: {metadata['path']}")
+                metadata["size"] = stat_result.st_size
+                metadata["modify_time_us"] = int(math.floor(stat_result.st_mtime * 1e6)) if stat_result.st_mtime else None
+                metadata["create_time_us"] = int(math.floor(stat_result.st_ctime * 1e6)) if stat_result.st_ctime else None
+
+            if with_md5:
+                md5 = hashlib.md5()
+                async with aiofiles.open(curr, "rb") as f:
+                    while chunk := await f.read(1024 * 1024):
+                        md5.update(chunk)
+                metadata["md5"] = md5.hexdigest()
+
+        else:
+            raise NotImplementedError(f"async_get_metadata does not support {type(curr)}")
+
+        return metadata
+
     @classmethod
     def get_metadata(cls, root: Union[CloudPath, Path] = None, 
                      path: Union[CloudPath, Path] = None,
@@ -787,5 +958,44 @@ class FileSystemHelper:
         # start = time.time()
         # meta =  FileSystemHelper.get_metadata(path = dest_file, with_metadata = True, with_md5 = True)
         # md5 = meta['md5']
-        # log.debug(f"info time: {time.time() - start} size = {meta['size']} md5 = {md5}")   
-        
+        # log.debug(f"info time: {time.time() - start} size = {meta['size']} md5 = {md5}")
+
+
+    async def async_copy_file_to(self, relpath: Union[str, tuple], dest_path: 'FileSystemHelper', **kwargs):
+        """Async version of copy_file_to. Supports local source to local or Azure destination.
+
+        Args:
+            relpath: relative path string, or (src_rel, dest_rel) tuple.
+            dest_path: FileSystemHelper for the destination.
+        """
+        if self.is_cloud:
+            raise ValueError("async_copy_file_to only supports a local source path.")
+
+        nthreads = kwargs.get("nthreads", 0)
+        timeout  = kwargs.get("timeout", 120)
+
+        src_rel, dest_rel = relpath if isinstance(relpath, tuple) else (relpath, relpath)
+        src_file  = self.root / src_rel
+        dest_file = dest_path.root / dest_rel
+
+        if isinstance(dest_file, AzureBlobPath):
+            if dest_path.async_azclient is None:
+                raise ValueError("async_copy_file_to: Azure destination requires async_azclient on dest_path.")
+            blob_name = dest_file.blob
+            container = dest_file.container
+            async_container_client = dest_path.async_azclient.get_container_client(container)
+            upload_kwargs = {"overwrite": True, "connection_timeout": timeout}
+            if nthreads > 0:
+                upload_kwargs["max_concurrency"] = nthreads
+            async with aiofiles.open(src_file, "rb") as f:
+                await async_container_client.upload_blob(name=blob_name, data=f, **upload_kwargs)
+
+        elif isinstance(dest_file, Path):
+            await aiofiles.os.makedirs(dest_file.parent, exist_ok=True)
+            async with aiofiles.open(src_file, "rb") as src:
+                async with aiofiles.open(dest_file, "wb") as dst:
+                    while chunk := await src.read(1024 * 1024):
+                        await dst.write(chunk)
+
+        else:
+            raise NotImplementedError(f"async_copy_file_to does not support destination type {type(dest_file)}")
