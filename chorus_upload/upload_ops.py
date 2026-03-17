@@ -22,8 +22,10 @@ import azure
 
 import asyncio
 import aiofiles.os
+import aiohttp
 from cloudpathlib import AzureBlobClient
 from azure.storage.blob.aio import BlobServiceClient as AsyncBlobServiceClient
+from azure.core.pipeline.transport import AioHttpTransport
 
 import logging
 log = logging.getLogger(__name__)
@@ -374,7 +376,7 @@ def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                     #  del_args,
                      step,
                     #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
-                     perf, nuploads, threads_per_file, verbose = False):
+                     perf, nuploads, threads_per_file, verbose = False, *, group_perf=None):
     dated_dest_paths = set()
 
     # Each worker thread gets its own cloned Azure client via thread-local storage.
@@ -386,7 +388,7 @@ def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     def upload_task(fn, info):
         if not hasattr(thread_local, 'client'):
-            thread_local.client = storage_helper._clone_client(orig_client)
+            thread_local.client = storage_helper._clone_client(orig_client, pool_size=threads_per_file)
         dated_dest_path = FileSystemHelper(dest_root.joinpath(info['version']), client=thread_local.client, internal_host=int_host)
         return _upload_and_verify(src_path, fn, info, dated_dest_path,
                                   nthreads=threads_per_file, lock=lock)
@@ -406,7 +408,9 @@ def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             
             dated_dest_paths.add(dated_dest_path)
             perf.add_file(info['size'])
-            
+            if group_perf is not None:
+                group_perf.add_file(info['size'])
+
             if state == sync_state.MISSING_DEST:
                 # missing_dest.append(fn2)
                 log.error(f"missing file at destination {fn2}")
@@ -468,11 +472,11 @@ async def _async_upload_and_verify(src_path : FileSystemHelper,
                                                nthreads=nthreads)
         except azure.core.exceptions.ServiceResponseError as e:
             try:
-                log.warning(f"copy failed {fn}, retrying")
+                log.warning(f"async copy failed {fn}, due to {str(e)}.  retrying")
                 await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
                                                    nthreads=nthreads)
             except azure.core.exceptions.ServiceResponseError as e:
-                log.error(f"copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
+                log.error(f"async copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
                 state = sync_state.MISSING_DEST
     else:
         state = sync_state.MISSING_SRC
@@ -504,8 +508,9 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                   #  del_args,
                    step,
                   #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
-                   perf, concurrency, verbose = False, *, connections_per_file: int = 1):
-    
+                   perf, concurrency, verbose = False, *, connections_per_file: int = 1,
+                   async_pool_max: int = 256, group_perf=None):
+
     if src_path.is_cloud:
         raise ValueError("Async upload is only supported for local source path.")
     if not isinstance(dest_path.client, AzureBlobClient):
@@ -515,9 +520,13 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     async def process_uploads():
         svc = dest_path.client.service_client
+        pool_size = min(concurrency * connections_per_file, async_pool_max)
+        connector = aiohttp.TCPConnector(limit=pool_size)
+        transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector))
         async with AsyncBlobServiceClient(account_url=svc.url,
                                           credential=svc.credential,
-                                          api_version=svc.api_version) as async_client:
+                                          api_version=svc.api_version,
+                                          transport=transport) as async_client:
             await _run_uploads(async_client)
 
     async def _run_uploads(async_client):
@@ -543,6 +552,8 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
             dated_dest_paths.add(dated_dest_path)
             perf.add_file(info['size'])
+            if group_perf is not None:
+                group_perf.add_file(info['size'])
 
             if state == sync_state.MISSING_DEST:
                 log.error(f"missing file at destination {fn2}")
@@ -584,42 +595,83 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                     #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
                      perf, nthreads:int, verbose = False):
     dated_dest_paths = set()
-    
-    # size limits (file sizes in bytes), for nthreads=32:
-    # group    size       type    concurrency  conn/file  total conns
-    # small   <   1MB    async       128    ×     1     =    128
-    # medium  <   8MB    async        64    ×     1     =     64
-    # large   <  64MB    async        32    ×     1     =     32
-    # xlarge  < 128MB    async        16    ×     2     =     32
-    # xxlarge < 256MB    thread        8    ×     4     =     32
-    # huge    >= 256MB   thread        4    ×     8     =     32
 
-    # Split files by size into groups with different concurrency levels
+    # Upload size groups and concurrency settings.
+    #
+    # AZURE_MAX_BLOCK_SIZE = 4 MB (set in storage_helper), so any file > 4 MB
+    # is uploaded as multiple 4 MB blocks.  conn/file = max_concurrency passed
+    # to upload_blob(), controlling parallel block uploads per file.
+    #
+    # Async groups share one aiohttp pool; pool_size = min(concurrency × conn/file, 256).
+    # Thread groups: each thread gets its own cloned BlobServiceClient with
+    # pool_size = conn/file (hardcoded, not derived from nthreads, so large-file
+    # block parallelism is consistent regardless of CPU count).
+    #
+    # group    size        type    concurrency  conn/file  aiohttp pool / thread pool
+    # small   <  1 MB     async       256    ×     1     =  256  (single PUT, no blocks)
+    # medium  <  8 MB     async       128    ×     2     =  256  (1–2 blocks of 4 MB)
+    # large   < 32 MB     async        64    ×     4     =  256  (2–8 blocks of 4 MB)
+    # xlarge  < 256 MB    thread         8   ×     4     =    4/thread (8–64 blocks)
+    # huge    >= 256 MB   thread         4   ×     8     =    8/thread (64+ blocks)
+    #
+    # Thread groups use LPT (largest-first) scheduling: each thread has an isolated
+    # connection pool so classical scheduling theory applies — large files start early
+    # and overlap; small files fill the straggler tail.
+    # Async groups use natural (unsorted) ordering: all coroutines share one aiohttp
+    # pool, so LPT spikes connection demand at the start and hurts throughput.
+    # Mixed-size ordering naturally balances pool demand against semaphore churn.
+
+    # (concur_type, min_size, max_size, concurrency, connections_per_file)
     size_groups = {
-        'small':   ('async',  0,       2**20,  128),  # <   1MB: 128 concurrent
-        'medium':  ('async',  2**20,   2**23,   64),  # <   8MB:  64 concurrent
-        'large':   ('async',  2**23,   2**26,   32),  # <  64MB:  32 concurrent
-        'xlarge':  ('async',  2**26,   2**27,   16),  # < 128MB:  16 concurrent
-        'xxlarge': ('thread', 2**27,   2**28,    8),  # < 256MB:   8 concurrent
-        'huge':    ('thread', 2**28,   float('inf'), 4),  # >= 256MB:  4 concurrent
+        'small':   ('async',  0,            2**20,        256, 1),
+        'medium':  ('async',  2**20,         2**23,        128, 2),
+        'large':   ('async',  2**23,         2**25,         64, 4),
+        'xlarge':  ('thread', 2**25,         2**28,          8, 4),
+        'huge':    ('thread', 2**28,  float('inf'),          4, 8),
     }
+
+    ASYNC_POOL_MAX = 256  # cap aiohttp pool size across all async groups
 
     dated_paths = set()
 
-    for group_name, (concur_type, min_size, max_size, concurrency) in size_groups.items():
-        group_files = {fn: info for fn, info in files_to_upload.items() 
+    for group_name, (concur_type, min_size, max_size, concurrency, connections_per_file) in size_groups.items():
+        group_files = {fn: info for fn, info in files_to_upload.items()
                        if min_size <= info['size'] < max_size}
-        
+
         if len(group_files) == 0:
             continue
-        
+
+        if concur_type == 'thread':
+            # LPT: largest files first so they overlap; small files fill the tail.
+            # Safe for thread groups because each thread has an isolated connection pool.
+            group_files = dict(sorted(group_files.items(), key=lambda kv: kv[1]['size'], reverse=True))
+        elif group_name in ('medium', 'large'):
+            # Interleave largest and smallest files (two-pointer walk after one sort).
+            # Keeps a consistent mix of fast-completing (small) and slow-completing
+            # (large) files in the semaphore simultaneously, which:
+            #   - prevents the pool-contention spike of LPT (all large files at once)
+            #   - prevents the straggler tail of SJF (all large files at the end)
+            #   - maintains fast semaphore churn throughout the batch
+            # Applied to medium and large where the intra-group size spread (8× and
+            # 8×) is large enough to matter; small (<1 MB) has negligible variance.
+            sorted_items = sorted(group_files.items(), key=lambda kv: kv[1]['size'], reverse=True)
+            interleaved = []
+            lo, hi = 0, len(sorted_items) - 1
+            while lo <= hi:
+                interleaved.append(sorted_items[lo])
+                if lo != hi:
+                    interleaved.append(sorted_items[hi])
+                lo += 1
+                hi -= 1
+            group_files = dict(interleaved)
+
+        group_total_mb = sum(info['size'] for info in group_files.values()) / (1024 * 1024)
+        group_perf = perf_counter.PerformanceCounter(total_file_count=len(group_files))
+
         if concur_type == 'async':
-            # Per-file block parallelism: scales up as per-task concurrency falls,
-            # so that large-file groups still saturate available bandwidth.
-            # e.g. nthreads=32, xlarge (concurrency=16) → connections_per_file=2
-            connections_per_file = max(1, nthreads // concurrency)
-            log.info(f"UPLOAD {len(group_files)} files in {group_name} group, async, "
-                     f"{concurrency} concurrent × {connections_per_file} conn/file")
+            log.info(f"UPLOAD {len(group_files)} files ({group_total_mb:.1f} MB) in {group_name} group, async, "
+                     f"{concurrency} concurrent × {connections_per_file} conn/file "
+                     f"(pool_size={min(concurrency * connections_per_file, ASYNC_POOL_MAX)})")
             (update_args,
                 #  del_args,
                 perf,
@@ -633,11 +685,14 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                                 step,
                                 # missing_dest, missing_src, matched, mismatched, replaced,
                                 perf, concurrency, verbose,
-                                connections_per_file=connections_per_file)
+                                connections_per_file=connections_per_file,
+                                async_pool_max=ASYNC_POOL_MAX,
+                                group_perf=group_perf)
             dated_paths.update(_dated_paths)
         elif concur_type == 'thread':
             nuploads = min(concurrency, nthreads)
-            threads_per_file = max(1, nthreads // nuploads)
+            log.info(f"UPLOAD {len(group_files)} files ({group_total_mb:.1f} MB) in {group_name} group, thread, "
+                     f"{nuploads} concurrent × {connections_per_file} conn/file")
             (update_args,
                 #  del_args,
                 perf,
@@ -650,10 +705,14 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                                 # del_args,
                                 step,
                                 # missing_dest, missing_src, matched, mismatched, replaced,
-                                perf, nuploads, threads_per_file, verbose)
+                                perf, nuploads, connections_per_file, verbose,
+                                group_perf=group_perf)
             dated_paths.update(_dated_paths)
         else:
             raise ValueError(f"Unknown concurrency type {concur_type} for group {group_name}")
+
+        log.info(f"UPLOAD {group_name} group complete:")
+        group_perf.report()
 
         
     return (update_args, 

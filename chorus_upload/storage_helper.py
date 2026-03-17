@@ -75,12 +75,13 @@ from cloudpathlib import S3Client
 from azure.identity import DefaultAzureCredential
 from azure.storage.blob import BlobServiceClient
 from cloudpathlib import AzureBlobClient
+import requests
+from requests.adapters import HTTPAdapter
+from azure.core.pipeline.transport import RequestsTransport, AioHttpTransport
 # from cloudpathlib import GoogleCloudClient
 from urllib.parse import urlparse, urlunparse
 from azure.storage.blob.aio import BlobServiceClient as AsyncBlobServiceClient
 
-# from azure.core.pipeline.transport import RequestsTransport
-# from requests.adapters import HTTPAdapter
 
 
 import logging
@@ -160,46 +161,46 @@ def __make_aws_client(auth_params: dict) -> S3Client:
 # internal helper to create the cloud client
 def __make_az_client(auth_params: dict) -> AzureBlobClient:
     # Azure format for account_url
-        
+
     # parse out all the relevant argument
     azure_auth_mode = config_helper.get_auth_param(auth_params, "auth_mode", "login")
-    
+
     azure_account_url = config_helper.get_auth_param(auth_params, "azure_account_url")
     azure_account_name = config_helper.get_auth_param(auth_params, "azure_account_name", default=None)
-    
+
     if azure_account_url is None :
         if azure_account_name is None:
             raise ValueError("Azure account name must be specified if account url is not specified")
         else:
             # default account url for account not specified.
             azure_account_url = f"https://{azure_account_name}.blob.core.windows.net"
-        
+
     if azure_auth_mode == "login":
         # force the commandline login
         # Use DefaultAzureCredential to pick up your Entra login session
         credential = DefaultAzureCredential()
     elif azure_auth_mode == "sas":
         azure_sas_token = config_helper.get_auth_param(auth_params, "azure_sas_token")
-        azure_account_url = f"{azure_account_url}/?{azure_sas_token}" if azure_sas_token is not None else azure_account_url            
+        azure_account_url = f"{azure_account_url}/?{azure_sas_token}" if azure_sas_token is not None else azure_account_url
+        credential = None
     else:
         raise ValueError("Unknown Azure auth_mode.  use 'login' or 'sas' " + str(azure_auth_mode))
-        
+
 
     # format for account url for client.  container is not discarded unlike stated.  so must use format like below.
     # example: 'https://{account_url}.blob.core.windows.net/?{sas_token}
     # https://learn.microsoft.com/en-us/python/api/azure-storage-blob/azure.storage.blob.blobserviceclient?view=azure-python
     # format for path:  az://{container}/...
     # note if container is specified in account_url, we will get duplicates.
-    
+
     azure_storage_connection_string = config_helper.get_auth_param(auth_params, "azure_storage_connection_string", default=None)
     azure_account_key = config_helper.get_auth_param(auth_params, "azure_account_key", default=None)
     if azure_storage_connection_string is None and azure_account_name and azure_account_key:
-        azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net" 
+        azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net"
     else:
         azure_storage_connection_string = None
-        
+
     azure_storage_connection_string_env = os.environ.get("AZURE_STORAGE_CONNECTION_STRING") if "AZURE_STORAGE_CONNECTION_STRING" in os.environ.keys() else None
-    
 
     # to avoid connection timeout: https://stackoverflow.com/questions/65092741/solve-timeout-errors-on-file-uploads-with-new-azure-storage-blob-package
 
@@ -209,64 +210,58 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
     # so just put their keywords as name value pairs.  specifically, just set on BlobServiceClient the following:
     # connection_verify = False, connection_cert = None
 
-    # Create a custom transport with a bigger connection pool
-    # adapter = HTTPAdapter(pool_connections=100, pool_maxsize=100)
-    # transport = RequestsTransport(connection_adapter=adapter)
+    # Shared BlobServiceClient kwargs for every construction path below.
+    _bsc_kwargs = dict(
+        connection_verify=False,
+        connection_cert=None,
+        max_single_get_size=AZURE_MAX_BLOCK_SIZE,
+        max_single_put_size=AZURE_MAX_BLOCK_SIZE,
+    )
 
-    # transport = RequestsTransport( connection_pool_maxsize=100 )
+    def _wrap(factory_fn: callable) -> AzureBlobClient:
+        """Build an AzureBlobClient and attach a clone factory.
+
+        _clone_client uses _clone_factory to create a fresh BlobServiceClient
+        (with its own connection pool) for each upload thread, without needing
+        to introspect cloudpathlib or Azure SDK private attributes.
+        The credential object is shared across clones intentionally — one
+        token-refresh loop is correct; only the HTTP connection pool is isolated.
+        """
+        az_client = AzureBlobClient(
+            blob_service_client=factory_fn(),
+            file_cache_mode=FileCacheMode.cloudpath_object)
+        az_client._clone_factory = factory_fn
+        return az_client
+
+    def _make_transport(pool_size):
+        """Return a RequestsTransport with a custom pool size, or None to use the default."""
+        if pool_size is None:
+            return None
+        session = requests.Session()
+        session.mount('https://', HTTPAdapter(pool_maxsize=pool_size))
+        return RequestsTransport(session=session)
 
     if azure_account_url:
         if azure_auth_mode == "login":
-            # use login credential
-            blob_service_client = BlobServiceClient(
-                account_url=azure_account_url, 
-                credential=credential,
-                connection_verify = False, 
-                connection_cert = None,
-                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                # transport=transport,
-                )
-            return AzureBlobClient(
-                blob_service_client = blob_service_client,
-                file_cache_mode = FileCacheMode.cloudpath_object)
+            def _factory(_url=azure_account_url, _cred=credential, pool_size=None):
+                extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
+                return BlobServiceClient(account_url=_url, credential=_cred, **_bsc_kwargs, **extra)
+            return _wrap(_factory)
         elif azure_auth_mode == "sas":
-            blob_service_client = BlobServiceClient(
-                account_url=azure_account_url, 
-                connection_verify = False, 
-                connection_cert = None,
-                max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-                max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-                # transport=transport,
-                )
-            return AzureBlobClient(
-                blob_service_client = blob_service_client,
-                file_cache_mode = FileCacheMode.cloudpath_object)
+            def _factory(_url=azure_account_url, pool_size=None):
+                extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
+                return BlobServiceClient(account_url=_url, **_bsc_kwargs, **extra)
+            return _wrap(_factory)
     elif azure_storage_connection_string_env:
-        blob_service_client = BlobServiceClient.from_connection_string(
-            conn_str = azure_storage_connection_string_env, 
-            connection_verify = False, 
-            connection_cert = None,
-            max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-            max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-            # transport=transport,
-            )
-        return AzureBlobClient(
-            blob_service_client = blob_service_client,
-            file_cache_mode = FileCacheMode.cloudpath_object)
+        def _factory(_conn=azure_storage_connection_string_env, pool_size=None):
+            extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
+            return BlobServiceClient.from_connection_string(conn_str=_conn, **_bsc_kwargs, **extra)
+        return _wrap(_factory)
     elif azure_storage_connection_string:
-        # connection string specified, then use it
-        blob_service_client = BlobServiceClient.from_connection_string(
-            conn_str = azure_storage_connection_string, 
-            connection_verify = False, 
-            connection_cert = None,
-            max_single_get_size = AZURE_MAX_BLOCK_SIZE,
-            max_single_put_size = AZURE_MAX_BLOCK_SIZE,
-            # transport=transport,
-            )
-        return AzureBlobClient(
-            blob_service_client = blob_service_client,
-            file_cache_mode = FileCacheMode.cloudpath_object)
+        def _factory(_conn=azure_storage_connection_string, pool_size=None):
+            extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
+            return BlobServiceClient.from_connection_string(conn_str=_conn, **_bsc_kwargs, **extra)
+        return _wrap(_factory)
     else:
         raise ValueError("No viable Azure account info available to open connection")
         
@@ -307,11 +302,11 @@ def _make_client(cloud_config:dict):
         return None, None
     
     
-def _clone_client(client):
+def _clone_client(client, pool_size: int = None):
     if isinstance(client, S3Client):
-        return __clone_aws_client(client)    
+        return __clone_aws_client(client)
     elif isinstance(client, AzureBlobClient):
-        return __clone_az_client(client)
+        return __clone_az_client(client, pool_size=pool_size)
     # elif isinstance(client, GoogleCloudClient):
     #     return __clone_gs_client(client)
     else:
@@ -333,26 +328,22 @@ def __clone_aws_client(orig: S3Client) -> S3Client:
     # Recreate the client
     return S3Client(**params)
 
-def __clone_az_client(orig: AzureBlobClient) -> AzureBlobClient:
-    # Extract the constructor parameters CloudPathLib stores
-    params = {
-        "account_name": orig.account_name,
-        "account_key": orig.account_key,
-        "sas_token": orig.sas_token,
-        "connection_string": orig.connection_string,
-        "managed_identity": orig.managed_identity,
-        "tenant_id": orig.tenant_id,
-        "client_id": orig.client_id,
-        "client_secret": orig.client_secret,
-        "credential": orig.credential,
-        "settings": orig.settings,
-    }
-
-    # Remove None values so we pass only the active auth method
-    params = {k: v for k, v in params.items() if v is not None}
-
-    # Recreate the client
-    return AzureBlobClient(**params)
+def __clone_az_client(orig: AzureBlobClient, pool_size: int = None) -> AzureBlobClient:
+    if hasattr(orig, '_clone_factory'):
+        # Create a fresh BlobServiceClient (own connection pool) using the
+        # same factory that built the original.  The credential object is
+        # intentionally shared — one token-refresh loop is correct.
+        # pool_size sets the requests HTTPAdapter pool_maxsize for this clone.
+        az_client = AzureBlobClient(
+            blob_service_client=orig._clone_factory(pool_size=pool_size),
+            file_cache_mode=FileCacheMode.cloudpath_object)
+        az_client._clone_factory = orig._clone_factory
+        return az_client
+    # Fallback for clients not built through _make_client (e.g. in tests):
+    # share the existing BlobServiceClient — it is thread-safe.
+    return AzureBlobClient(
+        blob_service_client=orig.service_client,
+        file_cache_mode=FileCacheMode.cloudpath_object)
 
 # def __clone_gs_client(orig: GoogleCloudClient) -> GoogleCloudClient:
 #     # Extract the constructor parameters CloudPathLib stores
