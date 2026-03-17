@@ -2,6 +2,7 @@ import re
 import time
 import math
 import os
+import contextlib
 from typing import Optional, List
 from chorus_upload.storage_helper import FileSystemHelper
 from pathlib import Path
@@ -17,6 +18,67 @@ import logging
 import pandas as pd
 
 log = logging.getLogger(__name__)
+
+
+# Concurrency characteristics for local MD5 computation by storage type:
+#
+# storage   bottleneck          optimal threads    notes
+# --------  ------------------  -----------------  ----------------------------
+# SSD/NVMe  CPU (hashing)       ~cpu_count         hashlib releases GIL; threads
+#                                                  parallelize across cores up to
+#                                                  cpu_count; extra threads idle
+# HDD       seek contention     1-2                multiple concurrent readers
+#                                                  thrash seek heads; throughput
+#                                                  drops sharply above ~2 threads
+# NAS/SMB   network latency     cpu_count to       high latency hides well with
+# /NFS      per request         cpu_count×2        concurrency; more threads keep
+#                                                  pipeline full
+#
+# _AdaptiveThreads starts at 4 and hill-climbs (doubling per page) until
+# throughput degrades, then halves and locks.  Typical convergence:
+#   SSD: 4 → 8 → 16 → locked at 16 (or cpu_count, whichever is lower)
+#   HDD: 4 → degraded at 8 → locked at 4 (or 4 → locked at 2 if very slow)
+#   NAS: 4 → 8 → 16 → ... climbs further before degrading
+
+class _AdaptiveThreads:
+    """Hill-climbing adaptive thread count tuner for I/O-bound work.
+
+    After each page of files, compares throughput (bytes/s) to the previous
+    page. If throughput improved (within 5% noise), doubles the thread count
+    up to max_threads. On the first degradation, halves and locks — no further
+    climbing. This converges naturally:
+      - HDD:  ~1-2 threads (seek thrashing kills throughput quickly)
+      - SSD:  ~cpu_count  (CPU-bound hashing, threads help up to core count)
+      - NAS:  higher      (network latency hides well with concurrency)
+    """
+
+    def __init__(self, initial: int, max_threads: int):
+        self.nthreads = initial
+        self._max = max_threads
+        self._prev_mbps: float | None = None
+        self._locked = False
+
+    def update(self, bytes_processed: int, elapsed: float) -> None:
+        """Call once per completed page with its total bytes and wall time."""
+        if elapsed <= 0 or self._locked or bytes_processed == 0:
+            return
+        mbps = bytes_processed / elapsed
+        if self._prev_mbps is not None:
+            if mbps >= self._prev_mbps * 0.95:          # improved or flat
+                new = min(self._max, self.nthreads * 2)
+            else:                                        # degraded — lock in
+                new = max(1, self.nthreads // 2)
+                self._locked = True
+            if new != self.nthreads:
+                log.info(f"Adaptive threads: {self.nthreads} → {new} "
+                         f"({'locked' if self._locked else 'climbing'}), "
+                         f"throughput {mbps / 1e6:.1f} MB/s")
+                self.nthreads = new
+        self._prev_mbps = mbps
+
+    @property
+    def locked(self) -> bool:
+        return self._locked
 
 
 # Futures ThreadPoolExecutor may not work since python has a global interpreter lock (GIL) that prevents thread based parallelism, at least until 3.13 (optional)
@@ -114,23 +176,29 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         compiled_pattern = parse.compile(pattern)
        
         total_count = 0
-        with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-            lock = threading.Lock()
-            
-            for paths in root.get_files_iter(pattern = pattern, page_size = page_size):
-                # list of relative paths in posix format and in string form.
-                futures = []
+        lock = threading.Lock()
+        tuner = _AdaptiveThreads(initial=min(4, nthreads), max_threads=nthreads)
+        persistent_executor = None
 
+        for paths in root.get_files_iter(pattern = pattern, page_size = page_size):
+            page_start = time.time()
+            page_bytes = 0
+
+            ctx = (contextlib.nullcontext(persistent_executor)
+                   if persistent_executor is not None
+                   else concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads))
+            with ctx as executor:
+                futures = []
                 for relpath in paths:
-                    #if verbose:
                     log.debug(f"scanning {relpath}")
-                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
-                                             {}, 
-                                             compiled_pattern, None if version_in_pattern else new_version, **{'lock': lock})
-                    futures.append(future)
-                
+                    futures.append(executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp,
+                                                   {}, compiled_pattern,
+                                                   None if version_in_pattern else new_version,
+                                                   **{'lock': lock}))
+
                 for future in concurrent.futures.as_completed(futures):
                     myargs = future.result()
+                    page_bytes += myargs[4] or 0
                     perf.add_file(myargs[4])
                     rlpath = myargs[1]
                     status = myargs[8]
@@ -140,17 +208,21 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
                         else:
                             print(".", end="", flush=True)
                         all_args.append(myargs)
-                    elif status == "ERROR4":                    
-                        log.debug(f"File does not fit pattern. {rlpath}")                        
+                    elif status == "ERROR4":
+                        log.debug(f"File does not fit pattern. {rlpath}")
 
-                insert_count = JournalDispatcher.insert_journal_entries(databasename, all_args)
-                
-                total_count += len(all_args)
-                log.info(f"inserted {insert_count} of {len(all_args)}.  added {total_count} files to journal.db" )
+            tuner.update(page_bytes, time.time() - page_start)
+            if tuner.locked and persistent_executor is None:
+                persistent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads)
 
-                all_args = []
-                
-                perf.report()
+            insert_count = JournalDispatcher.insert_journal_entries(databasename, all_args)
+            total_count += len(all_args)
+            log.info(f"inserted {insert_count} of {len(all_args)}.  added {total_count} files to journal.db")
+            all_args = []
+            perf.report()
+
+        if persistent_executor is not None:
+            persistent_executor.shutdown(wait=True)
         
         del perf
         log.info(f"Journal Update took {time.time() - start} s")
@@ -328,25 +400,31 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
         modality_files_to_inactivate_rdonly = dict(modality_files_to_inactivate)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-            lock = threading.Lock()
-            for paths in root.get_files_iter(pattern = pattern, page_size = page_size ):  
-                # list of relative paths in posix format and in string form.
-                futures = []
-                modality_files_to_inactivate_in_iter = {}
+        lock = threading.Lock()
+        tuner = _AdaptiveThreads(initial=min(4, nthreads), max_threads=nthreads)
+        persistent_executor = None
 
+        for paths in root.get_files_iter(pattern = pattern, page_size = page_size ):
+            page_start = time.time()
+            page_bytes = 0
+            modality_files_to_inactivate_in_iter = {}
+
+            ctx = (contextlib.nullcontext(persistent_executor)
+                   if persistent_executor is not None
+                   else concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads))
+            with ctx as executor:
+                futures = []
                 for relpath in paths:
-                    #if verbose:
-                    #    log.info(f"scanning {relpath}")
-                    future = executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp, 
-                                             modality_files_to_inactivate_rdonly, 
-                                             compiled_pattern, None if version_in_pattern else journal_version , **{'lock': lock})
-                    futures.append(future)
-                
+                    futures.append(executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp,
+                                                   modality_files_to_inactivate_rdonly,
+                                                   compiled_pattern, None if version_in_pattern else journal_version,
+                                                   **{'lock': lock}))
+
                 for future in concurrent.futures.as_completed(futures):
                     myargs = future.result()
+                    page_bytes += myargs[4] or 0
                     perf.add_file(myargs[4])
-                    
+
                     status = myargs[8]
                     rlpath = myargs[1]
                     if status == "ERROR1":
@@ -359,7 +437,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                         log.error(f"File does not fit pattern. {rlpath}")
                     elif status == "KEEP":
                         if verbose:
-                           log.debug(f"{status} {rlpath}")
+                            log.debug(f"{status} {rlpath}")
                         del modality_files_to_inactivate[rlpath]
                     elif status == "ADDED":
                         if verbose:
@@ -367,56 +445,44 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                         all_insert_args.append(myargs)
                     elif status in ["MOVED", "UPDATED"]:
                         if verbose:
-                            log.debug(f"{status} {rlpath}")                        
+                            log.debug(f"{status} {rlpath}")
                         all_insert_args.append(myargs)
-                        # move the key-val pair to the new list.
                         modality_files_to_inactivate_in_iter[rlpath] = modality_files_to_inactivate[rlpath]
                         del modality_files_to_inactivate[rlpath]
                     else:
                         log.debug(f"unknown status:  {status}, {rlpath}")
-                    # back up only on upload
-                    # backup_journal(databasename)
-                    
-                # remove the outdated items.
-                del_args_in_iter = []
-                for relpath, vals in modality_files_to_inactivate_in_iter.items():
-                    # check if there are non alphanumeric characters in the path
-                    # if so, print out the path
-                    if not (relpath.isalnum() or relpath.isascii()):
-                        log.warning(f"Path contains non-alphanumeric characters: {relpath}")
 
-                    for v in vals:
-                        if (relpath in paths):
-                            del_args_in_iter.append(("OUTDATED", v[0]))
-                            if verbose:
-                                log.debug(f"OUTDATED  {relpath}")
-                        elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
-                            del_args_in_iter.append(("DELETED", v[0]))
-                            if verbose:
-                                log.debug(f"DELETED  {relpath}")
-                # log.debug(f"SQLITE update arguments {all_del_args}")
-                if (len(del_args_in_iter) > 0):
-                    # back up only on upload
-                    # backup_journal(databasename)
-                    
-                    deleted = JournalDispatcher.inactivate_journal_entries(databasename, 
-                                                        curtimestamp, 
-                                                        del_args_in_iter)
-                    
-                    total_deleted += deleted
-                    to_delete = len(del_args_in_iter)
-                    log.info(f"deleted/outdated {deleted} of {to_delete} from journal. total {total_deleted} inactivated" )
-                    
-                    
-                # save to database
-                update_count = JournalDispatcher.insert_journal_entries(databasename, all_insert_args)
-                
-                total_count += len(all_insert_args)
-                log.info(f"inserted {update_count} of {len(all_insert_args)}.  added {total_count} files to journal.db" )
+            tuner.update(page_bytes, time.time() - page_start)
+            if tuner.locked and persistent_executor is None:
+                persistent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads)
 
-                all_insert_args = []
-                
-                perf.report()
+            # remove the outdated items.
+            del_args_in_iter = []
+            for relpath, vals in modality_files_to_inactivate_in_iter.items():
+                if not (relpath.isalnum() or relpath.isascii()):
+                    log.warning(f"Path contains non-alphanumeric characters: {relpath}")
+                for v in vals:
+                    if (relpath in paths):
+                        del_args_in_iter.append(("OUTDATED", v[0]))
+                        if verbose:
+                            log.debug(f"OUTDATED  {relpath}")
+                    elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
+                        del_args_in_iter.append(("DELETED", v[0]))
+                        if verbose:
+                            log.debug(f"DELETED  {relpath}")
+
+            if len(del_args_in_iter) > 0:
+                deleted = JournalDispatcher.inactivate_journal_entries(databasename,
+                                                                       curtimestamp,
+                                                                       del_args_in_iter)
+                total_deleted += deleted
+                log.info(f"deleted/outdated {deleted} of {len(del_args_in_iter)} from journal. total {total_deleted} inactivated")
+
+            update_count = JournalDispatcher.insert_journal_entries(databasename, all_insert_args)
+            total_count += len(all_insert_args)
+            log.info(f"inserted {update_count} of {len(all_insert_args)}.  added {total_count} files to journal.db")
+            all_insert_args = []
+            perf.report()
 
             # for all files that were active but aren't there anymore
             # invalidate in journal
@@ -449,6 +515,9 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 to_delete = len(all_del_args)
                 log.info(f"deleted/outdated {deleted} of {to_delete} from journal." )
             
+        if persistent_executor is not None:
+            persistent_executor.shutdown(wait=True)
+
         del perf
         log.info(f"Total added {total_count} and inactivated {total_deleted} files in journal.db")
         log.info(f"Journal Update Elapsed time {time.time() - start} s")

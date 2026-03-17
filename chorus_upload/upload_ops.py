@@ -18,7 +18,7 @@ import chorus_upload.perf_counter as perf_counter
 
 from chorus_upload.journaldb_ops import JournalDispatcher
 
-import azure
+from azure.core.exceptions import ServiceResponseError
 
 import asyncio
 import aiofiles.os
@@ -299,11 +299,11 @@ def _upload_and_verify(src_path : FileSystemHelper,
     if srcfile.exists():
         try:
             src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
-        except azure.core.exceptions.ServiceResponseError as e:
+        except ServiceResponseError as e:
             try:
                 log.warning(f"copy failed {fn}, retrying")
                 src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
-            except azure.core.exceptions.ServiceResponseError as e:                
+            except ServiceResponseError as e:                
                 log.error(f"copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
                 state = sync_state.MISSING_DEST
     else:
@@ -470,12 +470,12 @@ async def _async_upload_and_verify(src_path : FileSystemHelper,
         try:
             await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
                                                nthreads=nthreads)
-        except azure.core.exceptions.ServiceResponseError as e:
+        except ServiceResponseError as e:
             try:
                 log.warning(f"async copy failed {fn}, due to {str(e)}.  retrying")
                 await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
                                                    nthreads=nthreads)
-            except azure.core.exceptions.ServiceResponseError as e:
+            except ServiceResponseError as e:
                 log.error(f"async copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
                 state = sync_state.MISSING_DEST
     else:
@@ -527,53 +527,49 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                                           credential=svc.credential,
                                           api_version=svc.api_version,
                                           transport=transport) as async_client:
-            await _run_uploads(async_client)
+            semaphore = asyncio.Semaphore(concurrency)
 
-    async def _run_uploads(async_client):
-        semaphore = asyncio.Semaphore(concurrency)
+            async def upload_file(fn, info):
+                async with semaphore:
+                    dated_dest_path = FileSystemHelper(
+                        dest_path.root.joinpath(info['version']),
+                        client=dest_path.client,
+                        internal_host=dest_path.internal_host,
+                        async_azclient=async_client,
+                    )
+                    return await _async_upload_and_verify(src_path, fn, info, dated_dest_path,
+                                                          nthreads=connections_per_file)
 
-        async def upload_file(fn, info):
-            async with semaphore:
-                dated_dest_path = FileSystemHelper(
-                    dest_path.root.joinpath(info['version']),
-                    client=dest_path.client,
-                    internal_host=dest_path.internal_host,
-                    async_azclient=async_client,
-                )
-                return await _async_upload_and_verify(src_path, fn, info, dated_dest_path,
-                                                       nthreads=connections_per_file)
+            tasks = [upload_file(fn, info) for fn, info in files_to_upload.items()]
 
-        tasks = [upload_file(fn, info) for fn, info in files_to_upload.items()]
+            for coro in asyncio.as_completed(tasks):
+                (fn2, info, state, dated_dest_path,
+                 copy_time, verify_time) = await coro
 
-        for coro in asyncio.as_completed(tasks):
-            (fn2, info, state, dated_dest_path,
-             # del_list,
-             copy_time, verify_time) = await coro
+                dated_dest_paths.add(dated_dest_path)
+                perf.add_file(info['size'])
+                if group_perf is not None:
+                    group_perf.add_file(info['size'])
 
-            dated_dest_paths.add(dated_dest_path)
-            perf.add_file(info['size'])
-            if group_perf is not None:
-                group_perf.add_file(info['size'])
+                if state == sync_state.MISSING_DEST:
+                    log.error(f"missing file at destination {fn2}")
+                elif state == sync_state.MISSING_SRC:
+                    log.error(f"file not found {fn2}")
+                elif state == sync_state.MATCHED:
+                    update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
+                    if verbose:
+                        log.info(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
+                    else:
+                        print(".", end="", flush=True)
+                elif state == sync_state.MISMATCHED:
+                    log.error(f"mismatched upload file {fn2} upload failed? fileid {info['file_id']}")
 
-            if state == sync_state.MISSING_DEST:
-                log.error(f"missing file at destination {fn2}")
-            elif state == sync_state.MISSING_SRC:
-                log.error(f"file not found {fn2}")
-            elif state == sync_state.MATCHED:
-                update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
-                if verbose:
-                    log.info(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
-                else:
-                    print(".", end="", flush=True)
-            elif state == sync_state.MISMATCHED:
-                log.error(f"mismatched upload file {fn2} upload failed? fileid {info['file_id']}")
-
-            if len(update_args) >= step:
-                if verbose:
-                    log.info(f"UPLOAD updating journal {len(update_args)}")
-                JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
-                update_args.clear()
-                perf.report()
+                if len(update_args) >= step:
+                    if verbose:
+                        log.info(f"UPLOAD updating journal {len(update_args)}")
+                    JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
+                    update_args.clear()
+                    perf.report()
 
     asyncio.run(process_uploads())
 
@@ -587,15 +583,24 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
 
 def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
-                     files_to_upload, 
-                    #  files_to_mark_deleted, 
-                     databasename, upload_dt_str, update_args, 
-                    #  del_args, 
+                     files_to_upload,
+                    #  files_to_mark_deleted,
+                     databasename, upload_dt_str, update_args,
+                    #  del_args,
                      step,
                     #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
                      perf, nthreads:int, verbose = False):
-    dated_dest_paths = set()
+    """Dispatch file uploads to _async_upload or _thread_upload based on destination cloud type
+    and file size group.
 
+    Design rationale
+    ----------------
+    Azure Blob supports true async I/O via the azure-storage-blob aio SDK, so small-to-large
+    files benefit from high-concurrency async upload.  Very large files (>128 MB) are routed
+    to a thread pool instead because per-file block-level parallelism is more important than
+    task-level concurrency at that size.  For non-Azure destinations (S3, local) the async
+    path is unavailable; all groups fall back to _thread_upload automatically.
+    """
     # Upload size groups and concurrency settings.
     #
     # AZURE_MAX_BLOCK_SIZE = 4 MB (set in storage_helper), so any file > 4 MB
@@ -632,6 +637,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
 
     ASYNC_POOL_MAX = 256  # cap aiohttp pool size across all async groups
 
+    use_async = isinstance(dest_path.client, AzureBlobClient)
     dated_paths = set()
 
     for group_name, (concur_type, min_size, max_size, concurrency, connections_per_file) in size_groups.items():
@@ -668,7 +674,7 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         group_total_mb = sum(info['size'] for info in group_files.values()) / (1024 * 1024)
         group_perf = perf_counter.PerformanceCounter(total_file_count=len(group_files))
 
-        if concur_type == 'async':
+        if concur_type == 'async' and use_async:
             log.info(f"UPLOAD {len(group_files)} files ({group_total_mb:.1f} MB) in {group_name} group, async, "
                      f"{concurrency} concurrent × {connections_per_file} conn/file "
                      f"(pool_size={min(concurrency * connections_per_file, ASYNC_POOL_MAX)})")
@@ -689,10 +695,15 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                                 async_pool_max=ASYNC_POOL_MAX,
                                 group_perf=group_perf)
             dated_paths.update(_dated_paths)
-        elif concur_type == 'thread':
+        elif concur_type == 'thread' or (concur_type == 'async' and not use_async):
             nuploads = min(concurrency, nthreads)
-            log.info(f"UPLOAD {len(group_files)} files ({group_total_mb:.1f} MB) in {group_name} group, thread, "
-                     f"{nuploads} concurrent × {connections_per_file} conn/file")
+            threads_per_file = max(1, nthreads // nuploads)
+            if concur_type == 'async':
+                log.info(f"UPLOAD {len(group_files)} files in {group_name} group, thread (async unavailable), "
+                         f"{nuploads} threads × {threads_per_file} conn/file")
+            else:
+                log.info(f"UPLOAD {len(group_files)} files in {group_name} group, thread, "
+                         f"{nuploads} threads × {threads_per_file} conn/file")
             (update_args,
                 #  del_args,
                 perf,
@@ -722,29 +733,28 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             dated_paths)
 
 
-# new version, pull list once.
-def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHelper,
+def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                  modalities: list[str], databasename: str,
                  max_num_files : int = None,
                  **kwargs):
-    """
-    Uploads files from the source path to the destination path and updates the journal.
-    only allows uploaded new files and not reupload of previous upload.
-    note that journal is updated only when verified. 
+    """Upload unuploaded journal files to the destination and record results.
+
+    Retrieves the pending file list from the journal, then delegates to
+    _parallel_upload which dispatches each size group to _async_upload (Azure)
+    or _thread_upload (all destinations) based on destination cloud type.
+    The journal is updated incrementally as files are verified, and a copy is
+    backed up to each dated destination directory after upload completes.
 
     Args:
-        src_path (FileSystemHelper): The source path from where the files will be uploaded.
-        dest_path (FileSystemHelper): The destination path where the files will be copied to.
-        databasename (str, optional): The name of the journal database file. Defaults to "journal.db".
-        upload_datetime_str (str, optional): The upload datetime string. Defaults to None.
+        src_path: Local source root.
+        dest_path: Remote (or local) destination root.
+        modalities: List of modality names to upload.
+        databasename: Path to the journal SQLite database.
+        max_num_files: Cap on number of files to upload in this call; None means unlimited.
 
     Returns:
-        str: The upload version string.
-
-    Raises:
-        FileNotFoundError: If the journal database file does not exist.
-        AssertionError: If some uploaded files are not in the journal or if there are mismatched files.
-
+        (upload_dt_str, remaining): Version string for this upload batch and
+        the number of files left to upload (None if no cap was applied).
     """
     if max_num_files is not None:
         log.info(f'UPLOAD uploading {max_num_files} files')
@@ -855,7 +865,7 @@ def upload_files_parallel(src_path : FileSystemHelper, dest_path : FileSystemHel
 
     # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
     del_args = []
-    for fn, fids in files_to_mark_deleted:
+    for _, fids in files_to_mark_deleted:
         # deleted.append(fn) # only for debug
         for fid in fids:
             del_args.append((fid,))  # deleted
@@ -896,8 +906,7 @@ def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple, **kwargs
                                             modality = modality,
                                             omop_per_patient = modality_configs.get(modality, {}).get("omop_per_patient", False))
     
-    # this would actually compute the md5
-    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = central_fn, with_metadata = True, with_md5 = True,  **kwargs)
+    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = central_fn, with_metadata = True, with_md5 = True, local_md5 = md5, **kwargs)
     dest_md5 = dest_meta['md5'] if (dest_meta is not None) else None
 
     return (dest_meta, dest_md5, fid, fn, size, md5)
@@ -921,90 +930,321 @@ def _get_file_info2(dest_path: FileSystemHelper, file_info: tuple,  **kwargs):
     return (dest_meta, dest_md5, dest_root, fid, fn, size, md5)
 
 
-# verify a set of files that have been uploaded.  version being None means using the last upload
-def verify_files(dest_path: FileSystemHelper, databasename:str="journal.db", 
+def _async_verify(dated_dest_path: FileSystemHelper,
+                  files_to_verify,
+                  concurrency: int, *,
+                  compute_md5: bool = False,
+                  **kwargs) -> tuple:
+    """Async verification for Azure destinations.
+
+    files_to_verify: iterable of (fid, fn, size, md5, modality)
+
+    Phase 1 (compute_md5=False): fetches blob properties only — fast, no downloads.
+      Files where both remote and journal md5 are absent are returned in needs_download.
+    Phase 2 (compute_md5=True): streams and hashes blobs with no md5 anywhere.
+      needs_download will be empty on return.
+
+    Returns (matched, mismatched, missing, needs_download).
+    """
+    if not isinstance(dated_dest_path.client, AzureBlobClient):
+        raise ValueError("_async_verify only supports Azure Blob Storage destinations.")
+
+    matched = []
+    mismatched = []
+    missing = []
+    needs_download = []
+
+    verbose = kwargs.get("verbose", False)
+    compiled_patterns = kwargs.get("compiled_patterns", {})
+    modality_configs = kwargs.get("modality_configs", {})
+
+    async def process():
+        svc = dated_dest_path.client.service_client
+        connector = aiohttp.TCPConnector(limit=min(concurrency, 256))
+        transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector))
+        async with AsyncBlobServiceClient(account_url=svc.url,
+                                          credential=svc.credential,
+                                          api_version=svc.api_version,
+                                          transport=transport) as async_client:
+            async_dest = FileSystemHelper(
+                dated_dest_path.root,
+                client=dated_dest_path.client,
+                internal_host=dated_dest_path.internal_host,
+                async_azclient=async_client,
+            )
+            semaphore = asyncio.Semaphore(concurrency)
+
+            async def verify_one(fid, fn, size, md5, modality):
+                async with semaphore:
+                    central_fn = convert_local_to_central_path(
+                        fn,
+                        in_compiled_pattern=compiled_patterns.get(modality, None),
+                        modality=modality,
+                        omop_per_patient=modality_configs.get(modality, {}).get("omop_per_patient", False))
+                    dest_meta = await async_dest.async_get_metadata(
+                        path=central_fn, with_metadata=True, with_md5=True,
+                        local_md5=md5, compute_md5=compute_md5)
+                    return (dest_meta, fid, fn, size, md5, modality)
+
+            tasks = [verify_one(fid, fn, size, md5, modality)
+                     for fid, fn, size, md5, modality in files_to_verify]
+
+            for coro in asyncio.as_completed(tasks):
+                dest_meta, fid, fn, size, md5, modality = await coro
+
+                if dest_meta is None or dest_meta['size'] is None:
+                    missing.append(fn)
+                    log.error(f"missing file {fn}")
+                elif size != dest_meta['size']:
+                    log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
+                    mismatched.append(fn)
+                elif dest_meta['md5'] is None and md5 is None:
+                    # both md5s absent: size matches but content unverifiable without download
+                    needs_download.append((fid, fn, size, md5, modality))
+                elif md5 is not None and dest_meta['md5'] is not None and md5 != dest_meta['md5']:
+                    log.error(f"mismatched file {fid} {fn}: remote md5 {dest_meta['md5']} journal md5 {md5}")
+                    mismatched.append(fn)
+                else:
+                    # size matches; md5 either matches or one side is None (size-only match)
+                    if verbose:
+                        log.debug(f"verified {fn} {fid}")
+                    else:
+                        print(".", end="", flush=True)
+                    matched.append(fn)
+
+    asyncio.run(process())
+    return matched, mismatched, missing, needs_download
+
+
+def _thread_verify(dated_dest_path: FileSystemHelper,
+                   files_to_verify,
+                   nthreads: int,
+                   **kwargs) -> tuple:
+    """Thread-pool verification. Used for huge files that require blob download+hash."""
+    verbose = kwargs.get("verbose", False)
+    matched = []
+    mismatched = []
+    missing = []
+
+    dtstr = dated_dest_path.root.name
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
+        lock = threading.Lock()
+        futures = {
+            executor.submit(_get_file_info, dated_dest_path,
+                            (fid, fn, size, md5, modality),
+                            **{**kwargs, "lock": lock}): fn
+            for fid, fn, size, md5, modality in files_to_verify
+        }
+        for future in concurrent.futures.as_completed(futures):
+            dest_meta, dest_md5, fid, fn, size, md5 = future.result()
+
+            if dest_meta is None or dest_meta['size'] is None:
+                missing.append(fn)
+                log.error(f"missing file {fn}")
+            elif size != dest_meta['size']:
+                log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
+                mismatched.append(fn)
+            elif md5 is not None and dest_md5 is not None and md5 != dest_md5:
+                log.error(f"mismatched file {fid} {fn} for upload {dtstr}: remote md5 {dest_md5} journal md5 {md5}")
+                mismatched.append(fn)
+            else:
+                if verbose:
+                    log.debug(f"verified {fn} {fid}")
+                else:
+                    print(".", end="", flush=True)
+                matched.append(fn)
+
+    return matched, mismatched, missing, []  # no needs_download from thread path
+
+
+def _parallel_verify(dated_dest_path: FileSystemHelper,
+                     files_to_verify,
+                     nthreads: int, *,
+                     compute_md5: bool = True,
+                     **kwargs) -> tuple:
+    """Dispatch verification to _async_verify or _thread_verify by cloud type and file size.
+
+    Design rationale
+    ----------------
+    This function is the size-group dispatcher for verification — the verify-side
+    analogue of _parallel_upload.  It is intentionally not responsible for the
+    two-phase orchestration (metadata-only phase 1 vs. download+hash phase 2);
+    that logic belongs in verify_files, which calls this function only for the
+    phase 2 download+hash pass.
+
+    Phase 1 (metadata-only, flat concurrency=128) does not benefit from size
+    grouping because it issues only a get_blob_properties call per file.
+    Routing it through this function would add unnecessary complexity.  Phase 1
+    is therefore dispatched directly from verify_files.
+
+    This function handles phase 2: files whose md5 is absent from both the remote
+    blob and the journal, requiring a full content download+hash.  Files are
+    grouped by size to balance concurrency against per-connection memory pressure:
+
+    # group    size        type    concurrency   notes
+    # small   <   1MB     async       32         stream+hash
+    # medium  <   8MB     async       16         stream+hash
+    # large   <  64MB     async        8         stream+hash
+    # xlarge  < 128MB     async        4         stream+hash
+    # xxlarge < 256MB     thread       4         sync stream+hash
+    # huge    >= 256MB    thread       2         sync stream+hash
+
+    For non-Azure destinations the async path is unavailable; all groups fall
+    back to _thread_verify.
+
+    Args:
+        files_to_verify: iterable of (fid, fn, size, md5, modality)
+        compute_md5: passed through to _async_verify; True means stream+hash.
+
+    Returns:
+        (matched, mismatched, missing) — plain lists, not sets.
+    """
+    verbose = kwargs.get("verbose", False)
+
+    if not isinstance(dated_dest_path.client, AzureBlobClient):
+        raise ValueError("_parallel_verify only supports Azure Blob Storage destinations.")
+
+    use_async = True  # already guaranteed Azure by the guard above
+
+    download_groups = {
+        'small':   ('async',  0,       2**20,  32),
+        'medium':  ('async',  2**20,   2**23,  16),
+        'large':   ('async',  2**23,   2**26,   8),
+        'xlarge':  ('async',  2**26,   2**27,   4),
+        'xxlarge': ('thread', 2**27,   2**28,   4),
+        'huge':    ('thread', 2**28,   float('inf'), 2),
+    }
+
+    matched = []
+    mismatched = []
+    missing = []
+
+    for group_name, (concur_type, min_size, max_size, concurrency) in download_groups.items():
+        group = [(fid, fn, size, md5, modality)
+                 for fid, fn, size, md5, modality in files_to_verify
+                 if min_size <= size < max_size]
+        if not group:
+            continue
+
+        if concur_type == 'async' and use_async:
+            log.info(f"VERIFY {len(group)} files in {group_name} group, async")
+            m, mm, mi, _ = _async_verify(dated_dest_path, group, concurrency,
+                                         compute_md5=compute_md5, **kwargs)
+        else:
+            nuploads = min(concurrency, nthreads)
+            log.info(f"VERIFY {len(group)} files in {group_name} group, thread")
+            m, mm, mi, _ = _thread_verify(dated_dest_path, group, nuploads, **kwargs)
+        matched += m
+        mismatched += mm
+        missing += mi
+
+    return matched, mismatched, missing
+
+
+def verify_files(dest_path: FileSystemHelper, databasename: str = "journal.db",
                  version: Optional[str] = None,
                  modalities: Optional[list] = None,
                  **kwargs):
-    """
-    Verify the integrity of uploaded files by comparing their metadata and MD5 checksums.
+    """Verify the integrity of uploaded files against the journal.
+
+    Two-phase verification strategy
+    --------------------------------
+    For Azure Blob destinations, verification is split into two phases to avoid
+    downloading file content unless strictly necessary:
+
+    Phase 1 — metadata only, all files, high concurrency (async, concurrency=128):
+        Calls _async_verify with compute_md5=False.  For each file:
+        - If the remote blob is missing → missing.
+        - If sizes differ → mismatched.
+        - If either the remote blob md5 or the journal md5 is present → compared
+          directly; matched or mismatched.  (If only one side has an md5,
+          _async_verify writes the known md5 back to the blob so future verifications
+          are cheaper.)
+        - If both md5s are absent → deferred to phase 2 (needs_download list).
+        Phase 1 uses a single flat concurrency because get_blob_properties is
+        cheap and uniform regardless of file size — no size grouping needed.
+
+    Phase 2 — content download + hash, deferred files only (Azure only):
+        Calls _parallel_verify, which groups files by size and dispatches each
+        group to _async_verify(compute_md5=True) for small/medium/large/xlarge
+        files, or to _thread_verify for very large files (>128 MB).  Phase 2
+        only runs when needs_download is non-empty, which is rare once blobs
+        have md5 attributes set.
+
+    For non-Azure destinations (S3, local):
+        _thread_verify is called directly (single phase).  The sync get_metadata
+        path always provides an md5 (S3 etag, local computed hash), so needs_download
+        is never populated and phase 2 is unreachable.
 
     Args:
-        dest_path (FileSystemHelper): The destination path where the files are stored.
-        databasename (str, optional): The name of the database file. Defaults to "journal.db".
-        version (str, optional): The version datetime string. If not provided, the latest version will be used.
+        dest_path: Destination root (cloud or local).
+        databasename: Path to the journal SQLite database.
+        version: Upload version string to verify; defaults to the latest version.
+        modalities: List of modality names to check; None means all.
 
     Returns:
-        set: A set of filenames that have mismatched metadata or MD5 checksums.
+        (matched, mismatched, missing) — each a set of file paths.
     """
     verbose = kwargs.get("verbose", False)
-    
+
     if not os.path.exists(databasename):
-        # os.remove(pushdir_name + ".db")
         log.error(f"No journal exists for filename {databasename}")
         return
-    
+
     dtstr = version if version is not None else JournalDispatcher.get_latest_version(databasename)
-    
-    files_to_verify = JournalDispatcher.get_files_with_meta(databasename, 
-                                                    version = dtstr, 
-                                                    modalities = modalities, 
-                                                    **{'active': True})   
+
+    files_to_verify = JournalDispatcher.get_files_with_meta(databasename,
+                                                            version=dtstr,
+                                                            modalities=modalities,
+                                                            **{'active': True})
 
     if len(files_to_verify) == 0:
         log.info("no files to verify.")
         return
-        
-    #---------- verify files.    
-    # create a dated root directory to receive the files
-    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr), client = dest_path.client, internal_host = dest_path.internal_host)
-    
-    # now compare the metadata and md5
-    missing = []
-    matched = []
-    large_matched = []
-    mismatched = []
 
-    # procssPoolExecutor seems to work better with remote files.
+    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr),
+                                       client=dest_path.client,
+                                       internal_host=dest_path.internal_host)
+
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
-    log.info(f"Verifying files using {nthreads} threads")
-    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-        lock = threading.Lock()
-        futures = []
-        for (fid, filepath, modtime, size, md5, modality, invalidtime, version, uploadtime) in files_to_verify:
-            file_info = (fid, filepath, size, md5, modality)
-            future = executor.submit(_get_file_info, dated_dest_path, file_info, **{**kwargs, "lock": lock})
-            futures.append(future)
-            
-        for future in concurrent.futures.as_completed(futures):
-            (dest_meta, dest_md5, fid, fn, size, md5) = future.result()
 
-            if (dest_meta is None) or (dest_meta['size'] is None):
-                missing.append(fn)
-                log.error(f"missing file {fn}")
-                continue
+    file_infos = [(fid, filepath, size, md5, modality)
+                  for (fid, filepath, _, size, md5, modality, _, version, _) in files_to_verify]
 
-            if (size == dest_meta['size']) and (md5 == dest_md5):
-                if verbose:
-                    log.debug(f"Verified upload {dtstr} {fn} {fid}")
-                else:
-                    print(".", end="", flush=True)
-                matched.append(fn)
-            # elif (dest_md5 is None) and (dest_meta['size'] == size):
-            #     log.info(f"large file, matched by size only {fn}")
-            #     large_matched.append(fn)
-            else:
-                log.error(f"mismatched file {fid} {fn} for upload {dtstr}: cloud size {dest_meta['size']} journal size {size}; cloud md5 {dest_md5} journal md5 {md5}")
-                mismatched.append(fn)
-            
-    missing = set(missing)
+    if isinstance(dest_path.client, AzureBlobClient):
+        # Phase 1: metadata-only, all files.  Flat concurrency=128 is intentional —
+        # get_blob_properties cost is uniform regardless of file size, so size
+        # grouping adds no benefit here.
+        log.info(f"VERIFY phase 1: fetching metadata for {len(file_infos)} files (async, concurrency=128)")
+        matched, mismatched, missing, needs_download = _async_verify(
+            dated_dest_path, file_infos, concurrency=128, **kwargs)
+
+        if needs_download:
+            # Phase 2: content download + hash only for files with no md5 anywhere.
+            # _parallel_verify groups by size and dispatches to async or thread.
+            log.info(f"VERIFY phase 2: downloading and hashing {len(needs_download)} files with no md5")
+            m, mm, mi = _parallel_verify(
+                dated_dest_path, needs_download, nthreads,
+                compute_md5=True, **kwargs)
+            matched += m
+            mismatched += mm
+            missing += mi
+    else:
+        # Non-Azure: single-phase thread verify.  The sync get_metadata path
+        # always returns an md5 (S3 etag or locally computed hash), so there
+        # is no deferred phase 2.
+        log.info(f"VERIFY: {len(file_infos)} files using {nthreads} threads")
+        matched, mismatched, missing, _ = _thread_verify(
+            dated_dest_path, file_infos, nthreads, **kwargs)
+
     matched = set(matched)
-    large_matched = set(large_matched)
     mismatched = set(mismatched)
-    
-    log.info(f"verified {len(matched)} files ({len(large_matched)} large files w/o md5) {len(mismatched)} mismatched, {len(missing)} missing.")
-            
+    missing = set(missing)
+
+    log.info(f"verified {len(matched)} files, {len(mismatched)} mismatched, {len(missing)} missing.")
+
     return matched, mismatched, missing
 
 
@@ -1040,7 +1280,7 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
             log.warning(f"file {f} not found in journal or was previously uploaded.")
             continue
         
-        (_fid, _fn, _mtime, _size, _md5, _mod, _invalidtime, _ver, _uploadtime) = db_files[f]
+        (_fid, _fn, _, _size, _md5, _mod, _, _ver, _) = db_files[f]
         _info = (_fid, _fn, _size, _md5, _ver, _mod)
         
         (dest_meta, dest_md5, dest_root, fid, fn, size, md5) = _get_file_info2(dest_path, _info, **kwargs)

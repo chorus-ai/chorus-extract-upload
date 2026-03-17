@@ -335,7 +335,7 @@ def _upload_files(args, config, journal_fn):
     for mod, mod_config in mod_configs.items():
         client, internal_host =storage_helper._make_client(mod_config)
         sitefs = FileSystemHelper(config_helper.get_path_str(mod_config), client = client, internal_host = internal_host)
-        _, remaining = upload_ops.upload_files_parallel(sitefs, centralfs, modalities = [mod], databasename = journal_fn, max_num_files = remaining, 
+        _, remaining = upload_ops.upload_files(sitefs, centralfs, modalities = [mod], databasename = journal_fn, max_num_files = remaining,
                                                     verbose = args.verbose, num_threads = nthreads, page_size = page_size, modality_configs = mod_configs)
         if (remaining is not None) and (remaining <= 0):
             break        

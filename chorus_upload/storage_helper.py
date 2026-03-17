@@ -77,10 +77,9 @@ from azure.storage.blob import BlobServiceClient
 from cloudpathlib import AzureBlobClient
 import requests
 from requests.adapters import HTTPAdapter
-from azure.core.pipeline.transport import RequestsTransport, AioHttpTransport
+from azure.core.pipeline.transport import RequestsTransport
 # from cloudpathlib import GoogleCloudClient
 from urllib.parse import urlparse, urlunparse
-from azure.storage.blob.aio import BlobServiceClient as AsyncBlobServiceClient
 
 
 
@@ -507,9 +506,16 @@ class FileSystemHelper:
                                  with_metadata: bool = True,
                                  with_md5: bool = False,
                                  local_md5: str = None,
+                                 compute_md5: bool = False,
                                  **kwargs) -> dict:
         """Async version of get_metadata. Supports local paths and Azure Blob Storage.
-        Returns None if the file/blob does not exist."""
+        Returns None if the file/blob does not exist.
+
+        compute_md5: when True and both the remote blob md5 and local_md5 are absent,
+        streams the blob content and computes md5 in-memory rather than returning None.
+        Used for deep verification of files that were never assigned an md5.
+        Has no effect for local paths (md5 is always computed there when with_md5=True).
+        """
         lock = kwargs.get("lock", None)
 
         curr = self.root.joinpath(path) if path is not None else self.root
@@ -539,8 +545,17 @@ class FileSystemHelper:
 
                 if cloud_md5_bytes is None:
                     if local_md5 is None:
-                        # blob has no md5 and none supplied — leave as None
-                        md5_str = None
+                        if compute_md5:
+                            # stream the blob and compute md5 in-memory
+                            md5_obj = hashlib.md5()
+                            stream = await blob_client.download_blob()
+                            async for chunk in stream.chunks():
+                                md5_obj.update(chunk)
+                            md5_str = md5_obj.hexdigest()
+                            set_md5 = True
+                        else:
+                            # blob has no md5 and none supplied — leave as None
+                            md5_str = None
                     else:
                         md5_str = local_md5
                         if lock is not None:
@@ -552,12 +567,13 @@ class FileSystemHelper:
                 else:
                     md5_str = cloud_md5_bytes.hex()
                     if local_md5 is not None and md5_str != local_md5:
-                        if base64.b64decode(cloud_md5_bytes).hex() == local_md5:
+                        b64decoded_cloud = base64.b64decode(cloud_md5_bytes).hex()
+                        if b64decoded_cloud == local_md5:
                             if lock is not None:
                                 with lock:
-                                    log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(cloud_md5_bytes).hex()}")
+                                    log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {b64decoded_cloud}")
                             else:
-                                log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(cloud_md5_bytes).hex()}")
+                                log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {b64decoded_cloud}")
                             md5_str = local_md5
                             set_md5 = True
                         else:
@@ -684,8 +700,9 @@ class FileSystemHelper:
                                 log.debug(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
                         else:
                             log.debug(f"Missing md5 for {curr}. setting with supplied MD5. hex= {md5_str}")
-                        
-                    set_md5 = True
+
+                    if md5_str is not None:
+                        set_md5 = True
                         
                 else:
                     md5_str = curr.md5.hex()
@@ -694,12 +711,13 @@ class FileSystemHelper:
                         if (md5_str != local_md5):
                             # cloud and local md5s are different
                             
-                            if (base64.b64decode(curr.md5).hex() == local_md5):
+                            b64decoded_cloud = base64.b64decode(curr.md5).hex()
+                            if b64decoded_cloud == local_md5:
                                 if lock is not None:
                                     with lock:
-                                        log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(curr.md5).hex()}")
+                                        log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {b64decoded_cloud}")
                                 else:
-                                    log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {base64.b64decode(curr.md5).hex()}")
+                                    log.warning(f"cloud md5 is doubly b64encoded. fixing {curr} with md5 {md5_str}, local {local_md5}. b64decoded cloud {b64decoded_cloud}")
                                 md5_str = local_md5
                                 set_md5 = True
                             else:
