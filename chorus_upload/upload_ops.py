@@ -15,7 +15,7 @@ from chorus_upload.local_ops import list_files_with_info, convert_local_to_centr
 import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
 import chorus_upload.perf_counter as perf_counter
-
+from chorus_upload.remote_file_ops import DEFAULT_REMOTE_OP_PAGE_SIZE
 from chorus_upload.journaldb_ops import JournalDispatcher
 
 from azure.core.exceptions import ServiceResponseError
@@ -814,7 +814,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     dated_dest_paths = {}
 
     # NEW    
-    step = kwargs.get("page_size", 100)
+    step = kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE)
     
     # finally, upload the journal.
     journal_path = FileSystemHelper(os.path.dirname(os.path.abspath(databasename)))  # local fs, no client.

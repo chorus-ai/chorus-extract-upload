@@ -3,6 +3,7 @@ from pathlib import Path
 import os
 
 import platform
+from chorus_upload import local_ops
 
 import logging
 log = logging.getLogger(__name__)
@@ -544,8 +545,6 @@ def _write_journal_upload(is_linux: bool, auth_mode: str, f, **kwargs):
 
 
 
-
-    
 # only works with azure dest for now.
 # OLD: file_list is a dictionary of structure {modality: (config, {version: [files]})}
 # file_list is a dictionary of structure {modality: (config, {fn: {version: .., central_path:..}}})}
@@ -555,7 +554,7 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
     dest_config = kwargs.get('dest_config', {})
     pattern = re.compile(r"az://[^/]+/(.+)")
     # cloud_journal = kwargs.get('cloud_journal', "journal.db")
-    page_size = kwargs.get('page_size', 100)  
+    page_size = kwargs.get('page_size', local_ops.DEFAULT_JOURNAL_PAGE_SIZE)  
     max_upload_count = kwargs.get('max_num_files', None)  
     
 

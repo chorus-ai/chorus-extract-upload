@@ -19,6 +19,7 @@ import pandas as pd
 
 log = logging.getLogger(__name__)
 
+DEFAULT_JOURNAL_PAGE_SIZE = 320
 
 # Concurrency characteristics for local MD5 computation by storage type:
 #
@@ -167,7 +168,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     curtimestamp = int(math.floor(time.time() * 1e6))
     all_args = []
     
-    page_size = kwargs.get("page_size", 1000)
+    page_size = kwargs.get("page_size", DEFAULT_JOURNAL_PAGE_SIZE)
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
     log.info(f"Scanning files to create journal. Calculating MD5 using {nthreads} threads")
@@ -368,7 +369,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     # check if journal table exists.
     curtimestamp = int(math.floor(time.time() * 1e6))
     
-    page_size = kwargs.get("page_size", 1000)
+    page_size = kwargs.get("page_size", DEFAULT_JOURNAL_PAGE_SIZE)
     
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
