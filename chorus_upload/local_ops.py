@@ -550,7 +550,6 @@ def mark_files_as_deleted(files_to_remove:List[str],
         if f in active_files.keys():
             to_inactivate = set.union(to_inactivate, set(active_files[f]))
             
-    log.info(f"Inactivating (marking as deleted) {len(all_del_args)} files")
     if verbose:
         for f in to_inactivate:
             log.debug(f"DELETED  {f}")
@@ -561,6 +560,7 @@ def mark_files_as_deleted(files_to_remove:List[str],
 
     all_del_args = [("DELTED", f) for f in to_inactivate]
     # all_del_args = list(to_inactivate)
+    log.info(f"Inactivating (marking as deleted) {len(all_del_args)} files")
     
     # get the current timestamp
     curtimestamp = int(math.floor(time.time() * 1e6))
