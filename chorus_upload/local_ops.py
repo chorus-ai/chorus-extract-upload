@@ -57,6 +57,7 @@ class _AdaptiveThreads:
         self._max = max_threads
         self._prev_mbps: float | None = None
         self._locked = False
+        self._unchanged = 0
 
     def update(self, bytes_processed: int, elapsed: float) -> None:
         """Call once per completed page with its total bytes and wall time."""
@@ -66,14 +67,21 @@ class _AdaptiveThreads:
         if self._prev_mbps is not None:
             if mbps >= self._prev_mbps * 0.95:          # improved or flat
                 new = min(self._max, self.nthreads * 2)
-            else:                                        # degraded — lock in
+            elif mbps <= self._prev_mbps * 0.75:        # degraded — lock in
                 new = max(1, self.nthreads // 2)
-                self._locked = True
+            else:
+                new = self.nthreads
+                
             if new != self.nthreads:
                 log.info(f"Adaptive threads: {self.nthreads} → {new} "
                          f"({'locked' if self._locked else 'climbing'}), "
                          f"throughput {mbps / 1e6:.1f} MB/s")
                 self.nthreads = new
+                self._unchanged = 0
+            else:
+                self._unchanged += 1
+                if self._unchanged >= 5:
+                    self._locked = True
         self._prev_mbps = mbps
 
     @property
@@ -156,7 +164,6 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         
     JournalDispatcher.create_journal_table(databasename)
     
-    paths = []
     curtimestamp = int(math.floor(time.time() * 1e6))
     all_args = []
     
@@ -183,13 +190,14 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         for paths in root.get_files_iter(pattern = pattern, page_size = page_size):
             page_start = time.time()
             page_bytes = 0
+            paths_set = set(paths)
 
             ctx = (contextlib.nullcontext(persistent_executor)
                    if persistent_executor is not None
                    else concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads))
             with ctx as executor:
                 futures = []
-                for relpath in paths:
+                for relpath in paths_set:
                     log.debug(f"scanning {relpath}")
                     futures.append(executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp,
                                                    {}, compiled_pattern,
@@ -366,9 +374,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
     log.info(f"Updating journal {databasename} using {nthreads} threads")
 
-    paths = []
     all_insert_args = []
-    all_del_args = []
     total_count = 0
     total_deleted = 0
     for modality in modalities:
@@ -408,13 +414,14 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             page_start = time.time()
             page_bytes = 0
             modality_files_to_inactivate_in_iter = {}
+            paths_set = set(paths)
 
             ctx = (contextlib.nullcontext(persistent_executor)
                    if persistent_executor is not None
                    else concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads))
             with ctx as executor:
                 futures = []
-                for relpath in paths:
+                for relpath in paths_set:
                     futures.append(executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp,
                                                    modality_files_to_inactivate_rdonly,
                                                    compiled_pattern, None if version_in_pattern else journal_version,
@@ -462,7 +469,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 if not (relpath.isalnum() or relpath.isascii()):
                     log.warning(f"Path contains non-alphanumeric characters: {relpath}")
                 for v in vals:
-                    if (relpath in paths):
+                    if (relpath in paths_set):
                         del_args_in_iter.append(("OUTDATED", v[0]))
                         if verbose:
                             log.debug(f"OUTDATED  {relpath}")
@@ -484,36 +491,33 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             all_insert_args = []
             perf.report()
 
-            # for all files that were active but aren't there anymore
-            # invalidate in journal
-            for relpath, vals in modality_files_to_inactivate.items():
-                # check if there are non alphanumeric characters in the path
-                # if so, print out the path
-                if not (relpath.isalnum() or relpath.isascii()):
-                    log.warning(f"Path contains non-alphanumeric characters: {relpath}")
+        # for all files that were active but aren't there anymore
+        # invalidate in journal
+        all_del_args = []
+        for relpath, vals in modality_files_to_inactivate.items():
+            # check if there are non alphanumeric characters in the path
+            # if so, print out the path
+            if not (relpath.isalnum() or relpath.isascii()):
+                log.warning(f"Path contains non-alphanumeric characters: {relpath}")
 
-                for v in vals:
-                    if (relpath in paths):
-                        all_del_args.append(("OUTDATED", v[0]))
-                        if verbose:
-                            log.debug(f"OUTDATED  {relpath}")
-                    elif (journaling_mode == "full") or (journaling_mode == "snapshot"):
-                        all_del_args.append(("DELETED", v[0]))
-                        if verbose:
-                            log.debug(f"DELETED  {relpath}")
-            # log.info(f"SQLITE update arguments {all_del_args}")
-            if (total_count == 0) and len(all_del_args) == 0:
-                log.info(f"Nothing to change in journal for modality {modality}")
-            elif (len(all_del_args) > 0):
-                # back up only on upload
-                # backup_journal(databasename)
-                
-                deleted = JournalDispatcher.inactivate_journal_entries(databasename, 
-                                                       curtimestamp, 
-                                                       all_del_args)
-                total_deleted += deleted
-                to_delete = len(all_del_args)
-                log.info(f"deleted/outdated {deleted} of {to_delete} from journal." )
+            for v in vals:
+                if (journaling_mode == "full") or (journaling_mode == "snapshot"):
+                    all_del_args.append(("DELETED", v[0]))
+                    if verbose:
+                        log.debug(f"DELETED  {relpath}")
+        # log.info(f"SQLITE update arguments {all_del_args}")
+        if (total_count == 0) and len(all_del_args) == 0:
+            log.info(f"Nothing to change in journal for modality {modality}")
+        elif (len(all_del_args) > 0):
+            # back up only on upload
+            # backup_journal(databasename)
+            
+            deleted = JournalDispatcher.inactivate_journal_entries(databasename, 
+                                                    curtimestamp, 
+                                                    all_del_args)
+            total_deleted += deleted
+            to_delete = len(all_del_args)
+            log.info(f"deleted/outdated {deleted} of {to_delete} from journal." )
             
         if persistent_executor is not None:
             persistent_executor.shutdown(wait=True)
