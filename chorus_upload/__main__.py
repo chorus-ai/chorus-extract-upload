@@ -329,7 +329,7 @@ def _upload_files(args, config, journal_fn):
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
     nthreads = config_helper.get_config(config).get('nthreads', 1)
-    page_size = config_helper.get_config(config).get('page_size', DEFAULT_REMOTE_OPS_PAGE_SIZE)
+    page_size = config_helper.get_config(config).get('page_size', DEFAULT_REMOTE_OP_PAGE_SIZE)
     
     remaining = max_upload_count
     for mod, mod_config in mod_configs.items():
