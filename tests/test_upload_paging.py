@@ -326,3 +326,42 @@ def test_thread_group_logs_the_conn_per_file_it_uses(monkeypatch, caplog):
         perf_counter.PerformanceCounter(total_file_count=1), nthreads=16)
     msg = next(r.getMessage() for r in caplog.records if "xlarge group, thread" in r.getMessage())
     assert f"× {captured['per_file']} conn/file" in msg
+
+
+def test_async_verify_failed_check_does_not_stop_run_and_spills(monkeypatch, tmp_path):
+    class FakeAz:
+        service_client = types.SimpleNamespace(url="u", credential=None, api_version=None)
+
+    class FakeAsyncClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+    class FakeDest:
+        def __init__(self, root, **kw): pass
+        async def async_get_metadata(self, path, **kw):
+            if path == "bad":
+                raise TimeoutError("network")
+            if path.startswith("nomd5"):
+                return {'size': 1, 'md5': None}
+            return {'size': 1, 'md5': 'm'}
+
+    monkeypatch.setattr(upload_ops, "AzureBlobClient", FakeAz)
+    monkeypatch.setattr(upload_ops, "AsyncBlobServiceClient", FakeAsyncClient)
+    monkeypatch.setattr(upload_ops, "AioHttpTransport", lambda **kw: None)
+    monkeypatch.setattr(upload_ops, "aiohttp", types.SimpleNamespace(
+        TCPConnector=lambda **kw: None, ClientSession=lambda **kw: None))
+    monkeypatch.setattr(upload_ops, "FileSystemHelper", FakeDest)
+    monkeypatch.setattr(upload_ops, "convert_local_to_central_path", lambda fn, **kw: fn)
+
+    items = [(i, f"f{i}", 1, "m", "waveforms") for i in range(30)]
+    items += [(100, "bad", 1, "m", "waveforms")]
+    items += [(200 + i, f"nomd5_{i}", 1, None, "waveforms") for i in range(5)]
+    pages = [items[i:i + 8] for i in range(0, len(items), 8)]
+    spill = upload_ops._DownloadSpill(str(tmp_path / "spill.tmp"), buffer_rows=2)
+    dated = types.SimpleNamespace(client=FakeAz(), root=Path("v1"), internal_host=None)
+
+    n, mm, mi, _, failed = upload_ops._async_verify(dated, iter(pages), 4, needs_download=spill)
+    assert (n, mm, mi, failed) == (30, [], [], ["bad"])
+    assert spill.count(0, float('inf')) == 5
+    spill.close()

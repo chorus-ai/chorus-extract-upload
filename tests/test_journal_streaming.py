@@ -141,7 +141,6 @@ def test_verify_files_streams_and_reports_missing_and_mismatched(site, tmp_path)
             target = dest / "v1" / info["central_path"]
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src / fn, target)
-            last = (fn, info)
     rel_missing = "P001/Waveforms/b.dat"
     rel_bad = "P001/Waveforms/c.dat"
     central = {fn: info["central_path"] for page in local_ops.iter_upload_pages(db, ["waveforms"], 100)
@@ -149,7 +148,74 @@ def test_verify_files_streams_and_reports_missing_and_mismatched(site, tmp_path)
     (dest / "v1" / central[rel_missing]).unlink()
     (dest / "v1" / central[rel_bad]).write_bytes(b"different size")
 
-    n_matched, mismatched, missing = upload_ops.verify_files(
+    n_matched, mismatched, missing, failed = upload_ops.verify_files(
         FileSystemHelper(str(dest)), db, version="v1", modalities=["waveforms"],
         page_size=1, compiled_patterns=patterns, modality_configs={})
-    assert (n_matched, mismatched, missing) == (3, {rel_bad}, {rel_missing})
+    assert (n_matched, mismatched, missing, failed) == (3, {rel_bad}, {rel_missing}, set())
+
+
+def test_thread_verify_failed_check_does_not_stop_run(monkeypatch):
+    from chorus_upload import upload_ops
+    import types
+
+    def fake_info(dated, item, **kw):
+        fid, fn, size, md5, mod = item
+        if fn == "bad":
+            raise TimeoutError("network")
+        return ({'size': size}, md5, fid, fn, size, md5)
+    monkeypatch.setattr(upload_ops, "_get_file_info", fake_info)
+    items = [(i, f"f{i}", 1, "m", "waveforms") for i in range(20)] + [(99, "bad", 1, "m", "waveforms")]
+    pages = [items[i:i + 4] for i in range(0, len(items), 4)]
+    n, mm, mi, _, failed = upload_ops._thread_verify(
+        types.SimpleNamespace(root=types.SimpleNamespace(name="v1")), iter(pages), 3)
+    assert (n, mm, mi, failed) == (20, [], [], ["bad"])
+
+
+def test_download_spill_streams_by_size_and_cleans_up(tmp_path):
+    from chorus_upload import upload_ops
+    spill = upload_ops._DownloadSpill(str(tmp_path / "spill.tmp"), buffer_rows=7)
+    items = [(i, f"f{i}", (i % 3) * 100, None, "waveforms") for i in range(50)]
+    for it in items:
+        spill.append(it)
+    assert len(spill) == 50
+    assert spill.count(100, 200) == len([i for i in items if 100 <= i[2] < 200])
+    got = [r for page in spill.iter_pages(100, float('inf'), 4) for r in page]
+    assert all(len(p) <= 4 for p in spill.iter_pages(0, float('inf'), 4))
+    assert got == [i for i in items if i[2] >= 100]
+    spill.close()
+    assert not (tmp_path / "spill.tmp").exists()
+
+
+# ---------------- file-list lookups (streamed, memory bounded by the list)
+
+def test_mark_files_as_deleted_streams(site):
+    src, db = site
+    run_update(src, db, "v1", "append")
+    local_ops.mark_files_as_deleted(["P001/Waveforms/a.dat", "P002/Waveforms/d.dat", "not/in/journal"], db)
+    rows = journal_rows(db)
+    assert rows["P001/Waveforms/a.dat"] == [(False, "v1")]
+    assert rows["P002/Waveforms/d.dat"] == [(False, "v1")]
+    assert rows["P001/Waveforms/b.dat"] == [(True, "v1")]
+
+
+def test_mark_as_uploaded_streams_and_checks_destination(site, tmp_path):
+    from chorus_upload import upload_ops
+    import shutil
+    src, db = site
+    run_update(src, db, "v1", "full")
+    patterns = local_ops._compile_patterns(["waveforms"], {})
+    dest = tmp_path / "dest"
+    central = {fn: info["central_path"] for page in local_ops.iter_upload_pages(db, ["waveforms"], 100)
+               for fn, info in page}
+    for fn in ["P001/Waveforms/a.dat", "P001/Waveforms/b.dat"]:   # c.dat is listed but not at dest
+        (dest / "v1" / central[fn]).parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(src / fn, dest / "v1" / central[fn])
+
+    upload_ops.mark_as_uploaded(FileSystemHelper(str(dest)), db, "v1",
+                                ["P001/Waveforms/a.dat", "P001/Waveforms/b.dat", "P001/Waveforms/c.dat"],
+                                compiled_patterns=patterns, modality_configs={})
+    with sqlite3.connect(db) as c:
+        uploaded = {r[0] for r in c.execute(
+            "SELECT srcpaths.SRC_PATH || '/' || FILENAME FROM journal_v2 LEFT JOIN srcpaths"
+            " ON srcpaths.id = journal_v2.SRC_PATH_ID WHERE UPLOAD_DT_ID IS NOT NULL")}
+    assert uploaded == {"P001/Waveforms/a.dat", "P001/Waveforms/b.dat"}

@@ -529,25 +529,15 @@ def mark_files_as_deleted(files_to_remove:List[str],
                           version: str = None, 
                           verbose:bool = False):
     
-    # find all files that are active
-    activefiletuples = JournalDispatcher.get_files(databasename,
-                                            version = version,
-                                            modalities = None,
-                                            **{'active': True})
-    
-    # convert filepath to dictionary with list of file_id for quick look up
-    active_files = {}
-    for (file_id, fpath) in activefiletuples:
-        if fpath in active_files.keys():
-            active_files[fpath].append(file_id)
-        else:
-            active_files[fpath] = [file_id]
-    
-    # get the list of file ids.
+    # stream the active rows once and keep the ids of those named in files_to_remove,
+    # so memory is bounded by the file list, not the journal.
+    wanted = set(files_to_remove)
     to_inactivate = set()
-    for f in files_to_remove:
-        if f in active_files.keys():
-            to_inactivate = set.union(to_inactivate, set(active_files[f]))
+    for rows in JournalDispatcher.iter_files_batches(databasename, None, DEFAULT_JOURNAL_PAGE_SIZE,
+                                                     version = version, active = True):
+        for row in rows:
+            if row[1] in wanted:
+                to_inactivate.add(row[0])
             
     if verbose:
         for f in to_inactivate:
@@ -557,7 +547,7 @@ def mark_files_as_deleted(files_to_remove:List[str],
         log.info("No files to delete")
         return
 
-    all_del_args = [("DELTED", f) for f in to_inactivate]
+    all_del_args = [("DELETED", f) for f in to_inactivate]
     # all_del_args = list(to_inactivate)
     log.info(f"Inactivating (marking as deleted) {len(all_del_args)} files")
     
