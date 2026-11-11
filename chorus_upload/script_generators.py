@@ -4,6 +4,7 @@ import os
 
 import platform
 from chorus_upload import local_ops
+from chorus_upload import config_helper
 
 import logging
 log = logging.getLogger(__name__)
@@ -602,15 +603,15 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
         
         if (out_type != "azcli") and (out_type != "azcopy"):
             for _, (config, fninfos) in file_list.items():
-                root = config_helper.get_path_str(config)            
-                filenames = [(Path(root) / fn).as_posix() for fn in fninfos.keys()]
-                if is_windows:
-                    fns = [fn.replace("/", "\\") for fn in filenames]
-                else:
-                    fns = filenames
-                    
-                f.write(eol.join(fns))
-                f.write(eol)
+                root = config_helper.get_path_str(config)
+                # stream one path per line; fninfos may be a lazy journal listing.
+                wrote = False
+                for fn in fninfos.keys():
+                    path = (Path(root) / fn).as_posix()
+                    f.write((path.replace("/", "\\") if is_windows else path) + eol)
+                    wrote = True
+                if not wrote:
+                    f.write(eol)
         
         else:
             

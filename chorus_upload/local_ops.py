@@ -10,7 +10,7 @@ import concurrent.futures
 import threading
 import chorus_upload.perf_counter as perf_counter
 from chorus_upload.journaldb_ops import SQLiteDB
-from chorus_upload.journaldb_ops import JournalDispatcher
+from chorus_upload.journaldb_ops import JournalDispatcher, ActiveSnapshot
 
 import parse
 
@@ -390,22 +390,11 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
         compiled_pattern = parse.compile(pattern)
         
         # do one modality at a time for now - logic is tested.  doing multiple modalities may accidentally delete?
-        activefiletuples = JournalDispatcher.get_files_with_meta(databasename, 
-                                                           version = None, 
-                                                           modalities = [modality], 
-                                                           **{'active': True} )
-        log.info(f"known active, existing files in journal: count {len(activefiletuples)}")
-
-        # initialize by putting all files in files_to_inactivate.  remove from this list if we see the files on disk
-        modality_files_to_inactivate = {}
-        for (fid, fpath, modtime, size, md5, mod, invalidtime, ver, uploadtime) in activefiletuples:
-            if fpath not in modality_files_to_inactivate.keys():
-                modality_files_to_inactivate[fpath] = [ (fid, size, modtime, md5, uploadtime, ver), ]
-            else:
-                modality_files_to_inactivate[fpath].append((fid, size, modtime, md5, uploadtime, ver))
-        # log.info(f"filenames count = {len(modality_files_to_inactivate)}, {modality_files_to_inactivate.keys()}")
-
-        modality_files_to_inactivate_rdonly = dict(modality_files_to_inactivate)
+        # Snapshot the active entries to a scratch SQLite file (path-indexed) instead of an in-memory
+        # dict of every active file.  Each page of disk files looks up only its own paths; entries
+        # matched on disk are marked seen, and unseen entries are the deletions at the end.
+        snapshot = ActiveSnapshot(databasename, modality, batch = page_size)
+        log.info(f"known active, existing files in journal: count {snapshot.count}")
 
         lock = threading.Lock()
         tuner = _AdaptiveThreads(initial=min(4, nthreads), max_threads=nthreads)
@@ -416,6 +405,9 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             page_bytes = 0
             modality_files_to_inactivate_in_iter = {}
             paths_set = set(paths)
+            # same normalization as _update_journal_one_file applies to relpath.
+            page_entries = snapshot.lookup({Path(p).as_posix() for p in paths_set})
+            seen_ids = []
 
             ctx = (contextlib.nullcontext(persistent_executor)
                    if persistent_executor is not None
@@ -424,7 +416,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                 futures = []
                 for relpath in paths_set:
                     futures.append(executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp,
-                                                   modality_files_to_inactivate_rdonly,
+                                                   page_entries,
                                                    compiled_pattern, None if version_in_pattern else journal_version,
                                                    **{'lock': lock}))
 
@@ -446,7 +438,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                     elif status == "KEEP":
                         if verbose:
                             log.debug(f"{status} {rlpath}")
-                        del modality_files_to_inactivate[rlpath]
+                        seen_ids.extend(v[0] for v in page_entries[rlpath])
                     elif status == "ADDED":
                         if verbose:
                             log.debug(f"{status} {rlpath}")
@@ -455,11 +447,12 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
                         if verbose:
                             log.debug(f"{status} {rlpath}")
                         all_insert_args.append(myargs)
-                        modality_files_to_inactivate_in_iter[rlpath] = modality_files_to_inactivate[rlpath]
-                        del modality_files_to_inactivate[rlpath]
+                        modality_files_to_inactivate_in_iter[rlpath] = page_entries[rlpath]
+                        seen_ids.extend(v[0] for v in page_entries[rlpath])
                     else:
                         log.debug(f"unknown status:  {status}, {rlpath}")
 
+            snapshot.mark_seen(seen_ids)
             tuner.update(page_bytes, time.time() - page_start)
             if tuner.locked and persistent_executor is None:
                 persistent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads)
@@ -493,33 +486,34 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             perf.report()
 
         # for all files that were active but aren't there anymore
-        # invalidate in journal
-        all_del_args = []
-        for relpath, vals in modality_files_to_inactivate.items():
-            # check if there are non alphanumeric characters in the path
-            # if so, print out the path
-            if not (relpath.isalnum() or relpath.isascii()):
-                log.warning(f"Path contains non-alphanumeric characters: {relpath}")
-
-            for v in vals:
+        # invalidate in journal.  Streamed in pages from the snapshot's unseen entries.
+        to_delete = 0
+        for unseen in snapshot.iter_unseen(page_size):
+            all_del_args = []
+            for fid, relpath in unseen:
+                # check if there are non alphanumeric characters in the path
+                # if so, print out the path
+                if not (relpath.isalnum() or relpath.isascii()):
+                    log.warning(f"Path contains non-alphanumeric characters: {relpath}")
                 if (journaling_mode == "full") or (journaling_mode == "snapshot"):
-                    all_del_args.append(("DELETED", v[0]))
+                    all_del_args.append(("DELETED", fid))
                     if verbose:
                         log.debug(f"DELETED  {relpath}")
-        # log.info(f"SQLITE update arguments {all_del_args}")
-        if (total_count == 0) and len(all_del_args) == 0:
+            if len(all_del_args) > 0:
+                # back up only on upload
+                # backup_journal(databasename)
+                deleted = JournalDispatcher.inactivate_journal_entries(databasename,
+                                                        curtimestamp,
+                                                        all_del_args)
+                total_deleted += deleted
+                to_delete += len(all_del_args)
+        snapshot.close()
+
+        if (total_count == 0) and to_delete == 0:
             log.info(f"Nothing to change in journal for modality {modality}")
-        elif (len(all_del_args) > 0):
-            # back up only on upload
-            # backup_journal(databasename)
-            
-            deleted = JournalDispatcher.inactivate_journal_entries(databasename, 
-                                                    curtimestamp, 
-                                                    all_del_args)
-            total_deleted += deleted
-            to_delete = len(all_del_args)
-            log.info(f"deleted/outdated {deleted} of {to_delete} from journal." )
-            
+        elif to_delete > 0:
+            log.info(f"deleted/outdated {total_deleted} of {to_delete} from journal." )
+
         if persistent_executor is not None:
             persistent_executor.shutdown(wait=True)
 
@@ -662,7 +656,7 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
                 active_files_by_version[version] = [fn]
         else:
             # old files or deleted files
-            if (fid in inactive_files.keys()):
+            if (fn in inactive_files):
                 inactive_files[fn].append(fid)
             else:
                 inactive_files[fn] = [fid]
@@ -693,6 +687,91 @@ def list_files_with_info(databasename: str, version: Optional[str] = None,
     # we only need to add new files
                 
     return active_files_by_version, active_files, inactive_files
+
+
+def _to_upload_info(rows, patterns: dict, modality_configs: dict):
+    """journal rows (get_files_with_meta shape) -> [(local_path, info)]; info as in list_files_with_info."""
+    page = []
+    for (fid, fn, _mtime, size, md5, modality, _invalid, version, _upload) in rows:
+        central_fn = convert_local_to_central_path(fn, in_compiled_pattern = patterns.get(modality, None),
+                                                   modality = modality,
+                                                   omop_per_patient = modality_configs.get(modality, {}).get("omop_per_patient", False))
+        page.append((fn, {'file_id': fid, 'size': size, 'md5': md5, 'version': version, 'central_path': central_fn}))
+    return page
+
+
+def _compile_patterns(modalities, modality_configs):
+    return {mod: parse.compile(_get_modality_pattern(mod, modality_configs)) for mod in modalities}
+
+
+def iter_upload_pages(databasename: str, modalities: list[str], page_rows: int,
+                      min_size=None, max_size=None, modality_configs: dict = None):
+    """Yield pages (lists) of (local_path, info) for active, not-yet-uploaded files.
+
+    Each page is a fresh `LIMIT page_rows` query with FILE_ID > last FILE_ID seen, restricted
+    to sizes in [min_size, max_size).  Safe while the caller marks earlier pages uploaded, and
+    files still in flight or that failed are never re-fetched.  Memory is bounded by page_rows.
+    """
+    modality_configs = modality_configs or {}
+    patterns = _compile_patterns(modalities, modality_configs)
+    last_id = None
+    while True:
+        rows = JournalDispatcher.get_files_page(databasename, modalities, active=True, uploaded=False,
+                                                after_file_id=last_id, limit=page_rows,
+                                                min_size=min_size, max_size=max_size)
+        if not rows:
+            return
+        last_id = rows[-1][0]
+        yield _to_upload_info(rows, patterns, modality_configs)
+
+
+def iter_pending_deleted_ids(databasename: str, modalities: list[str], page_rows: int):
+    """Yield pages of FILE_IDs for inactive (deleted/outdated), not-yet-uploaded files."""
+    last_id = None
+    while True:
+        rows = JournalDispatcher.get_files_page(databasename, modalities, active=False, uploaded=False,
+                                                after_file_id=last_id, limit=page_rows)
+        if not rows:
+            return
+        last_id = rows[-1][0]
+        yield [r[0] for r in rows]
+
+
+class JournalFileListing:
+    """Lazy {local_path: info} view of journal rows, streamed in batches (read-only use).
+
+    Provides items()/keys()/__iter__ like the dict returned by list_files_with_info, so
+    consumers such as script generation can stream instead of holding every file.
+    """
+
+    def __init__(self, databasename: str, modalities: list[str], batch: int,
+                 modality_configs: dict = None, **filters):
+        self.databasename = databasename
+        self.modalities = modalities
+        self.batch = batch
+        self.modality_configs = modality_configs or {}
+        self.filters = filters
+
+    def items(self):
+        patterns = _compile_patterns(self.modalities, self.modality_configs)
+        for rows in JournalDispatcher.iter_files_batches(self.databasename, self.modalities,
+                                                         self.batch, **self.filters):
+            yield from _to_upload_info(rows, patterns, self.modality_configs)
+
+    def keys(self):
+        for rows in JournalDispatcher.iter_files_batches(self.databasename, self.modalities,
+                                                         self.batch, **self.filters):
+            for row in rows:
+                yield row[1]
+
+    __iter__ = keys
+
+
+def iter_file_paths(databasename: str, modalities: list[str], batch: int, **filters):
+    """Yield local paths of journal rows matching filters, in FILE_ID order, streamed."""
+    for rows in JournalDispatcher.iter_files_batches(databasename, modalities, batch, **filters):
+        for row in rows:
+            yield row[1]
 
 MOD_STRING = {
     "waveforms": "Waveforms",

@@ -1,5 +1,6 @@
 import sqlite3
-from contextlib import closing
+from contextlib import closing, contextmanager
+import os
 from enum import Enum
 from pathlib import Path
 import shutil
@@ -121,7 +122,9 @@ class SQLiteDB:
                         columns: list,
                         join_criteria: list = None,
                         where_clause: str = None,
-                        max_return: int = None):
+                        max_return: int = None,
+                        order_by: str = None,
+                        limit: int = None):
         """
         Query the database with a JOIN clause.
         Parameters:
@@ -131,11 +134,18 @@ class SQLiteDB:
         - join_criteria (list of tuples, optional): The JOIN criteria - tuples of parent table, childtable foreign key, parent table  key.
         - where_clause (str, optional): The WHERE clause to use in the query.  operates on joined data
         - max_return (int, optional): The number of rows to retrieve from the query.
+        - order_by (str, optional): ORDER BY expression.
+        - limit (int, optional): SQL LIMIT; all limited rows are returned.
         Returns:
         - list: A list of tuples containing the query results.
         """
-        
+
         select_stmt = cls._make_select_stmt_with_left_join(table_name, columns, join_criteria, where_clause)
+        if order_by is not None:
+            select_stmt += f" ORDER BY {order_by}"
+        if limit is not None:
+            select_stmt += f" LIMIT {int(limit)}"
+            max_return = None
         if where_clause is not None and (len(where_clause) > cls.max_where_clause):
             log.warning(f"QUERY with LEFT JOIN where clause is long: {where_clause}")
 
@@ -569,6 +579,36 @@ class JournalDispatcher:
             return JournalTableV2.get_files_with_meta(database_name, version, modalities, **kwargs)
         else:
             raise ValueError(f"Unsupported Journal version {dbver}")
+
+    @classmethod
+    def _require_v2(cls, database_name: str):
+        dbver = cls._get_version(database_name)
+        if dbver != 2:
+            raise NotImplementedError(f"paged journal access requires a v2 journal (found v{dbver})")
+
+    @classmethod
+    def get_files_page(cls, database_name: str, modalities: list, **kwargs):
+        """One keyset page of journal rows (see JournalTableV2.get_files_page).  v2 journal only."""
+        cls._require_v2(database_name)
+        return JournalTableV2.get_files_page(database_name, modalities, **kwargs)
+
+    @classmethod
+    def iter_files_batches(cls, database_name: str, modalities: list, batch: int, **filters):
+        """Stream journal rows in batches over one read cursor (read-only passes).  v2 journal only."""
+        cls._require_v2(database_name)
+        return JournalTableV2.iter_files_batches(database_name, modalities, batch, **filters)
+
+    @classmethod
+    def count_pending_by_size(cls, database_name: str, modalities: list, bounds: list):
+        """[(count, bytes)] of active, not-yet-uploaded files per [lo, hi) size bound.  v2 journal only."""
+        cls._require_v2(database_name)
+        return JournalTableV2.count_pending_by_size(database_name, modalities, bounds)
+
+    @classmethod
+    def count_files_by_version(cls, database_name: str, modalities: list, **kwargs):
+        """[(version, count)] of journal rows matching the filters.  v2 journal only."""
+        cls._require_v2(database_name)
+        return JournalTableV2.count_files_by_version(database_name, modalities, **kwargs)
     
     @classmethod
     def get_files(cls, database_name: str, version: str, modalities: list, **kwargs):
@@ -1276,7 +1316,132 @@ class JournalTableV2:
         return [(fid, (Path(srcpath) / fn).as_posix(), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
 
     @classmethod
-    def get_files(cls, database_name: str, 
+    def _page_where(cls, modalities: list, *, version: str = None, active: bool = None,
+                    uploaded: bool = None, min_size=None, max_size=None, after_file_id=None):
+        """WHERE for paged queries; None filters are omitted.  Size range is [min_size, max_size).
+        version requires the versions join; modalities requires the modalities join."""
+        t = cls.table_name
+        conds = []
+        if active is not None:
+            conds.append(f"{t}.TIME_INVALID_us IS NULL" if active else f"{t}.TIME_INVALID_us IS NOT NULL")
+        if uploaded is not None:
+            conds.append(f"{t}.UPLOAD_DT_ID IS NOT NULL" if uploaded else f"{t}.UPLOAD_DT_ID IS NULL")
+        if version is not None:
+            conds.append(f"versions.VERSION = '{version}'")
+        if modalities:
+            conds.append("modalities.MODALITY IN (" + ",".join(f"'{m}'" for m in modalities) + ")")
+        if min_size is not None:
+            conds.append(f"{t}.SIZE >= {int(min_size)}")
+        if (max_size is not None) and (max_size != float('inf')):
+            conds.append(f"{t}.SIZE < {int(max_size)}")
+        if after_file_id is not None:
+            conds.append(f"{t}.FILE_ID > {int(after_file_id)}")
+        return " AND ".join(conds) if conds else None
+
+    @classmethod
+    def get_files_page(cls, database_name: str, modalities: list, *,
+                       version: str = None, active: bool = None, uploaded: bool = None,
+                       after_file_id: int = None, limit: int = 1000,
+                       min_size=None, max_size=None):
+        """Keyset page (FILE_ID > after_file_id, ascending, at most `limit` rows).
+
+        Same tuple shape as get_files_with_meta.  Each page is an independent short
+        query, and FILE_ID is immutable, so paging is unaffected by updates made to
+        earlier pages (e.g. marking them uploaded).
+        """
+        t = cls.table_name
+        columns, join_criteria = cls._files_columns_joins()
+        result = SQLiteDB.query_with_left_join(database_name = database_name,
+                        table_name = t,
+                        columns = columns,
+                        join_criteria = join_criteria,
+                        where_clause = cls._page_where(modalities, version=version, active=active,
+                                                       uploaded=uploaded, min_size=min_size,
+                                                       max_size=max_size, after_file_id=after_file_id),
+                        order_by = f"{t}.FILE_ID",
+                        limit = limit)
+        return cls._to_file_tuples(result)
+
+    @classmethod
+    def _files_columns_joins(cls):
+        t = cls.table_name
+        columns = [
+            (f"{t}.FILE_ID", None),
+            ("srcpaths.SRC_PATH", "src_path"),
+            ("FILENAME", None),
+            ("SRC_MODTIME_us", None),
+            ("SIZE", None),
+            ("MD5", None),
+            ("modalities.MODALITY", "modality"),
+            ("TIME_INVALID_us", None),
+            ("versions.VERSION", "version"),
+            ("uploads.UPLOAD_DT", "upload_dtstr"),
+        ]
+        join_criteria = [
+            ("srcpaths", "srcpaths.id", f"{t}.SRC_PATH_ID"),
+            ("modalities", "modalities.id", f"{t}.MODALITY_ID"),
+            ("versions", "versions.id", f"{t}.VERSION_ID"),
+            ("uploads", "uploads.id", f"{t}.UPLOAD_DT_ID"),
+        ]
+        return columns, join_criteria
+
+    @staticmethod
+    def _to_file_tuples(rows):
+        return [(fid, (Path(srcpath) / fn).as_posix(), mtime, size, md5, mod, invalidtime, ver, uploaddt)
+                for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in rows]
+
+    @classmethod
+    def iter_files_batches(cls, database_name: str, modalities: list, batch: int, **filters):
+        """Stream matching rows (get_files_with_meta shape) in FILE_ID order, `batch` rows at a
+        time, over one read cursor.  One scan instead of one query per page, but the open read
+        transaction blocks writers: use only for read-only passes (list, verify, snapshot)."""
+        t = cls.table_name
+        columns, join_criteria = cls._files_columns_joins()
+        stmt = SQLiteDB._make_select_stmt_with_left_join(t, columns, join_criteria,
+                                                         cls._page_where(modalities, **filters))
+        conn = sqlite3.connect(database_name, check_same_thread=False)
+        try:
+            cur = conn.execute(stmt + f" ORDER BY {t}.FILE_ID")
+            while True:
+                rows = cur.fetchmany(batch)
+                if not rows:
+                    return
+                yield cls._to_file_tuples(rows)
+        finally:
+            conn.close()
+
+    @classmethod
+    def count_pending_by_size(cls, database_name: str, modalities: list, bounds: list):
+        """[(count, bytes)] of active, not-yet-uploaded rows per [lo, hi) bound, in one scan."""
+        t = cls.table_name
+        columns = []
+        for i, (lo, hi) in enumerate(bounds):
+            cond = f"{t}.SIZE >= {int(lo)}" + ("" if hi == float('inf') else f" AND {t}.SIZE < {int(hi)}")
+            columns.append((f"SUM(CASE WHEN {cond} THEN 1 ELSE 0 END)", f"n{i}"))
+            columns.append((f"SUM(CASE WHEN {cond} THEN {t}.SIZE ELSE 0 END)", f"b{i}"))
+        row = SQLiteDB.query_with_left_join(database_name = database_name,
+                        table_name = t,
+                        columns = columns,
+                        join_criteria = [("modalities", "modalities.id", f"{t}.MODALITY_ID")],
+                        where_clause = cls._page_where(modalities, active=True, uploaded=False))[0]
+        return [(row[2 * i] or 0, row[2 * i + 1] or 0) for i in range(len(bounds))]
+
+    @classmethod
+    def count_files_by_version(cls, database_name: str, modalities: list, *,
+                               version: str = None, active: bool = None, uploaded: bool = None):
+        """[(version, count)] ordered by version, in one scan."""
+        t = cls.table_name
+        stmt = SQLiteDB._make_select_stmt_with_left_join(
+            t, [("versions.VERSION", "version"), ("COUNT(*)", "n")],
+            [("modalities", "modalities.id", f"{t}.MODALITY_ID"),
+             ("versions", "versions.id", f"{t}.VERSION_ID")],
+            cls._page_where(modalities, version=version, active=active, uploaded=uploaded))
+        with sqlite3.connect(database_name, check_same_thread=False) as conn:
+            with closing(conn.cursor()) as cur:
+                return cur.execute(stmt + " GROUP BY versions.VERSION ORDER BY versions.VERSION").fetchall()
+
+    @classmethod
+    def get_files(cls, database_name: str,
                        version: str, modalities: list, 
                        **kwargs):
         
@@ -1563,3 +1728,85 @@ def _upgrade_journal(local_path, lock_path):
 
     
     
+
+
+class ActiveSnapshot:
+    """Disk-backed snapshot of the active journal entries of one modality, for update_journal.
+
+    Replaces an in-memory {path: [entries]} dict of every active file.  Stored in a scratch
+    SQLite file next to the journal (not in the journal, so the journal does not grow), indexed
+    by path, with a SEEN flag for entries matched on disk.  The file is removed on close.
+    """
+
+    def __init__(self, database_name: str, modality: str, batch: int):
+        self.path = database_name + f".{modality}.update_snapshot.tmp"
+        self._remove()
+        self.count = 0
+        with self._connect() as c:
+            c.execute("CREATE TABLE active (FILE_ID INTEGER PRIMARY KEY, PATH TEXT NOT NULL,"
+                      " SIZE INTEGER, SRC_MODTIME_us INTEGER, MD5 TEXT, UPLOAD_DT TEXT, VERSION TEXT,"
+                      " SEEN INTEGER NOT NULL DEFAULT 0)")
+            for rows in JournalDispatcher.iter_files_batches(database_name, [modality], batch, active=True):
+                c.executemany("INSERT INTO active (FILE_ID, PATH, SIZE, SRC_MODTIME_us, MD5, UPLOAD_DT, VERSION)"
+                              " VALUES (?,?,?,?,?,?,?)",
+                              [(fid, fn, size, mtime, md5, up, ver)
+                               for (fid, fn, mtime, size, md5, _mod, _inv, ver, up) in rows])
+                self.count += len(rows)
+            c.execute("CREATE INDEX active_path ON active (PATH)")
+
+    @contextmanager
+    def _connect(self):
+        conn = sqlite3.connect(self.path, check_same_thread=False)
+        try:
+            # scratch data: durability is not needed.
+            conn.execute("PRAGMA synchronous=OFF")
+            conn.execute("PRAGMA journal_mode=OFF")
+            yield conn
+            conn.commit()
+        finally:
+            conn.close()
+
+    def _remove(self):
+        if os.path.exists(self.path):
+            os.remove(self.path)
+
+    def lookup(self, paths) -> dict:
+        """{path: [(fid, size, mtime, md5, upload_dt, version), ...]} for paths in the snapshot."""
+        paths = list(paths)
+        out = {}
+        chunk = 500   # stay under SQLITE_MAX_VARIABLE_NUMBER on old SQLite builds (999)
+        with self._connect() as c:
+            for i in range(0, len(paths), chunk):
+                part = paths[i:i + chunk]
+                q = ("SELECT PATH, FILE_ID, SIZE, SRC_MODTIME_us, MD5, UPLOAD_DT, VERSION FROM active"
+                     f" WHERE PATH IN ({','.join('?' * len(part))}) ORDER BY FILE_ID")
+                for (p, *entry) in c.execute(q, part):
+                    out.setdefault(p, []).append(tuple(entry))
+        return out
+
+    def mark_seen(self, fids):
+        if fids:
+            with self._connect() as c:
+                c.executemany("UPDATE active SET SEEN = 1 WHERE FILE_ID = ?", [(f,) for f in fids])
+
+    def iter_unseen(self, batch: int):
+        """Yield lists of (FILE_ID, PATH) for entries never marked seen, in FILE_ID order."""
+        last = 0
+        while True:
+            with self._connect() as c:
+                rows = c.execute("SELECT FILE_ID, PATH FROM active WHERE SEEN = 0 AND FILE_ID > ?"
+                                 " ORDER BY FILE_ID LIMIT ?", (last, batch)).fetchall()
+            if not rows:
+                return
+            last = rows[-1][0]
+            yield rows
+
+    def close(self):
+        self._remove()
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        self.close()
+        return False

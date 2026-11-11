@@ -10,7 +10,7 @@ import concurrent.futures
 import threading
 from itertools import islice
 
-from chorus_upload.local_ops import list_files_with_info, convert_local_to_central_path
+from chorus_upload.local_ops import convert_local_to_central_path, iter_upload_pages, iter_pending_deleted_ids
 # from chorus_upload.local_ops import backup_journal
 import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
@@ -297,15 +297,16 @@ def _upload_and_verify(src_path : FileSystemHelper,
     lock = kwargs.get("lock", None)
         
     if srcfile.exists():
+        # any failure is confined to this file (reported as MISSING_DEST) so it cannot abort the group.
         try:
-            src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
-        except ServiceResponseError as e:
             try:
+                src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
+            except ServiceResponseError as e:
                 log.warning(f"copy failed {fn}, retrying")
                 src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
-            except ServiceResponseError as e:                
-                log.error(f"copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
-                state = sync_state.MISSING_DEST
+        except Exception as e:
+            log.error(f"copy failed {fn}, due to {type(e).__name__}: {str(e)}. Please rerun 'file upload' when connectivity improves.")
+            state = sync_state.MISSING_DEST
     else:
         # log.error(f"file not found {srcfile}")
         state = sync_state.MISSING_SRC
@@ -323,7 +324,11 @@ def _upload_and_verify(src_path : FileSystemHelper,
 
         # get the dest file info.  Don't rely on cloud md5
         start = time.time()
-        dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = destfn, with_metadata = True, with_md5 = True, local_md5 = md5, lock=lock)
+        try:
+            dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = destfn, with_metadata = True, with_md5 = True, local_md5 = md5, lock=lock)
+        except Exception as e:
+            log.error(f"verify failed {fn}, due to {type(e).__name__}: {str(e)}")
+            dest_meta = None
         # case 2 missing in cloud.  this is the missing case;
         verify_time = time.time() - start
         if dest_meta is None:
@@ -369,14 +374,80 @@ def _upload_and_verify(src_path : FileSystemHelper,
             copy_time, verify_time)
 
 
+async def _produce_pages(pages, queue: asyncio.Queue, n_workers: int, db_lock: asyncio.Lock = None):
+    """Feed items from an iterator of pages into a bounded queue, then one None per worker.
+
+    Pages are pulled in a worker thread (they may run SQLite queries), under db_lock if given.
+    The next page is pulled right after the previous one is queued, so the queue keeps the
+    workers fed during the read; memory is bounded by queue size + one page.
+    """
+    page_iter = iter(pages)
+    while True:
+        if db_lock is not None:
+            async with db_lock:
+                page = await asyncio.to_thread(next, page_iter, None)
+        else:
+            page = await asyncio.to_thread(next, page_iter, None)
+        if page is None:
+            break
+        for item in page:
+            await queue.put(item)
+    for _ in range(n_workers):
+        await queue.put(None)   # one stop sentinel per worker
+
+
+def _bounded_submit(executor, pages, submit, window: int, on_done):
+    """Submit submit(item) for every item in an iterator of pages, keeping at most `window`
+    futures in flight; on_done(future) is called on the calling thread as each completes."""
+    in_flight = set()
+    for page in pages:
+        for item in page:
+            in_flight.add(submit(item))
+            if len(in_flight) >= window:
+                done, in_flight = concurrent.futures.wait(
+                    in_flight, return_when=concurrent.futures.FIRST_COMPLETED)
+                for future in done:
+                    on_done(future)
+    for future in concurrent.futures.as_completed(in_flight):
+        on_done(future)
+
+
+def _record_upload_result(result, src_path : FileSystemHelper, upload_dt_str, update_args,
+                          perf, group_perf, dated_dest_paths, verbose):
+    """Bookkeeping for one finished upload; appends MATCHED files to update_args."""
+    (fn2, info, state, dated_dest_path, copy_time, verify_time) = result
+
+    dated_dest_paths.add(dated_dest_path)
+    perf.add_file(info['size'])
+    if group_perf is not None:
+        group_perf.add_file(info['size'])
+
+    if state == sync_state.MISSING_DEST:
+        log.error(f"missing file at destination {fn2}")
+    elif state == sync_state.MISSING_SRC:
+        log.error(f"file not found {fn2}")
+    elif state == sync_state.MATCHED:
+        update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
+        if verbose:
+            log.info(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
+        else:
+            print(".", end="", flush=True)
+    elif state == sync_state.MISMATCHED:
+        log.error(f"mismatched upload file {fn2} upload failed? fileid {info['file_id']}")
+
+
 def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
-                     files_to_upload,
-                    #  files_to_mark_deleted,
-                     databasename, upload_dt_str, update_args,
-                    #  del_args,
-                     step,
-                    #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
-                     perf, nuploads, threads_per_file, verbose = False, *, group_perf=None):
+                   pages,
+                   databasename, upload_dt_str, update_args,
+                   step,
+                   perf, nuploads, threads_per_file, verbose = False, *, group_perf=None):
+    """Upload files from an iterator of pages (lists of (path, info)) with a thread pool.
+
+    At most 2 * nuploads uploads are submitted at a time, so memory is bounded by the
+    page size while every worker always has a next file ready.  Pages are pulled (DB
+    reads) on the calling thread, which also does the journal flushes, so SQLite access
+    is serialized.
+    """
     dated_dest_paths = set()
 
     # Each worker thread gets its own cloned Azure client via thread-local storage.
@@ -385,6 +456,7 @@ def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     orig_client = dest_path.client
     dest_root = dest_path.root
     int_host = dest_path.internal_host
+    lock = threading.Lock()
 
     def upload_task(fn, info):
         if not hasattr(thread_local, 'client'):
@@ -393,64 +465,23 @@ def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         return _upload_and_verify(src_path, fn, info, dated_dest_path,
                                   nthreads=threads_per_file, lock=lock)
 
+    def on_done(future):
+        _record_upload_result(future.result(), src_path, upload_dt_str, update_args,
+                              perf, group_perf, dated_dest_paths, verbose)
+        if len(update_args) >= step:
+            if verbose:
+                log.debug(f"UPLOAD updating journal {len(update_args)}")
+            JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
+            update_args.clear()
+            perf.report()
+
     with concurrent.futures.ThreadPoolExecutor(max_workers=nuploads) as executor:
-        lock = threading.Lock()
+        _bounded_submit(executor, pages, lambda item: executor.submit(upload_task, *item),
+                        2 * nuploads, on_done)
 
-        futures = []
-        for fn, info in files_to_upload.items():
-            future = executor.submit(upload_task, fn, info)
-            futures.append(future)
-    
-        for future in concurrent.futures.as_completed(futures):
-            (fn2, info, state, dated_dest_path,
-            #  del_list, 
-             copy_time, verify_time) = future.result()
-            
-            dated_dest_paths.add(dated_dest_path)
-            perf.add_file(info['size'])
-            if group_perf is not None:
-                group_perf.add_file(info['size'])
-
-            if state == sync_state.MISSING_DEST:
-                # missing_dest.append(fn2)
-                log.error(f"missing file at destination {fn2}")
-            elif state == sync_state.MISSING_SRC:
-                # missing_src.append(fn2)
-                log.error(f"file not found {fn2}")
-            elif state == sync_state.MATCHED:
-                # merge the updates for matched.
-                # matched.append(fn2)
-                update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
-                # if len(del_list) > 0:
-                    # del_args += [(upload_dt_str, fid) for fid in del_list]
-                    # replaced.append(fn2)
-                if verbose:
-                    log.debug(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
-                else:
-                    print(".", end="", flush=True)
-            elif state == sync_state.MISMATCHED:
-                # mismatched.append(fn2)
-                log.error(f"mismatched upload file {fn2} upload failed? fileid {info['file_id']}")            
-            
-            # update the journal - likely not parallelizable.
-            if len(update_args) >= step:
-                if verbose:
-                    log.debug(f"UPLOAD updating journal {len(update_args)}")
-                # handle additions and updates
-                JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
-                update_args = []
-            
-                # backup intermediate file into the dated dest path.
-                # journal_path.copy_file_to(relpath=journal_fn, dest_path=dated_dest_path)
-                
-                perf.report()
-                
-    return (update_args, 
-            # del_args, 
-            perf, 
-            # missing_dest, missing_src, matched, mismatched, replaced, 
+    return (update_args,
+            perf,
             dated_dest_paths)
-
 
 
 async def _async_upload_and_verify(src_path : FileSystemHelper,
@@ -467,17 +498,18 @@ async def _async_upload_and_verify(src_path : FileSystemHelper,
     srcfile = src_path.root.joinpath(fn)
     nthreads = kwargs.get('nthreads', 0)
     if await aiofiles.os.path.exists(srcfile):
+        # any failure is confined to this file (reported as MISSING_DEST) so it cannot abort the group.
         try:
-            await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
-                                               nthreads=nthreads)
-        except ServiceResponseError as e:
             try:
-                log.warning(f"async copy failed {fn}, due to {str(e)}.  retrying")
                 await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
                                                    nthreads=nthreads)
             except ServiceResponseError as e:
-                log.error(f"async copy failed {fn}, due to {str(e)}. Please rerun 'file upload' when connectivity improves.")
-                state = sync_state.MISSING_DEST
+                log.warning(f"async copy failed {fn}, due to {str(e)}.  retrying")
+                await src_path.async_copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path,
+                                                   nthreads=nthreads)
+        except Exception as e:
+            log.error(f"async copy failed {fn}, due to {type(e).__name__}: {str(e)}. Please rerun 'file upload' when connectivity improves.")
+            state = sync_state.MISSING_DEST
     else:
         state = sync_state.MISSING_SRC
     copy_time = time.time() - start
@@ -486,8 +518,12 @@ async def _async_upload_and_verify(src_path : FileSystemHelper,
     # ======= verify
     if state == sync_state.UNKNOWN:
         start = time.time()
-        dest_meta = await dated_dest_path.async_get_metadata(
-            path=destfn, with_metadata=True, with_md5=True, local_md5=md5)
+        try:
+            dest_meta = await dated_dest_path.async_get_metadata(
+                path=destfn, with_metadata=True, with_md5=True, local_md5=md5)
+        except Exception as e:
+            log.error(f"async verify failed {fn}, due to {type(e).__name__}: {str(e)}")
+            dest_meta = None
         verify_time = time.time() - start
         if dest_meta is None:
             state = sync_state.MISSING_DEST
@@ -502,21 +538,30 @@ async def _async_upload_and_verify(src_path : FileSystemHelper,
 
 
 def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
-                   files_to_upload,
-                  #  files_to_mark_deleted,
-                   databasename, upload_dt_str, update_args,
-                  #  del_args,
-                   step,
-                  #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
-                   perf, concurrency, verbose = False, *, connections_per_file: int = 1,
-                   async_pool_max: int = 256, group_perf=None):
+                  pages,
+                  databasename, upload_dt_str, update_args,
+                  step,
+                  perf, concurrency, verbose = False, *, connections_per_file: int = 1,
+                  async_pool_max: int = 256, group_perf=None, queue_size: int = None):
+    """Upload files from an iterator of pages (lists of (path, info)) with `concurrency`
+    async workers.
+
+    A producer pulls pages (SQLite reads, in a worker thread) into a bounded queue of
+    queue_size items (>= 2 * concurrency); a fixed pool of workers drains it.  The next
+    page is fetched as soon as the previous page is queued, so the queue keeps every
+    worker fed during the DB read, and memory is bounded by ~2 pages instead of one
+    task per file.  Page reads and journal flushes share one lock: SQLite has a single
+    writer and a long page scan would otherwise make a concurrent flush fail with
+    'database is locked'.
+    """
 
     if src_path.is_cloud:
         raise ValueError("Async upload is only supported for local source path.")
     if not isinstance(dest_path.client, AzureBlobClient):
         raise ValueError("Async upload is only supported for Azure Blob Storage destination.")
-    
+
     dated_dest_paths = set()
+    queue_size = max(queue_size or 0, 2 * concurrency)
 
     async def process_uploads():
         svc = dest_path.client.service_client
@@ -527,209 +572,218 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                                           credential=svc.credential,
                                           api_version=svc.api_version,
                                           transport=transport) as async_client:
-            semaphore = asyncio.Semaphore(concurrency)
+            queue = asyncio.Queue(maxsize=queue_size)
+            db_lock = asyncio.Lock()
 
-            async def upload_file(fn, info):
-                async with semaphore:
+            async def worker():
+                while (item := await queue.get()) is not None:
+                    fn, info = item
                     dated_dest_path = FileSystemHelper(
                         dest_path.root.joinpath(info['version']),
                         client=dest_path.client,
                         internal_host=dest_path.internal_host,
                         async_azclient=async_client,
                     )
-                    return await _async_upload_and_verify(src_path, fn, info, dated_dest_path,
-                                                          nthreads=connections_per_file)
+                    result = await _async_upload_and_verify(src_path, fn, info, dated_dest_path,
+                                                            nthreads=connections_per_file)
+                    _record_upload_result(result, src_path, upload_dt_str, update_args,
+                                          perf, group_perf, dated_dest_paths, verbose)
 
-            tasks = [upload_file(fn, info) for fn, info in files_to_upload.items()]
+                    if len(update_args) >= step:
+                        # swap out the batch before awaiting so other workers keep appending.
+                        batch = update_args[:]
+                        update_args.clear()
+                        if verbose:
+                            log.info(f"UPLOAD updating journal {len(batch)}")
+                        async with db_lock:
+                            await asyncio.to_thread(JournalDispatcher.mark_as_uploaded_with_duration,
+                                                    databasename, batch)
+                        perf.report()
 
-            for coro in asyncio.as_completed(tasks):
-                (fn2, info, state, dated_dest_path,
-                 copy_time, verify_time) = await coro
-
-                dated_dest_paths.add(dated_dest_path)
-                perf.add_file(info['size'])
-                if group_perf is not None:
-                    group_perf.add_file(info['size'])
-
-                if state == sync_state.MISSING_DEST:
-                    log.error(f"missing file at destination {fn2}")
-                elif state == sync_state.MISSING_SRC:
-                    log.error(f"file not found {fn2}")
-                elif state == sync_state.MATCHED:
-                    update_args.append((upload_dt_str, copy_time, verify_time, info['file_id']))
-                    if verbose:
-                        log.info(f"copied {fn2} from {str(src_path.root)} to {str(dated_dest_path.root)}")
-                    else:
-                        print(".", end="", flush=True)
-                elif state == sync_state.MISMATCHED:
-                    log.error(f"mismatched upload file {fn2} upload failed? fileid {info['file_id']}")
-
-                if len(update_args) >= step:
-                    if verbose:
-                        log.info(f"UPLOAD updating journal {len(update_args)}")
-                    JournalDispatcher.mark_as_uploaded_with_duration(databasename, update_args)
-                    update_args.clear()
-                    perf.report()
+            await asyncio.gather(_produce_pages(pages, queue, concurrency, db_lock),
+                                 *(worker() for _ in range(concurrency)))
 
     asyncio.run(process_uploads())
 
     return (
         update_args,
-        #  del_args,
         perf,
-        #  missing_dest, missing_src, matched, mismatched, replaced,
         dated_dest_paths,
     )
 
 
+# Upload size groups and concurrency settings.
+#
+# AZURE_MAX_BLOCK_SIZE = 4 MB (set in storage_helper), so any file > 4 MB
+# is uploaded as multiple 4 MB blocks.  conn/file = max_concurrency passed
+# to upload_blob(), controlling parallel block uploads per file.
+#
+# Async groups share one aiohttp pool; pool_size = min(concurrency × conn/file, 256).
+# Thread groups: each thread gets its own cloned BlobServiceClient with
+# pool_size = conn/file (hardcoded, not derived from nthreads, so large-file
+# block parallelism is consistent regardless of CPU count).
+#
+# group    size        type    concurrency  conn/file  aiohttp pool / thread pool
+# small   <  1 MB     async       256    ×     1     =  256  (single PUT, no blocks)
+# medium  <  8 MB     async       128    ×     2     =  256  (1–2 blocks of 4 MB)
+# large   < 32 MB     async        64    ×     4     =  256  (2–8 blocks of 4 MB)
+# xlarge  < 256 MB    thread         8   ×     4     =    4/thread (8–64 blocks)
+# huge    >= 256 MB   thread         4   ×     8     =    8/thread (64+ blocks)
+#
+# Thread groups use LPT (largest-first) scheduling: each thread has an isolated
+# connection pool so classical scheduling theory applies — large files start early
+# and overlap; small files fill the straggler tail.
+# Async groups use natural (unsorted) ordering: all coroutines share one aiohttp
+# pool, so LPT spikes connection demand at the start and hurts throughput.
+# Mixed-size ordering naturally balances pool demand against semaphore churn.
+# Files are streamed from the journal in pages, so these orderings apply per page.
+#
+# (concur_type, min_size, max_size, concurrency, connections_per_file)
+UPLOAD_SIZE_GROUPS = {
+    'small':   ('async',  0,            2**20,        256, 1),
+    'medium':  ('async',  2**20,         2**23,        128, 2),
+    'large':   ('async',  2**23,         2**25,         64, 4),
+    'xlarge':  ('thread', 2**25,         2**28,          8, 4),
+    'huge':    ('thread', 2**28,  float('inf'),          4, 8),
+}
+
+UPLOAD_ASYNC_POOL_MAX = 256  # cap aiohttp pool size across all async groups
+
+
+def _interleave_by_size(items):
+    """Alternate largest and smallest (two-pointer walk after one sort).
+
+    Keeps a consistent mix of fast-completing (small) and slow-completing (large)
+    files in flight, which prevents both the pool-contention spike of LPT and the
+    straggler tail of SJF.
+    """
+    sorted_items = sorted(items, key=lambda kv: kv[1]['size'], reverse=True)
+    interleaved = []
+    lo, hi = 0, len(sorted_items) - 1
+    while lo <= hi:
+        interleaved.append(sorted_items[lo])
+        if lo != hi:
+            interleaved.append(sorted_items[hi])
+        lo += 1
+        hi -= 1
+    return interleaved
+
+
+def _ordered_pages(pages, max_files, order):
+    """Cap pages to max_files (in journal FILE_ID order), then order each page.
+
+    order: 'lpt' (largest first), 'interleave', or None (as listed).
+    """
+    n = 0
+    for page in pages:
+        if max_files is not None:
+            if n >= max_files:
+                return
+            page = page[:max_files - n]
+        n += len(page)
+        if order == 'lpt':
+            page = sorted(page, key=lambda kv: kv[1]['size'], reverse=True)
+        elif order == 'interleave':
+            page = _interleave_by_size(page)
+        yield page
+
+
 def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
-                     files_to_upload,
-                    #  files_to_mark_deleted,
+                     page_source, group_stats,
                      databasename, upload_dt_str, update_args,
-                    #  del_args,
                      step,
-                    #  missing_dest, missing_src, matched, mismatched, replaced,  # debug only
-                     perf, nthreads:int, verbose = False):
+                     perf, nthreads:int, verbose = False, max_files: int = None):
     """Dispatch file uploads to _async_upload or _thread_upload based on destination cloud type
     and file size group.
+
+    page_source(min_size, max_size, page_rows) returns an iterator of pages (lists of
+    (path, info)) of pending files in [min_size, max_size), in journal FILE_ID order.
+    group_stats maps group name -> (pending count, pending bytes).
+    max_files caps the number of files across all groups (None = no cap).
+
+    Each group streams pages of step × concurrency × conn/file rows: a multiple of the
+    journal flush step and of the in-flight upload count, so a page always holds whole
+    flush batches and enough files to keep every upload slot busy while the next page
+    is read.
 
     Design rationale
     ----------------
     Azure Blob supports true async I/O via the azure-storage-blob aio SDK, so small-to-large
-    files benefit from high-concurrency async upload.  Very large files (>128 MB) are routed
+    files benefit from high-concurrency async upload.  Files >= 32 MB are routed
     to a thread pool instead because per-file block-level parallelism is more important than
     task-level concurrency at that size.  For non-Azure destinations (S3, local) the async
     path is unavailable; all groups fall back to _thread_upload automatically.
     """
-    # Upload size groups and concurrency settings.
-    #
-    # AZURE_MAX_BLOCK_SIZE = 4 MB (set in storage_helper), so any file > 4 MB
-    # is uploaded as multiple 4 MB blocks.  conn/file = max_concurrency passed
-    # to upload_blob(), controlling parallel block uploads per file.
-    #
-    # Async groups share one aiohttp pool; pool_size = min(concurrency × conn/file, 256).
-    # Thread groups: each thread gets its own cloned BlobServiceClient with
-    # pool_size = conn/file (hardcoded, not derived from nthreads, so large-file
-    # block parallelism is consistent regardless of CPU count).
-    #
-    # group    size        type    concurrency  conn/file  aiohttp pool / thread pool
-    # small   <  1 MB     async       256    ×     1     =  256  (single PUT, no blocks)
-    # medium  <  8 MB     async       128    ×     2     =  256  (1–2 blocks of 4 MB)
-    # large   < 32 MB     async        64    ×     4     =  256  (2–8 blocks of 4 MB)
-    # xlarge  < 256 MB    thread         8   ×     4     =    4/thread (8–64 blocks)
-    # huge    >= 256 MB   thread         4   ×     8     =    8/thread (64+ blocks)
-    #
-    # Thread groups use LPT (largest-first) scheduling: each thread has an isolated
-    # connection pool so classical scheduling theory applies — large files start early
-    # and overlap; small files fill the straggler tail.
-    # Async groups use natural (unsorted) ordering: all coroutines share one aiohttp
-    # pool, so LPT spikes connection demand at the start and hurts throughput.
-    # Mixed-size ordering naturally balances pool demand against semaphore churn.
-
-    # (concur_type, min_size, max_size, concurrency, connections_per_file)
-    size_groups = {
-        'small':   ('async',  0,            2**20,        256, 1),
-        'medium':  ('async',  2**20,         2**23,        128, 2),
-        'large':   ('async',  2**23,         2**25,         64, 4),
-        'xlarge':  ('thread', 2**25,         2**28,          8, 4),
-        'huge':    ('thread', 2**28,  float('inf'),          4, 8),
-    }
-
-    ASYNC_POOL_MAX = 256  # cap aiohttp pool size across all async groups
-
     use_async = isinstance(dest_path.client, AzureBlobClient)
     dated_paths = set()
+    remaining = max_files
 
-    for group_name, (concur_type, min_size, max_size, concurrency, connections_per_file) in size_groups.items():
-        group_files = {fn: info for fn, info in files_to_upload.items()
-                       if min_size <= info['size'] < max_size}
-
-        if len(group_files) == 0:
+    for group_name, (concur_type, min_size, max_size, concurrency, connections_per_file) in UPLOAD_SIZE_GROUPS.items():
+        group_pending, group_bytes = group_stats.get(group_name, (0, 0))
+        group_count = group_pending if remaining is None else min(group_pending, remaining)
+        if group_count == 0:
             continue
 
         if concur_type == 'thread':
-            # LPT: largest files first so they overlap; small files fill the tail.
-            # Safe for thread groups because each thread has an isolated connection pool.
-            group_files = dict(sorted(group_files.items(), key=lambda kv: kv[1]['size'], reverse=True))
+            # LPT is safe for thread groups because each thread has an isolated connection pool.
+            order = 'lpt'
         elif group_name in ('medium', 'large'):
-            # Interleave largest and smallest files (two-pointer walk after one sort).
-            # Keeps a consistent mix of fast-completing (small) and slow-completing
-            # (large) files in the semaphore simultaneously, which:
-            #   - prevents the pool-contention spike of LPT (all large files at once)
-            #   - prevents the straggler tail of SJF (all large files at the end)
-            #   - maintains fast semaphore churn throughout the batch
-            # Applied to medium and large where the intra-group size spread (8× and
-            # 8×) is large enough to matter; small (<1 MB) has negligible variance.
-            sorted_items = sorted(group_files.items(), key=lambda kv: kv[1]['size'], reverse=True)
-            interleaved = []
-            lo, hi = 0, len(sorted_items) - 1
-            while lo <= hi:
-                interleaved.append(sorted_items[lo])
-                if lo != hi:
-                    interleaved.append(sorted_items[hi])
-                lo += 1
-                hi -= 1
-            group_files = dict(interleaved)
+            # intra-group size spread (8×) is large enough to matter; small (<1 MB) is not.
+            order = 'interleave'
+        else:
+            order = None
 
-        group_total_mb = sum(info['size'] for info in group_files.values()) / (1024 * 1024)
-        group_perf = perf_counter.PerformanceCounter(total_file_count=len(group_files))
+        group_size_str = (f"{group_bytes / (1024 * 1024):.1f} MB" if group_count == group_pending
+                          else f"capped from {group_pending}")
+        group_perf = perf_counter.PerformanceCounter(total_file_count=group_count)
 
         if concur_type == 'async' and use_async:
-            log.info(f"UPLOAD {len(group_files)} files ({group_total_mb:.1f} MB) in {group_name} group, async, "
+            page_rows = step * concurrency * connections_per_file
+            pages = _ordered_pages(page_source(min_size, max_size, page_rows), group_count, order)
+            log.info(f"UPLOAD {group_count} files ({group_size_str}) in {group_name} group, async, "
                      f"{concurrency} concurrent × {connections_per_file} conn/file "
-                     f"(pool_size={min(concurrency * connections_per_file, ASYNC_POOL_MAX)})")
+                     f"(pool_size={min(concurrency * connections_per_file, UPLOAD_ASYNC_POOL_MAX)}, page={page_rows})")
             (update_args,
-                #  del_args,
                 perf,
-                #  missing_dest, missing_src, matched, mismatched, replaced,
                 _dated_paths) = \
                 _async_upload(src_path, dest_path,
-                                group_files,
-                                # files_to_mark_deleted,
+                                pages,
                                 databasename, upload_dt_str, update_args,
-                                # del_args,
                                 step,
-                                # missing_dest, missing_src, matched, mismatched, replaced,
                                 perf, concurrency, verbose,
                                 connections_per_file=connections_per_file,
-                                async_pool_max=ASYNC_POOL_MAX,
-                                group_perf=group_perf)
+                                async_pool_max=UPLOAD_ASYNC_POOL_MAX,
+                                group_perf=group_perf,
+                                queue_size=page_rows)
             dated_paths.update(_dated_paths)
         elif concur_type == 'thread' or (concur_type == 'async' and not use_async):
             nuploads = min(concurrency, nthreads)
-            threads_per_file = max(1, nthreads // nuploads)
-            if concur_type == 'async':
-                log.info(f"UPLOAD {len(group_files)} files in {group_name} group, thread (async unavailable), "
-                         f"{nuploads} threads × {threads_per_file} conn/file")
-            else:
-                log.info(f"UPLOAD {len(group_files)} files in {group_name} group, thread, "
-                         f"{nuploads} threads × {threads_per_file} conn/file")
+            page_rows = step * nuploads * connections_per_file
+            pages = _ordered_pages(page_source(min_size, max_size, page_rows), group_count, order)
+            mode = "thread (async unavailable)" if concur_type == 'async' else "thread"
+            log.info(f"UPLOAD {group_count} files ({group_size_str}) in {group_name} group, {mode}, "
+                     f"{nuploads} threads × {connections_per_file} conn/file (page={page_rows})")
             (update_args,
-                #  del_args,
                 perf,
-                #  missing_dest, missing_src, matched, mismatched, replaced,
                 _dated_paths) = \
                 _thread_upload(src_path, dest_path,
-                                group_files,
-                                # files_to_mark_deleted,
+                                pages,
                                 databasename, upload_dt_str, update_args,
-                                # del_args,
                                 step,
-                                # missing_dest, missing_src, matched, mismatched, replaced,
                                 perf, nuploads, connections_per_file, verbose,
                                 group_perf=group_perf)
             dated_paths.update(_dated_paths)
         else:
             raise ValueError(f"Unknown concurrency type {concur_type} for group {group_name}")
 
+        if remaining is not None:
+            remaining -= group_count
+
         log.info(f"UPLOAD {group_name} group complete:")
         group_perf.report()
 
-        
-    return (update_args, 
-            # del_args, 
-            perf, 
-            # missing_dest, missing_src, matched, mismatched, replaced, 
+    return (update_args,
+            perf,
             dated_paths)
 
 
@@ -771,34 +825,38 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     upload_dt_str = strftime("%Y%m%d%H%M%S", gmtime())   # use string for upload ver_str for readability
 
 
-    #---------- upload files.    
-    # first get the list of files for the requested version
-    # files_to_upload is a filename to info mapping
-    # previously, it was a version to filename mapping.
-    _, files_to_upload, files_to_mark_deleted = list_files_with_info(databasename, version=None, modalities=modalities, 
-                                                                    verbose = False, modality_configs = modality_configs,
-                                                                    **{'uploaded': False})
-    if (files_to_upload is None) or (len(files_to_upload) == 0):
+    #---------- upload files.
+    # Pending files are streamed from the journal in pages per size group (see _parallel_upload),
+    # never materialized as a whole list.  Only per-group counts are fetched up front, in one scan.
+    if not JournalDispatcher.table_exists(database_name = databasename):
+        log.error(f"table journal does not exist in {databasename}.")
+        return None, max_num_files
+    group_stats = dict(zip(UPLOAD_SIZE_GROUPS.keys(),
+                           JournalDispatcher.count_pending_by_size(
+                               databasename, modalities,
+                               [(g[1], g[2]) for g in UPLOAD_SIZE_GROUPS.values()])))
+    total_pending = sum(count for count, _ in group_stats.values())
+    if total_pending == 0:
         log.info("no files to upload.  Done")
         return None, max_num_files
     else:
-        log.info(f"uploading {len(files_to_upload)} files to {str(dest_path.root)}")
+        log.info(f"uploading {total_pending} files to {str(dest_path.root)}")
 
     if max_num_files is not None:
-        upload_count = min(max_num_files, len(files_to_upload))
+        upload_count = min(max_num_files, total_pending)
         remaining = max_num_files - upload_count
     else:
-        upload_count = len(files_to_upload)
+        upload_count = total_pending
         remaining = None
-                
-    log.info(f"UPLOAD: files found {len(files_to_upload)}, to upload {upload_count}")    
-    if upload_count > 0:
-        # keep the first remaining items in the dictionary
-        files_to_upload = dict(islice(files_to_upload.items(), upload_count))            
 
-    # log.info(f"UPLOAD: limited files to upload {len(files_to_upload)}")
+    log.info(f"UPLOAD: files found {total_pending}, to upload {upload_count}")
 
-    perf = perf_counter.PerformanceCounter(total_file_count = len(files_to_upload))
+    def page_source(min_size, max_size, page_rows):
+        return iter_upload_pages(databasename, modalities, page_rows,
+                                 min_size = min_size, max_size = max_size,
+                                 modality_configs = modality_configs)
+
+    perf = perf_counter.PerformanceCounter(total_file_count = upload_count)
     
     # copy file, verify and update journal
     update_args = []
@@ -826,21 +884,17 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
 
-    log.info(f"UPLOAD {len(files_to_upload)} files")
-    if len(files_to_upload) > 0:
-        (update_args, 
-        #  del_args, 
-         perf, 
-        #  missing_dest, missing_src, matched, mismatched, replaced, 
+    log.info(f"UPLOAD {upload_count} files")
+    if upload_count > 0:
+        (update_args,
+         perf,
          dated_paths) = \
             _parallel_upload(src_path, dest_path,
-                            files_to_upload, 
-                            # files_to_mark_deleted,
-                            databasename, upload_dt_str, update_args, 
-                            # del_args, 
+                            page_source, group_stats,
+                            databasename, upload_dt_str, update_args,
                             step,
-                            # missing_dest, missing_src, matched, mismatched, replaced,
-                            perf, nthreads, verbose)
+                            perf, nthreads, verbose,
+                            max_files = upload_count)
         for dp in dated_paths:
             dated_dest_paths[str(dp.root)] = dp
     
@@ -864,21 +918,17 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # replaced = set(replaced)
 
     # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
-    del_args = []
-    for _, fids in files_to_mark_deleted:
-        # deleted.append(fn) # only for debug
-        for fid in fids:
-            del_args.append((fid,))  # deleted
-    # deleted = set(deleted) # only for debug
-    
-    # for ones that are mark deleted, we mark them as uploaded as well.
-    if len(del_args) > 0:
-        log.info(f"Marking as deleted and uploaded: {len(del_args)}")
-        JournalDispatcher.mark_as_uploaded(databasename, 
+    # for ones that are mark deleted, we mark them as uploaded as well.  Streamed in pages;
+    # marked rows drop out of the query, and the FILE_ID keyset keeps paging stable.
+    del_page_rows = step * max(c * k for (_, _, _, c, k) in UPLOAD_SIZE_GROUPS.values())
+    n_deleted = 0
+    for fids in iter_pending_deleted_ids(databasename, modalities, del_page_rows):
+        JournalDispatcher.mark_as_uploaded(databasename,
                                       version = upload_dt_str,
-                                      upload_args = del_args)
-        del_args = []
-    
+                                      upload_args = [(fid,) for fid in fids])
+        n_deleted += len(fids)
+    if n_deleted > 0:
+        log.info(f"Marked as deleted and uploaded: {n_deleted}")
         perf.report()
     
     # create a versioned backup - AFTER updating the journal.
@@ -931,25 +981,27 @@ def _get_file_info2(dest_path: FileSystemHelper, file_info: tuple,  **kwargs):
 
 
 def _async_verify(dated_dest_path: FileSystemHelper,
-                  files_to_verify,
+                  pages,
                   concurrency: int, *,
                   compute_md5: bool = False,
+                  queue_size: int = None,
                   **kwargs) -> tuple:
     """Async verification for Azure destinations.
 
-    files_to_verify: iterable of (fid, fn, size, md5, modality)
+    pages: iterable of lists of (fid, fn, size, md5, modality).  Streamed through a bounded
+      queue (>= 2 * concurrency) to `concurrency` workers, so memory is bounded by ~2 pages.
 
     Phase 1 (compute_md5=False): fetches blob properties only — fast, no downloads.
       Files where both remote and journal md5 are absent are returned in needs_download.
     Phase 2 (compute_md5=True): streams and hashes blobs with no md5 anywhere.
       needs_download will be empty on return.
 
-    Returns (matched, mismatched, missing, needs_download).
+    Returns (n_matched, mismatched, missing, needs_download); matched files are only counted.
     """
     if not isinstance(dated_dest_path.client, AzureBlobClient):
         raise ValueError("_async_verify only supports Azure Blob Storage destinations.")
 
-    matched = []
+    n_matched = 0
     mismatched = []
     missing = []
     needs_download = []
@@ -972,10 +1024,12 @@ def _async_verify(dated_dest_path: FileSystemHelper,
                 internal_host=dated_dest_path.internal_host,
                 async_azclient=async_client,
             )
-            semaphore = asyncio.Semaphore(concurrency)
+            queue = asyncio.Queue(maxsize=max(queue_size or 0, 2 * concurrency))
 
-            async def verify_one(fid, fn, size, md5, modality):
-                async with semaphore:
+            async def worker():
+                nonlocal n_matched
+                while (item := await queue.get()) is not None:
+                    fid, fn, size, md5, modality = item
                     central_fn = convert_local_to_central_path(
                         fn,
                         in_compiled_pattern=compiled_patterns.get(modality, None),
@@ -984,78 +1038,86 @@ def _async_verify(dated_dest_path: FileSystemHelper,
                     dest_meta = await async_dest.async_get_metadata(
                         path=central_fn, with_metadata=True, with_md5=True,
                         local_md5=md5, compute_md5=compute_md5)
-                    return (dest_meta, fid, fn, size, md5, modality)
+                    if _classify_verify(dest_meta, fid, fn, size, md5, modality,
+                                        mismatched, missing, needs_download, verbose):
+                        n_matched += 1
 
-            tasks = [verify_one(fid, fn, size, md5, modality)
-                     for fid, fn, size, md5, modality in files_to_verify]
-
-            for coro in asyncio.as_completed(tasks):
-                dest_meta, fid, fn, size, md5, modality = await coro
-
-                if dest_meta is None or dest_meta['size'] is None:
-                    missing.append(fn)
-                    log.error(f"missing file {fn}")
-                elif size != dest_meta['size']:
-                    log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
-                    mismatched.append(fn)
-                elif dest_meta['md5'] is None and md5 is None:
-                    # both md5s absent: size matches but content unverifiable without download
-                    needs_download.append((fid, fn, size, md5, modality))
-                elif md5 is not None and dest_meta['md5'] is not None and md5 != dest_meta['md5']:
-                    log.error(f"mismatched file {fid} {fn}: remote md5 {dest_meta['md5']} journal md5 {md5}")
-                    mismatched.append(fn)
-                else:
-                    # size matches; md5 either matches or one side is None (size-only match)
-                    if verbose:
-                        log.debug(f"verified {fn} {fid}")
-                    else:
-                        print(".", end="", flush=True)
-                    matched.append(fn)
+            await asyncio.gather(_produce_pages(pages, queue, concurrency),
+                                 *(worker() for _ in range(concurrency)))
 
     asyncio.run(process())
-    return matched, mismatched, missing, needs_download
+    return n_matched, mismatched, missing, needs_download
+
+
+def _classify_verify(dest_meta, fid, fn, size, md5, modality,
+                     mismatched, missing, needs_download, verbose) -> bool:
+    """Classify one async verify result into the given lists; returns True if matched."""
+    if dest_meta is None or dest_meta['size'] is None:
+        missing.append(fn)
+        log.error(f"missing file {fn}")
+    elif size != dest_meta['size']:
+        log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
+        mismatched.append(fn)
+    elif dest_meta['md5'] is None and md5 is None:
+        # both md5s absent: size matches but content unverifiable without download
+        needs_download.append((fid, fn, size, md5, modality))
+    elif md5 is not None and dest_meta['md5'] is not None and md5 != dest_meta['md5']:
+        log.error(f"mismatched file {fid} {fn}: remote md5 {dest_meta['md5']} journal md5 {md5}")
+        mismatched.append(fn)
+    else:
+        # size matches; md5 either matches or one side is None (size-only match)
+        if verbose:
+            log.debug(f"verified {fn} {fid}")
+        else:
+            print(".", end="", flush=True)
+        return True
+    return False
 
 
 def _thread_verify(dated_dest_path: FileSystemHelper,
-                   files_to_verify,
+                   pages,
                    nthreads: int,
                    **kwargs) -> tuple:
-    """Thread-pool verification. Used for huge files that require blob download+hash."""
+    """Thread-pool verification. Used for huge files that require blob download+hash.
+
+    pages: iterable of lists of (fid, fn, size, md5, modality); at most 2 * nthreads
+    checks are in flight.  Returns (n_matched, mismatched, missing, []).
+    """
     verbose = kwargs.get("verbose", False)
-    matched = []
+    n_matched = 0
     mismatched = []
     missing = []
 
     dtstr = dated_dest_path.root.name
+    lock = threading.Lock()
+
+    def on_done(future):
+        nonlocal n_matched
+        dest_meta, dest_md5, fid, fn, size, md5 = future.result()
+
+        if dest_meta is None or dest_meta['size'] is None:
+            missing.append(fn)
+            log.error(f"missing file {fn}")
+        elif size != dest_meta['size']:
+            log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
+            mismatched.append(fn)
+        elif md5 is not None and dest_md5 is not None and md5 != dest_md5:
+            log.error(f"mismatched file {fid} {fn} for upload {dtstr}: remote md5 {dest_md5} journal md5 {md5}")
+            mismatched.append(fn)
+        else:
+            if verbose:
+                log.debug(f"verified {fn} {fid}")
+            else:
+                print(".", end="", flush=True)
+            n_matched += 1
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-        lock = threading.Lock()
-        futures = {
-            executor.submit(_get_file_info, dated_dest_path,
-                            (fid, fn, size, md5, modality),
-                            **{**kwargs, "lock": lock}): fn
-            for fid, fn, size, md5, modality in files_to_verify
-        }
-        for future in concurrent.futures.as_completed(futures):
-            dest_meta, dest_md5, fid, fn, size, md5 = future.result()
+        _bounded_submit(executor, pages,
+                        lambda item: executor.submit(_get_file_info, dated_dest_path, item,
+                                                     **{**kwargs, "lock": lock}),
+                        2 * nthreads, on_done)
 
-            if dest_meta is None or dest_meta['size'] is None:
-                missing.append(fn)
-                log.error(f"missing file {fn}")
-            elif size != dest_meta['size']:
-                log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
-                mismatched.append(fn)
-            elif md5 is not None and dest_md5 is not None and md5 != dest_md5:
-                log.error(f"mismatched file {fid} {fn} for upload {dtstr}: remote md5 {dest_md5} journal md5 {md5}")
-                mismatched.append(fn)
-            else:
-                if verbose:
-                    log.debug(f"verified {fn} {fid}")
-                else:
-                    print(".", end="", flush=True)
-                matched.append(fn)
-
-    return matched, mismatched, missing, []  # no needs_download from thread path
+    return n_matched, mismatched, missing, []  # no needs_download from thread path
 
 
 def _parallel_verify(dated_dest_path: FileSystemHelper,
@@ -1098,7 +1160,7 @@ def _parallel_verify(dated_dest_path: FileSystemHelper,
         compute_md5: passed through to _async_verify; True means stream+hash.
 
     Returns:
-        (matched, mismatched, missing) — plain lists, not sets.
+        (n_matched, mismatched, missing) — a count and plain lists.
     """
     verbose = kwargs.get("verbose", False)
 
@@ -1116,7 +1178,7 @@ def _parallel_verify(dated_dest_path: FileSystemHelper,
         'huge':    ('thread', 2**28,   float('inf'), 2),
     }
 
-    matched = []
+    matched = 0
     mismatched = []
     missing = []
 
@@ -1129,12 +1191,12 @@ def _parallel_verify(dated_dest_path: FileSystemHelper,
 
         if concur_type == 'async' and use_async:
             log.info(f"VERIFY {len(group)} files in {group_name} group, async")
-            m, mm, mi, _ = _async_verify(dated_dest_path, group, concurrency,
+            m, mm, mi, _ = _async_verify(dated_dest_path, [group], concurrency,
                                          compute_md5=compute_md5, **kwargs)
         else:
             nuploads = min(concurrency, nthreads)
             log.info(f"VERIFY {len(group)} files in {group_name} group, thread")
-            m, mm, mi, _ = _thread_verify(dated_dest_path, group, nuploads, **kwargs)
+            m, mm, mi, _ = _thread_verify(dated_dest_path, [group], nuploads, **kwargs)
         matched += m
         mismatched += mm
         missing += mi
@@ -1183,8 +1245,12 @@ def verify_files(dest_path: FileSystemHelper, databasename: str = "journal.db",
         version: Upload version string to verify; defaults to the latest version.
         modalities: List of modality names to check; None means all.
 
+    Active files of the version are streamed from the journal in batches of
+    page_size × concurrency rows; only mismatched/missing paths (and phase-2 candidates)
+    are kept in memory.
+
     Returns:
-        (matched, mismatched, missing) — each a set of file paths.
+        (n_matched, mismatched, missing) — matched count; mismatched and missing are sets of paths.
     """
     verbose = kwargs.get("verbose", False)
 
@@ -1194,12 +1260,10 @@ def verify_files(dest_path: FileSystemHelper, databasename: str = "journal.db",
 
     dtstr = version if version is not None else JournalDispatcher.get_latest_version(databasename)
 
-    files_to_verify = JournalDispatcher.get_files_with_meta(databasename,
-                                                            version=dtstr,
-                                                            modalities=modalities,
-                                                            **{'active': True})
+    filters = {'version': dtstr, 'active': True}
+    n_files = sum(n for _, n in JournalDispatcher.count_files_by_version(databasename, modalities, **filters))
 
-    if len(files_to_verify) == 0:
+    if n_files == 0:
         log.info("no files to verify.")
         return
 
@@ -1210,16 +1274,24 @@ def verify_files(dest_path: FileSystemHelper, databasename: str = "journal.db",
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
 
-    file_infos = [(fid, filepath, size, md5, modality)
-                  for (fid, filepath, _, size, md5, modality, _, version, _) in files_to_verify]
+    step = kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE)
+
+    def file_info_pages(batch):
+        # read-only pass: one streaming cursor over the journal.
+        for rows in JournalDispatcher.iter_files_batches(databasename, modalities, batch, **filters):
+            yield [(fid, filepath, size, md5, modality)
+                   for (fid, filepath, _, size, md5, modality, _, _, _) in rows]
 
     if isinstance(dest_path.client, AzureBlobClient):
         # Phase 1: metadata-only, all files.  Flat concurrency=128 is intentional —
         # get_blob_properties cost is uniform regardless of file size, so size
         # grouping adds no benefit here.
-        log.info(f"VERIFY phase 1: fetching metadata for {len(file_infos)} files (async, concurrency=128)")
+        concurrency = 128
+        page_rows = step * concurrency
+        log.info(f"VERIFY phase 1: fetching metadata for {n_files} files (async, concurrency={concurrency}, page={page_rows})")
         matched, mismatched, missing, needs_download = _async_verify(
-            dated_dest_path, file_infos, concurrency=128, **kwargs)
+            dated_dest_path, file_info_pages(page_rows), concurrency=concurrency,
+            queue_size=page_rows, **kwargs)
 
         if needs_download:
             # Phase 2: content download + hash only for files with no md5 anywhere.
@@ -1235,15 +1307,14 @@ def verify_files(dest_path: FileSystemHelper, databasename: str = "journal.db",
         # Non-Azure: single-phase thread verify.  The sync get_metadata path
         # always returns an md5 (S3 etag or locally computed hash), so there
         # is no deferred phase 2.
-        log.info(f"VERIFY: {len(file_infos)} files using {nthreads} threads")
+        log.info(f"VERIFY: {n_files} files using {nthreads} threads")
         matched, mismatched, missing, _ = _thread_verify(
-            dated_dest_path, file_infos, nthreads, **kwargs)
+            dated_dest_path, file_info_pages(step * nthreads), nthreads, **kwargs)
 
-    matched = set(matched)
     mismatched = set(mismatched)
     missing = set(missing)
 
-    log.info(f"verified {len(matched)} files, {len(mismatched)} mismatched, {len(missing)} missing.")
+    log.info(f"verified {matched} files, {len(mismatched)} mismatched, {len(missing)} missing.")
 
     return matched, mismatched, missing
 

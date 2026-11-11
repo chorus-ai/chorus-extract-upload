@@ -227,18 +227,19 @@ def _select_files(args, config, journal_fn):
     if (args.output_file is None) or (args.output_file == ""):
         for mod in mods:
             uploaded = args.uploaded if 'uploaded' in vars(args) else False
-            mod_files, _, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod],
-                                                verbose=args.verbose, modality_configs = modality_configs,
-                                                **{'uploaded': uploaded})
             mod_config = config_helper.get_site_config(config, mod)
+            # stream: per-version counts in one scan, then each version's paths in batches.
+            filters = {'version': args.version, 'active': True, 'uploaded': uploaded}
+            counts = JournalDispatcher.count_files_by_version(journal_fn, [mod], **filters)
 
-            if mod_files is None:
+            if len(counts) == 0:
                 log.info(f"No files found for modality {mod}")
                 continue
 
-            for (version, files) in mod_files.items():
-                print(f"{len(files)} files for version: ", version, " root at ", config_helper.get_path_str(mod_config), " for ", mod)
-                print("\n".join(files))
+            for (version, nfiles) in counts:
+                print(f"{nfiles} files for version: ", version, " root at ", config_helper.get_path_str(mod_config), " for ", mod)
+                for fn in local_ops.iter_file_paths(journal_fn, [mod], page_size, **{**filters, 'version': version}):
+                    print(fn)
     else:
         # generate a script for uploading files.
         central = config_helper.get_central_config(config)
@@ -246,9 +247,10 @@ def _select_files(args, config, journal_fn):
         file_list = {}
         for mod in mods:
             uploaded = args.uploaded if 'uploaded' in vars(args) else False
-            _, active_files, _ = list_files_with_info(journal_fn, version = args.version, modalities = [mod], 
-                                                   verbose=args.verbose, modality_configs = modality_configs,
-                                                   **{'uploaded': uploaded})
+            # lazy {path: info} view, streamed by _write_files instead of loaded whole.
+            active_files = local_ops.JournalFileListing(journal_fn, [mod], page_size,
+                                                        modality_configs = modality_configs,
+                                                        version = args.version, active = True, uploaded = uploaded)
             mod_config = config_helper.get_site_config(config, mod)
 
             file_list[mod] = (mod_config, active_files)
