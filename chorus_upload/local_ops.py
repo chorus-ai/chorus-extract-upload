@@ -529,15 +529,9 @@ def mark_files_as_deleted(files_to_remove:List[str],
                           version: str = None, 
                           verbose:bool = False):
     
-    # stream the active rows once and keep the ids of those named in files_to_remove,
-    # so memory is bounded by the file list, not the journal.
-    wanted = set(files_to_remove)
-    to_inactivate = set()
-    for rows in JournalDispatcher.iter_files_batches(databasename, None, DEFAULT_JOURNAL_PAGE_SIZE,
-                                                     version = version, active = True):
-        for row in rows:
-            if row[1] in wanted:
-                to_inactivate.add(row[0])
+    # look up only the listed files (path index): cost and memory scale with the list, not the journal.
+    to_inactivate = {row[0] for row in JournalDispatcher.get_files_by_paths(
+        databasename, files_to_remove, version = version, active = True)}
             
     if verbose:
         for f in to_inactivate:

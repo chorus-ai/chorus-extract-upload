@@ -219,3 +219,35 @@ def test_mark_as_uploaded_streams_and_checks_destination(site, tmp_path):
             "SELECT srcpaths.SRC_PATH || '/' || FILENAME FROM journal_v2 LEFT JOIN srcpaths"
             " ON srcpaths.id = journal_v2.SRC_PATH_ID WHERE UPLOAD_DT_ID IS NOT NULL")}
     assert uploaded == {"P001/Waveforms/a.dat", "P001/Waveforms/b.dat"}
+
+
+def test_path_lookup_uses_lazy_index_and_matches_scan(tmp_path):
+    from chorus_upload.journaldb_ops import JournalDispatcher, JournalTableV2
+    import random
+    db = str(tmp_path / "journal.db")
+    JournalTableV2.create_journal_table(db)
+    with sqlite3.connect(db) as c:
+        c.execute("INSERT INTO modalities (MODALITY) VALUES ('waveforms')")
+        c.execute("INSERT INTO versions (VERSION) VALUES ('v1')")
+        c.executemany("INSERT INTO srcpaths (SRC_PATH) VALUES (?)", [(f"P{d:03d}/Waveforms",) for d in range(50)])
+        c.executemany(
+            "INSERT INTO journal_v2 (SRC_PATH_ID, FILENAME, MODALITY_ID, SRC_MODTIME_us, SIZE, MD5,"
+            " TIME_VALID_us, TIME_INVALID_us, UPLOAD_DT_ID, VERSION_ID) VALUES (?,?,1,0,1,'m',0,?,NULL,1)",
+            [(1 + i % 50, f"f{i}.dat", 1 if i % 7 == 0 else None) for i in range(5000)])
+
+    def has_index():
+        with sqlite3.connect(db) as c:
+            return c.execute("SELECT 1 FROM sqlite_master WHERE name=?", (JournalTableV2.path_index,)).fetchone()
+    assert has_index() is None          # not created with the table
+
+    all_rows = [r for b in JournalDispatcher.iter_files_batches(db, None, 1000, active=True) for r in b]
+    wanted = set(random.Random(0).sample([r[1] for r in all_rows], 300)) | {"P000/Waveforms/none.dat"}
+    got = JournalDispatcher.get_files_by_paths(db, wanted, active=True)
+    assert has_index() is not None      # created on first lookup
+    assert got == [r for r in all_rows if r[1] in wanted]
+
+    with sqlite3.connect(db) as c:
+        c.execute("CREATE TEMP TABLE _want_paths (W_PATH TEXT, W_NAME TEXT)")
+        plan = " ".join(r[-1] for r in c.execute(
+            "EXPLAIN QUERY PLAN " + JournalTableV2._paths_lookup_stmt(active=True)))
+    assert JournalTableV2.path_index in plan and "SCAN journal_v2" not in plan, plan

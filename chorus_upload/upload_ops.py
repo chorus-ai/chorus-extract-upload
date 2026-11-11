@@ -1461,16 +1461,9 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         log.error(f"No journal exists for filename {databasename}")
         return
 
-    # stream the unuploaded, active rows once and keep only those named in `files`,
-    # so memory is bounded by the file list, not the journal.
-    wanted = set(files)
-    db_files = {}
-    batch = kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE)
-    for rows in JournalDispatcher.iter_files_batches(databasename, None, batch, version = version,
-                                                     active = True, uploaded = False):
-        for row in rows:
-            if row[1] in wanted:
-                db_files[row[1]] = row
+    # look up only the listed files (path index): cost and memory scale with the list, not the journal.
+    db_files = {row[1]: row for row in JournalDispatcher.get_files_by_paths(
+        databasename, files, version = version, active = True, uploaded = False)}
     
     matched = []
     

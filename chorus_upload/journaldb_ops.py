@@ -605,6 +605,12 @@ class JournalDispatcher:
         return JournalTableV2.count_pending_by_size(database_name, modalities, bounds)
 
     @classmethod
+    def get_files_by_paths(cls, database_name: str, paths, **kwargs):
+        """Rows for the given local paths via the path index (created on first use).  v2 journal only."""
+        cls._require_v2(database_name)
+        return JournalTableV2.get_files_by_paths(database_name, paths, **kwargs)
+
+    @classmethod
     def count_files_by_version(cls, database_name: str, modalities: list, **kwargs):
         """[(version, count)] of journal rows matching the filters.  v2 journal only."""
         cls._require_v2(database_name)
@@ -1425,6 +1431,63 @@ class JournalTableV2:
                         join_criteria = [("modalities", "modalities.id", f"{t}.MODALITY_ID")],
                         where_clause = cls._page_where(modalities, active=True, uploaded=False))[0]
         return [(row[2 * i] or 0, row[2 * i + 1] or 0) for i in range(len(bounds))]
+
+    path_index = "journal_v2_path_idx"
+
+    @classmethod
+    def ensure_path_index(cls, database_name: str):
+        """Create the (SRC_PATH_ID, FILENAME) index used for path lookups, if missing.
+
+        Created on first use rather than with the table, so journals that never look files
+        up by path do not pay its size (~50-60 B/row) or its insert cost.  One-time build
+        on an existing journal reads the whole table.
+        """
+        with sqlite3.connect(database_name, check_same_thread=False) as conn:
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                                  (cls.path_index,)).fetchone()
+            if exists is None:
+                log.info(f"creating path index {cls.path_index} on {database_name} (one-time)")
+                conn.execute(f"CREATE INDEX IF NOT EXISTS {cls.path_index} ON {cls.table_name} (SRC_PATH_ID, FILENAME)")
+        conn.close()
+
+    @classmethod
+    def get_files_by_paths(cls, database_name: str, paths, *,
+                           version: str = None, active: bool = None, uploaded: bool = None):
+        """Rows (get_files_with_meta shape) whose path is in `paths`, via the path index.
+
+        Cost is proportional to len(paths), not to the journal size.
+        """
+        paths = set(paths)
+        if not paths:
+            return []
+        cls.ensure_path_index(database_name)
+        stmt = cls._paths_lookup_stmt(version=version, active=active, uploaded=uploaded)
+        conn = sqlite3.connect(database_name, check_same_thread=False)
+        try:
+            conn.execute("CREATE TEMP TABLE _want_paths (W_PATH TEXT, W_NAME TEXT)")
+            # split exactly as insert_journal_entries does.
+            conn.executemany("INSERT INTO _want_paths VALUES (?, ?)",
+                             [(Path(p).parent.as_posix(), Path(p).name) for p in paths])
+            rows = conn.execute(stmt).fetchall()
+        finally:
+            conn.close()
+        return cls._to_file_tuples(rows)
+
+    @classmethod
+    def _paths_lookup_stmt(cls, **filters):
+        """SELECT joining TEMP table _want_paths(W_PATH, W_NAME) to the journal via the path index."""
+        t = cls.table_name
+        columns, join_criteria = cls._files_columns_joins()
+        fields = ", ".join(c if out is None else f"{c} AS {out}" for c, out in columns)
+        joins = "".join(f" LEFT JOIN {tab} ON {a} = {b}" for (tab, a, b) in join_criteria
+                        if tab != "srcpaths")
+        where = cls._page_where(None, **filters)
+        # CROSS JOIN fixes the join order (want -> srcpaths -> journal); without table stats the
+        # planner otherwise may choose a full scan of the journal as the outer loop.
+        return (f"SELECT {fields} FROM _want_paths"
+                f" CROSS JOIN srcpaths ON srcpaths.SRC_PATH = _want_paths.W_PATH"
+                f" CROSS JOIN {t} ON {t}.SRC_PATH_ID = srcpaths.id AND {t}.FILENAME = _want_paths.W_NAME"
+                f"{joins}" + ("" if where is None else f" WHERE {where}") + f" ORDER BY {t}.FILE_ID")
 
     @classmethod
     def count_files_by_version(cls, database_name: str, modalities: list, *,
