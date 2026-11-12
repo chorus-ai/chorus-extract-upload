@@ -61,6 +61,7 @@ else:
 import os
 
 import shutil
+import time
 from chorus_upload import config_helper
 import base64
 
@@ -88,6 +89,11 @@ log = logging.getLogger(__name__)
 
 
 AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
+
+
+def _redact_url(url) -> str:
+    """URL without its query string (which can carry a SAS token), for logging."""
+    return str(url).split("?", 1)[0]
 
 # to ensure consistent interface, we use default profile (S3) or require environment variables to be set
 # azure:  url:  az://{container}/
@@ -121,97 +127,89 @@ AZURE_MAX_BLOCK_SIZE = 4 * 1024 * 1024
 
 # internal helper to create the cloud client
 def __make_aws_client(auth_params: dict) -> S3Client:
-    # Azure format for account_url
-    aws_session_token = config_helper.get_auth_param(auth_params, "aws_session_token")
-    aws_profile = config_helper.get_auth_param(auth_params, "aws_profile")
-    aws_access_key_id = config_helper.get_auth_param(auth_params, "aws_access_key_id")    
-    aws_secret_access_key = config_helper.get_auth_param(auth_params, "aws_secret_access_key")
-    
-    if aws_session_token:  # preferred.
-        # session token specified, then use it
-        return S3Client(aws_session_token = aws_session_token, file_cache_mode = FileCacheMode.cloudpath_object)
-    elif aws_access_key_id and aws_secret_access_key:
-        # access key and secret key specified, then use it
-        return S3Client(access_key_id = aws_access_key_id, 
-                        secret_access_key = aws_secret_access_key, file_cache_mode = FileCacheMode.cloudpath_object)
-    elif aws_profile:
-        # profile specified, then use it
-        return S3Client(profile_name = aws_profile, file_cache_mode = FileCacheMode.cloudpath_object)
-    
-    aws_session_token = aws_session_token if aws_session_token else os.environ.get("AWS_SESSION_TOKEN")
-    aws_profile = aws_profile if aws_profile else "default"
-    aws_access_key_id = aws_access_key_id if aws_access_key_id else os.environ.get("AWS_ACCESS_KEY_ID")
-    aws_secret_access_key = aws_secret_access_key if aws_secret_access_key else os.environ.get("AWS_SECRET_ACCESS_KEY")
-    
-    if aws_session_token:  # preferred.
-        # session token specified, then use it
-        return S3Client(aws_session_token = aws_session_token, file_cache_mode = FileCacheMode.cloudpath_object)
-    elif aws_access_key_id and aws_secret_access_key:
-        # access key and secret key specified, then use it
-        return S3Client(access_key_id = aws_access_key_id, 
-                        secret_access_key = aws_secret_access_key, file_cache_mode = FileCacheMode.cloudpath_object)
-    elif aws_profile:
-        # profile specified, then use it
-        return S3Client(profile_name = aws_profile, file_cache_mode = FileCacheMode.cloudpath_object)
-        
-    # default profile
-    return S3Client(file_cache_mode = FileCacheMode.cloudpath_object)
+    """Build the S3 client.
 
-# internal helper to create the cloud client
+    Credentials, in order: aws_access_key_id + aws_secret_access_key (with aws_session_token
+    for temporary credentials) from the config, falling back to the AWS_* environment
+    variables for any that are missing; else aws_profile; else boto3's default chain.
+    """
+    token = config_helper.get_auth_param(auth_params, "aws_session_token") or os.environ.get("AWS_SESSION_TOKEN")
+    key_id = config_helper.get_auth_param(auth_params, "aws_access_key_id") or os.environ.get("AWS_ACCESS_KEY_ID")
+    secret = config_helper.get_auth_param(auth_params, "aws_secret_access_key") or os.environ.get("AWS_SECRET_ACCESS_KEY")
+    profile = config_helper.get_auth_param(auth_params, "aws_profile")
+
+    params = {"file_cache_mode": FileCacheMode.cloudpath_object}
+    if key_id and secret:
+        params.update(aws_access_key_id = key_id, aws_secret_access_key = secret)
+        if token:
+            params["aws_session_token"] = token
+    elif profile:
+        params["profile_name"] = profile
+
+    def _factory(pool_size=None):
+        return S3Client(**params)
+    client = _factory()
+    client._clone_factory = _factory   # used by _clone_client for per-thread clients
+    return client
+
+
+def _conn_string_account(conn_str: Optional[str]) -> Optional[str]:
+    """AccountName from an Azure storage connection string, or None."""
+    for part in (conn_str or "").split(";"):
+        if part.strip().lower().startswith("accountname="):
+            return part.split("=", 1)[1].strip() or None
+    return None
+
+
+def _azure_connection_string(auth_params: dict) -> Optional[str]:
+    """Connection string from the config: given directly, or built from account name + key."""
+    conn = (config_helper.get_auth_param(auth_params, "azure_storage_connection_string")
+            or config_helper.get_auth_param(auth_params, "azure_connection_string"))
+    if conn:
+        return conn
+    name = config_helper.get_auth_param(auth_params, "azure_account_name")
+    key = config_helper.get_auth_param(auth_params, "azure_account_key")
+    if name and key:
+        return f"DefaultEndpointsProtocol=https;AccountName={name};AccountKey={key};EndpointSuffix=core.windows.net"
+    return None
+
+
 def __make_az_client(auth_params: dict) -> AzureBlobClient:
-    # Azure format for account_url
+    """Build the Azure client.
 
-    # parse out all the relevant argument
-    azure_auth_mode = config_helper.get_auth_param(auth_params, "auth_mode", "login")
+    auth_mode:
+      "login"              DefaultAzureCredential against the account url / name.
+      "sas"                account url (or name) with azure_sas_token appended.
+      "connection_string"  azure_storage_connection_string (or azure_connection_string), or one
+      (alias "key")        built from azure_account_name + azure_account_key, or the
+                           AZURE_STORAGE_CONNECTION_STRING environment variable.
+    When auth_mode is not set: a connection string or account key in the config selects
+    "connection_string"; otherwise "login".  With no account url/name at all, the environment
+    connection string is used.
 
+    connection_verify (default false) turns TLS certificate verification on; it is off by
+    default because the upload proxy requires it.
+    """
+    azure_auth_mode = config_helper.get_auth_param(auth_params, "auth_mode")
     azure_account_url = config_helper.get_auth_param(auth_params, "azure_account_url")
     azure_account_name = config_helper.get_auth_param(auth_params, "azure_account_name", default=None)
+    conn_str = _azure_connection_string(auth_params)
+    env_conn_str = os.environ.get("AZURE_STORAGE_CONNECTION_STRING")
 
-    if azure_account_url is None :
-        if azure_account_name is None:
-            raise ValueError("Azure account name must be specified if account url is not specified")
+    if azure_auth_mode is None:
+        if conn_str:
+            azure_auth_mode = "connection_string"
+        elif azure_account_url is None and azure_account_name is None and env_conn_str:
+            azure_auth_mode = "connection_string"
         else:
-            # default account url for account not specified.
-            azure_account_url = f"https://{azure_account_name}.blob.core.windows.net"
+            azure_auth_mode = "login"
+    if azure_auth_mode == "key":
+        azure_auth_mode = "connection_string"
+    if azure_auth_mode not in ("login", "sas", "connection_string"):
+        raise ValueError("Unknown Azure auth_mode.  use 'login', 'sas' or 'connection_string': " + str(azure_auth_mode))
 
-    if azure_auth_mode == "login":
-        # force the commandline login
-        # Use DefaultAzureCredential to pick up your Entra login session
-        credential = DefaultAzureCredential()
-    elif azure_auth_mode == "sas":
-        azure_sas_token = config_helper.get_auth_param(auth_params, "azure_sas_token")
-        azure_account_url = f"{azure_account_url}/?{azure_sas_token}" if azure_sas_token is not None else azure_account_url
-        credential = None
-    else:
-        raise ValueError("Unknown Azure auth_mode.  use 'login' or 'sas' " + str(azure_auth_mode))
-
-
-    # format for account url for client.  container is not discarded unlike stated.  so must use format like below.
-    # example: 'https://{account_url}.blob.core.windows.net/?{sas_token}
-    # https://learn.microsoft.com/en-us/python/api/azure-storage-blob/azure.storage.blob.blobserviceclient?view=azure-python
-    # format for path:  az://{container}/...
-    # note if container is specified in account_url, we will get duplicates.
-
-    azure_storage_connection_string = config_helper.get_auth_param(auth_params, "azure_storage_connection_string", default=None)
-    azure_account_key = config_helper.get_auth_param(auth_params, "azure_account_key", default=None)
-    if azure_storage_connection_string is None and azure_account_name and azure_account_key:
-        azure_storage_connection_string = f"DefaultEndpointsProtocol=https;AccountName={azure_account_name};AccountKey={azure_account_key};EndpointSuffix=core.windows.net"
-    else:
-        azure_storage_connection_string = None
-
-    azure_storage_connection_string_env = os.environ.get("AZURE_STORAGE_CONNECTION_STRING") if "AZURE_STORAGE_CONNECTION_STRING" in os.environ.keys() else None
-
-    # to avoid connection timeout: https://stackoverflow.com/questions/65092741/solve-timeout-errors-on-file-uploads-with-new-azure-storage-blob-package
-
-    # ms copilot code is not accurate. do not use _connection_verify, or set _connection_ssl_context (or create a ssl context.)
-    # it's also not needed to directly create a ConnectionConfiguration object.
-    # the kwargs contain keywords that are extracted as needed by ConnectionConfiguration and other objects.
-    # so just put their keywords as name value pairs.  specifically, just set on BlobServiceClient the following:
-    # connection_verify = False, connection_cert = None
-
-    # Shared BlobServiceClient kwargs for every construction path below.
     _bsc_kwargs = dict(
-        connection_verify=False,
+        connection_verify=bool(config_helper.get_auth_param(auth_params, "connection_verify", False)),
         connection_cert=None,
         max_single_get_size=AZURE_MAX_BLOCK_SIZE,
         max_single_put_size=AZURE_MAX_BLOCK_SIZE,
@@ -240,52 +238,78 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
         session.mount('https://', HTTPAdapter(pool_maxsize=pool_size))
         return RequestsTransport(session=session)
 
-    if azure_account_url:
-        if azure_auth_mode == "login":
-            def _factory(_url=azure_account_url, _cred=credential, pool_size=None):
-                extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
-                return BlobServiceClient(account_url=_url, credential=_cred, **_bsc_kwargs, **extra)
-            return _wrap(_factory)
-        elif azure_auth_mode == "sas":
-            def _factory(_url=azure_account_url, pool_size=None):
-                extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
-                return BlobServiceClient(account_url=_url, **_bsc_kwargs, **extra)
-            return _wrap(_factory)
-    elif azure_storage_connection_string_env:
-        def _factory(_conn=azure_storage_connection_string_env, pool_size=None):
+    if azure_auth_mode == "connection_string":
+        conn = conn_str or env_conn_str
+        if not conn:
+            raise ValueError("Azure auth_mode 'connection_string' needs azure_storage_connection_string, "
+                             "azure_account_name + azure_account_key, or AZURE_STORAGE_CONNECTION_STRING")
+        def _factory(_conn=conn, pool_size=None):
             extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
             return BlobServiceClient.from_connection_string(conn_str=_conn, **_bsc_kwargs, **extra)
         return _wrap(_factory)
-    elif azure_storage_connection_string:
-        def _factory(_conn=azure_storage_connection_string, pool_size=None):
+
+    if azure_account_url is None:
+        if azure_account_name is None:
+            raise ValueError("Azure account name must be specified if account url is not specified")
+        azure_account_url = f"https://{azure_account_name}.blob.core.windows.net"
+
+    if azure_auth_mode == "login":
+        credential = DefaultAzureCredential()
+        def _factory(_url=azure_account_url, _cred=credential, pool_size=None):
             extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
-            return BlobServiceClient.from_connection_string(conn_str=_conn, **_bsc_kwargs, **extra)
+            return BlobServiceClient(account_url=_url, credential=_cred, **_bsc_kwargs, **extra)
         return _wrap(_factory)
-    else:
-        raise ValueError("No viable Azure account info available to open connection")
-        
+
+    # sas
+    azure_sas_token = config_helper.get_auth_param(auth_params, "azure_sas_token")
+    if azure_sas_token is not None:
+        azure_account_url = f"{azure_account_url}/?{azure_sas_token}"
+    def _factory(_url=azure_account_url, pool_size=None):
+        extra = {'transport': _make_transport(pool_size)} if pool_size is not None else {}
+        return BlobServiceClient(account_url=_url, **_bsc_kwargs, **extra)
+    return _wrap(_factory)
+
+
 def __get_azure_internal_host(cloud_config:dict) -> Optional[str]:
-    azure_account_name = config_helper.get_auth_param(cloud_config.get("auth", {}), "azure_account_name", default=None)
-    if azure_account_name:
-        return f"{azure_account_name}.blob.core.windows.net"
-    else:
-        raise ValueError("Azure account name must be specified in the configuration toml file in each azure auth section.")
+    """Blob endpoint host used for same-account server-side copies; None if the account is unknown."""
+    auth_params = cloud_config.get("auth", {})
+    azure_account_name = (config_helper.get_auth_param(auth_params, "azure_account_name", default=None)
+                          or _conn_string_account(_azure_connection_string(auth_params))
+                          or _conn_string_account(os.environ.get("AZURE_STORAGE_CONNECTION_STRING")))
+    return f"{azure_account_name}.blob.core.windows.net" if azure_account_name else None
 
-# internal helper to create the cloud client
-# def __make_gs_client(auth_params: dict):
-#     # if google_application_credentials:
-#     #     # application credentials specified, then use it
-#     #     return GoogleCloudClient(application_credentials = google_application_credentials)
-#     # elif os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-#     if os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-#         # application credentials specified in environment variables, then use it
-#         return GoogleCloudClient(application_credentials = os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"))
-#     else:
-#         raise ValueError("No viable Google application credentials to open connection")
 
-# internal helper to create the cloud client
+def __make_gs_client(auth_params: dict):
+    """Google Cloud Storage client.  Needs the optional dependency: pip install chorus-upload[gs].
+
+    gs_application_credentials: path to a service-account JSON file; without it the
+    application default credentials are used.  gs_project is optional.
+    """
+    try:
+        from cloudpathlib import GSClient
+        import google.cloud.storage  # noqa: F401  (fail here, not on first use)
+    except ImportError as e:
+        raise ValueError("gs:// paths need the Google Cloud Storage libraries: "
+                         "install with the 'gs' extra (cloudpathlib[gs])") from e
+
+    params = {"file_cache_mode": FileCacheMode.cloudpath_object}
+    credentials = config_helper.get_auth_param(auth_params, "gs_application_credentials")
+    project = config_helper.get_auth_param(auth_params, "gs_project")
+    if credentials:
+        params["application_credentials"] = credentials
+    if project:
+        params["project"] = project
+
+    def _factory(pool_size=None):
+        return GSClient(**params)
+    client = _factory()
+    client._clone_factory = _factory
+    return client
+
+
 def _make_client(cloud_config:dict):
-    
+    """(client, azure internal host) for a path config; (None, None) for a local path."""
+    # cloud_config is a dictionary with the cloud storage path and credentials
     path_str = cloud_config.get("path", None)
     cloud_params = cloud_config.get("auth", {})
     
@@ -293,39 +317,36 @@ def _make_client(cloud_config:dict):
         return __make_aws_client(cloud_params), None
     elif (path_str.startswith("az://")):
         return __make_az_client(cloud_params), __get_azure_internal_host(cloud_config)
-    # elif (path_str.startswith("gs://")):
-    #     return __make_gs_client(cloud_params), None
+    elif (path_str.startswith("gs://")):
+        return __make_gs_client(cloud_params), None
     elif ("://" in path_str):
         raise ValueError("Unknown cloud storage provider.  Supports s3, az, gs")
     else:
         return None, None
-    
-    
+
 def _clone_client(client, pool_size: int = None):
+    """A client with its own connections for use in another thread; None for local paths."""
+    if client is None:   # local paths have no client
+        return None
     if isinstance(client, S3Client):
         return __clone_aws_client(client)
     elif isinstance(client, AzureBlobClient):
         return __clone_az_client(client, pool_size=pool_size)
-    # elif isinstance(client, GoogleCloudClient):
-    #     return __clone_gs_client(client)
+    elif hasattr(client, '_clone_factory'):   # GSClient built by __make_gs_client
+        cloned = client._clone_factory(pool_size=pool_size)
+        cloned._clone_factory = client._clone_factory
+        return cloned
     else:
-        raise ValueError("Unknown client type.  Supports S3Client, AzureBlobClient, GoogleCloudClient")
-
+        raise ValueError("Unknown client type.  Supports S3Client, AzureBlobClient, GSClient")
+    
 def __clone_aws_client(orig: S3Client) -> S3Client:
-    # Extract the constructor parameters CloudPathLib stores
-    params = {
-        "aws_session_token": orig.aws_session_token,
-        "profile_name": orig.profile_name,
-        "access_key_id": orig.access_key_id,
-        "secret_access_key": orig.secret_access_key,
-        "file_cache_mode": orig.file_cache_mode,
-    }
+    if hasattr(orig, '_clone_factory'):
+        cloned = orig._clone_factory()
+        cloned._clone_factory = orig._clone_factory
+        return cloned
+    # not built by __make_aws_client: share its boto3 session.
+    return S3Client(boto3_session = orig.sess, file_cache_mode = orig.file_cache_mode)
 
-    # Remove None values so we pass only the active auth method
-    params = {k: v for k, v in params.items() if v is not None}
-
-    # Recreate the client
-    return S3Client(**params)
 
 def __clone_az_client(orig: AzureBlobClient, pool_size: int = None) -> AzureBlobClient:
     if hasattr(orig, '_clone_factory'):
@@ -458,7 +479,8 @@ class FileSystemHelper:
         self.async_azclient = kwargs.get('async_azclient')
         self.root = FileSystemHelper._make_path(path, client = client)  # supports either pathlib.Path or cloudpathlib.CloudPath
         if isinstance(self.root, CloudPath):
-            self.container = self.root.container
+            # Azure: container; S3 and GCS: bucket.
+            self.container = getattr(self.root, "container", None) or getattr(self.root, "bucket", None)
         else:
             self.container = None
         # If no client, then environment variable, or default profile (s3) is used.            
@@ -674,6 +696,11 @@ class FileSystemHelper:
                 # https://docs.aws.amazon.com/AmazonS3/latest/userguide/checking-object-integrity.html
                 # can set content-md5 but we are already storing in db.
                 md5_str = curr.etag.strip('"')
+                if ("-" in md5_str) and (local_md5 is not None):
+                    # multipart etag is not an md5 and S3 cannot be stamped in place: fall back to
+                    # the supplied md5 (as done for an Azure blob without one).  Without a
+                    # supplied md5 the etag is returned unchanged so callers can tell.
+                    md5_str = local_md5
             elif isinstance(curr, AzureBlobPath):
                 # md5 is not calculated for large data files (>10MB)
                 # https://learn.microsoft.com/en-us/answers/questions/282572/md5-hash-calculation-for-large-files
@@ -738,8 +765,10 @@ class FileSystemHelper:
                     blob_client.set_http_headers(content_settings = content_settings)
 
             elif isinstance(curr, GSPath):
-                # likely not reliable, like S3 or AzureBlob
-                md5_str = curr.etag.strip('"')
+                # GCS stores a base64 md5 for non-composite objects; composite objects have none.
+                gs_blob = curr.client.client.bucket(curr.bucket).get_blob(curr.blob)
+                md5_b64 = gs_blob.md5_hash if gs_blob is not None else None
+                md5_str = base64.b64decode(md5_b64).hex() if md5_b64 else local_md5
             else:
                 md5 = FileSystemHelper._calc_file_md5(curr)
                 md5_str = md5.hexdigest() if md5 else None                
@@ -890,7 +919,6 @@ class FileSystemHelper:
         nthreads = kwargs.get("nthreads", 0) # 0 means use the default number of threads
         timeout = kwargs.get("timeout", 120)
                 
-        lock = kwargs.get("lock", None)
                 
         if relpath is None: 
             # relpath is not specified, treat both src and dest as file paths.
@@ -923,10 +951,17 @@ class FileSystemHelper:
                     src_blob_client = src_container.get_blob_client(src_file.blob)
                     src_url = src_blob_client.url
                     parsed_url = urlparse(src_url)
-                    internal_url = urlunparse(parsed_url._replace(netloc=self.internal_host))
-                    log.debug(f"copying within azure from {src_url} via {internal_url} to {dest_blob_client.url}")
-                    # now copy from internal url
-                    dest_blob_client.start_copy_from_url(internal_url)
+                    internal_url = urlunparse(parsed_url._replace(netloc=self.internal_host)) if self.internal_host else src_url
+                    log.debug(f"copying within azure from {_redact_url(src_url)} via {_redact_url(internal_url)} to {_redact_url(dest_blob_client.url)}")
+                    # the copy runs on the server after this call returns: wait for it to finish.
+                    status = dest_blob_client.start_copy_from_url(internal_url).get("copy_status")
+                    delay = 0.1
+                    while status == "pending":
+                        time.sleep(delay)
+                        delay = min(delay * 2, 5.0)
+                        status = dest_blob_client.get_blob_properties().copy.status
+                    if status != "success":
+                        raise IOError(f"server-side copy of {src_file} to {dest_file} ended with status {status}")
                 else:               
                     src_file.copy(dest_file, force_overwrite_to_cloud=True)
                 
@@ -937,22 +972,25 @@ class FileSystemHelper:
         else:
             if dest_is_cloud:
                 log.debug(f"uploading from local {src_file} to cloud {dest_file}")
-                # dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
-                dest_relpath = str(dest_file)[len("az://" + dest_file.container + "/"):] 
-                if verbose:
-                    log.debug(f"upload to {dest_relpath} with {str(nthreads) if nthreads > 0 else 'default number of'} threads")
+                if isinstance(dest_file, AzureBlobPath):
+                    dest_relpath = dest_file.blob
+                    if verbose:
+                        log.debug(f"upload to {dest_relpath} with {str(nthreads) if nthreads > 0 else 'default number of'} threads")
 
-                blob_serv_client = dest_file.client.service_client
-                container_client = blob_serv_client.get_container_client(dest_file.container)
-                with open(src_file, "rb") as data:
-                    try:
-                        if nthreads < 1:
-                            container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True)
-                        else:
-                            container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True, max_concurrency=nthreads)
-
-                    except TypeError as e:
-                        log.error(f"uploading file {src_file} to {dest_relpath} with timeout {timeout} container {dest_file.container} exception {e}")
+                    blob_serv_client = dest_file.client.service_client
+                    container_client = blob_serv_client.get_container_client(dest_file.container)
+                    with open(src_file, "rb") as data:
+                        try:
+                            if nthreads < 1:
+                                container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True)
+                            else:
+                                container_client.upload_blob(name=dest_relpath, data=data, connection_timeout=timeout, overwrite=True, max_concurrency=nthreads)
+                        except TypeError as e:
+                            log.error(f"uploading file {src_file} to {dest_relpath} with timeout {timeout} container {dest_file.container} exception {e}")
+                            raise
+                else:
+                    # S3 and GCS: cloudpathlib's own transfer.
+                    dest_file.upload_from(src_file, force_overwrite_to_cloud=True)
                         
             else:
                 log.debug(f"copying from local {src_file} to local {dest_file}")
@@ -962,8 +1000,10 @@ class FileSystemHelper:
                     pass
                 except PermissionError as e:
                     log.error(f"permission issue copying file {src_file} to {dest_file} exception {e}")
+                    raise
                 except Exception as e:
                     log.error(f"issue copying file {src_file} to {dest_file} exception {e}")
+                    raise
         # start = time.time()
         # meta =  FileSystemHelper.get_metadata(path = dest_file, with_metadata = True, with_md5 = True)
         # md5 = meta['md5']

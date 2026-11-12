@@ -15,7 +15,7 @@ from collections import Counter
 from contextlib import contextmanager
 from itertools import islice
 
-from chorus_upload.local_ops import convert_local_to_central_path, iter_upload_pages, iter_pending_deleted_ids
+from chorus_upload.local_ops import convert_local_to_central_path, iter_upload_pages, iter_pending_deleted_ids, worker_threads
 # from chorus_upload.local_ops import backup_journal
 import chorus_upload.config_helper as config_helper
 import chorus_upload.storage_helper as storage_helper
@@ -237,8 +237,10 @@ def checkin_journal(journal_path, lock_path, local_path, transport_method: str="
         local_path.copy_file_to(relpath = None, dest_path = journal_path)
         lock_file.unlink()
         # lock_file.rename(journal_path.root)
-    except:
-        raise ValueError("Checkin failed, unable to move lock file as journal file.  journal may exist and is already unlocked.")
+    except Exception as e:
+        # the lock is kept: the journal was not replaced.
+        raise ValueError("Checkin failed, unable to move lock file as journal file.  journal may exist and is already unlocked. "
+                         f"({type(e).__name__}: {e})") from e
 
 
 # force unlocking.
@@ -306,7 +308,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
         try:
             try:
                 src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
-            except ServiceResponseError as e:
+            except ServiceResponseError:
                 log.warning(f"copy failed {fn}, retrying")
                 src_path.copy_file_to(relpath=(fn, destfn), dest_path=dated_dest_path, **{'nthreads': threads_per_file, 'lock': lock})
         except Exception as e:
@@ -319,9 +321,7 @@ def _upload_and_verify(src_path : FileSystemHelper,
     verify_time = None
     
     # ======= read metadata from db.  May be parallelizable  
-    verified = False
     
-    file_id = info['file_id']
     size = info['size']
     md5 = info['md5']
 
@@ -354,7 +354,6 @@ def _upload_and_verify(src_path : FileSystemHelper,
             # if (md5 == dest_md5):
             # case 3: matched
             state = sync_state.MATCHED
-            verified = True
             # fid_list.append(file_id)  # verified.  this may not be parallelizable.
             # else:
             # case 4: mismatched.
@@ -887,8 +886,7 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # Question - do we copy the journal into the source directory? YES for now (in case of overwrite)
     journal_fn = os.path.basename(databasename)
 
-    n_cores = kwargs.get("n_cores", 32)
-    nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
+    nthreads = worker_threads(kwargs.get("num_threads", kwargs.get("n_cores")))
 
     log.info(f"UPLOAD {upload_count} files")
     if upload_count > 0:
@@ -1391,8 +1389,7 @@ def verify_files(dest_path: FileSystemHelper, databasename: str = "journal.db",
     ver = None if all_versions else (version if version is not None
                                      else JournalDispatcher.get_latest_version(databasename))
     step = kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE)
-    n_cores = kwargs.get("n_cores", 32)
-    nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
+    nthreads = worker_threads(kwargs.get("num_threads", kwargs.get("n_cores")))
     compiled_patterns = kwargs.get("compiled_patterns", {})
     modality_configs = kwargs.get("modality_configs", {})
 
@@ -1475,8 +1472,11 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         return
 
     # look up only the listed files (path index): cost and memory scale with the list, not the journal.
-    db_files = {row[1]: row for row in JournalDispatcher.get_files_by_paths(
-        databasename, files, version = version, active = True, uploaded = False)}
+    # `version` is the upload time to record; it is not a journal version, so rows are not
+    # filtered by it (each row is checked under its own journal version at the destination).
+    db_files = {}
+    for row in JournalDispatcher.get_files_by_paths(databasename, files, active = True, uploaded = False):
+        db_files.setdefault(row[1], []).append(row)
     
     matched = []
     
@@ -1487,24 +1487,24 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
             log.warning(f"file {f} not found in journal or was previously uploaded.")
             continue
         
-        (_fid, _fn, _, _size, _md5, _mod, _, _ver, _) = db_files[f]
-        _info = (_fid, _fn, _size, _md5, _ver, _mod)
-        
-        (dest_meta, dest_md5, dest_root, fid, fn, size, md5) = _get_file_info2(dest_path, _info, **kwargs)
-        
-        # sync get_metadata returns a dict of Nones (not None) for a missing file.
-        if dest_meta is None or dest_meta.get('size') is None:
-            log.error(f"missing file {fn} in destination {dest_root}")
-            continue
+        for (_fid, _fn, _, _size, _md5, _mod, _, _ver, _) in db_files[f]:
+            _info = (_fid, _fn, _size, _md5, _ver, _mod)
 
-        if (size == dest_meta['size']) and (md5 == dest_md5):
-            if verbose:
-                log.debug(f"marking as uploaded {version} {fn} {fid}")
+            (dest_meta, dest_md5, dest_root, fid, fn, size, md5) = _get_file_info2(dest_path, _info, **kwargs)
+
+            # sync get_metadata returns a dict of Nones (not None) for a missing file.
+            if dest_meta is None or dest_meta.get('size') is None:
+                log.error(f"missing file {fn} in destination {dest_root}")
+                continue
+
+            if (size == dest_meta['size']) and (md5 == dest_md5):
+                if verbose:
+                    log.debug(f"marking as uploaded {version} {fn} {fid}")
+                else:
+                    print(".", end="", flush=True)
+                matched.append((fid,))
             else:
-                print(".", end="", flush=True)
-            matched.append((fid,))
-        else:
-            log.error(f"mismatched file {fid} {fn} for upload {version}: cloud size {dest_meta['size']} journal size {size}; cloud md5 {dest_md5} journal md5 {md5}")
+                log.error(f"mismatched file {fid} {fn} for upload {version}: cloud size {dest_meta['size']} journal size {size}; cloud md5 {dest_md5} journal md5 {md5}")
 
     if len(matched) > 0:
         JournalDispatcher.mark_as_uploaded(database_name = databasename, 

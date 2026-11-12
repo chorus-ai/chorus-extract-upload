@@ -122,12 +122,7 @@ def _write_auth_logout(is_linux: bool, auth_mode: str, f, **kwargs):
     comment = LINUX_STRINGS["comment"] if is_linux else WINDOWS_STRINGS["comment"]
     eol = LINUX_STRINGS["eol"] if is_linux else WINDOWS_STRINGS["eol"]
     cmd_proc = LINUX_STRINGS["command_processor"] if is_linux else WINDOWS_STRINGS["command_processor"]
-    set_var = LINUX_STRINGS["set_var"] if is_linux else WINDOWS_STRINGS["set_var"]
-    set_var_quoted = LINUX_STRINGS["set_var_quoted"] if is_linux else WINDOWS_STRINGS["set_var_quoted"]
-    set_var_quoted_start = LINUX_STRINGS["set_var_quoted_start"] if is_linux else WINDOWS_STRINGS["set_var_quoted_start"]
-    set_var_quoted_end = LINUX_STRINGS["set_var_quoted_end"] if is_linux else WINDOWS_STRINGS["set_var_quoted_end"]
     
-    dest_config = kwargs.get('dest_config', {})
 
     
     if auth_mode == "sas":
@@ -292,10 +287,8 @@ def _write_journal_download(is_linux: bool, auth_mode: str, f, **kwargs):
             #    if no, create a locked file.  use local journal.
             
             if auth_mode == "sas":
-                local_auth = "?" + var_start+"mod_local_sas_token"+var_end
                 auth_str = "?" + var_start+"sas_token"+var_end
             elif auth_mode == "login":
-                local_auth = ""
                 auth_str = ""
             else:
                 raise ValueError("Unknown auth_mode: " + auth_mode)
@@ -448,7 +441,6 @@ def _write_journal_upload(is_linux: bool, auth_mode: str, f, **kwargs):
     comment = LINUX_STRINGS["comment"] if is_linux else WINDOWS_STRINGS["comment"]
     eol = LINUX_STRINGS["eol"] if is_linux else WINDOWS_STRINGS["eol"]
     cmd_proc = LINUX_STRINGS["command_processor"] if is_linux else WINDOWS_STRINGS["command_processor"]
-    config_fn = kwargs.get('config_fn', '')
     var_start = LINUX_STRINGS["var_start"] if is_linux else WINDOWS_STRINGS["var_start"]
     var_end = LINUX_STRINGS["var_end"] if is_linux else WINDOWS_STRINGS["var_end"]
     
@@ -513,10 +505,8 @@ def _write_journal_upload(is_linux: bool, auth_mode: str, f, **kwargs):
                                     " --only-show-errors --output none" + testme_end + eol)
         elif (journal_transport == "azcopy"):
             if auth_mode == "sas":
-                local_auth = "?" + var_start+"mod_local_sas_token"+var_end
                 auth_str = "?" + var_start+"sas_token"+var_end
             elif auth_mode == "login":
-                local_auth = ""
                 auth_str = ""
             else:
                 raise ValueError("Unknown auth_mode: " + auth_mode)
@@ -551,9 +541,7 @@ def _write_journal_upload(is_linux: bool, auth_mode: str, f, **kwargs):
 # file_list is a dictionary of structure {modality: (config, {fn: {version: .., central_path:..}}})}
 def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs):
     out_type = kwargs.get('out_type', 'list').lower()
-    journal_transport = kwargs.get('journal_transport', out_type).lower()
     dest_config = kwargs.get('dest_config', {})
-    pattern = re.compile(r"az://[^/]+/(.+)")
     # cloud_journal = kwargs.get('cloud_journal', "journal.db")
     page_size = kwargs.get('page_size', local_ops.DEFAULT_JOURNAL_PAGE_SIZE)  
     max_upload_count = kwargs.get('max_num_files', None)  
@@ -577,7 +565,6 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
         out_type = "azcopy"
         
     # get output file name.
-    p = Path(filename)
     # fn = "_".join([p.stem, upload_datetime]) + p.suffix
     fn = filename
     log.info(f"list is being written to {fn}")
@@ -746,3 +733,10 @@ def _write_files(file_list: dict, upload_datetime: str, filename : str, **kwargs
             _write_journal_upload(not is_windows, auth_mode, f, **kwargs)
             
             _write_auth_logout(not is_windows, auth_mode, f, **kwargs)
+
+    if out_type in ("azcli", "azcopy"):
+        # the script embeds storage credentials (SAS tokens / access keys): owner-only access.
+        try:
+            os.chmod(fn, 0o700)
+        except OSError as e:
+            log.warning(f"could not restrict permissions on {fn}: {e}")

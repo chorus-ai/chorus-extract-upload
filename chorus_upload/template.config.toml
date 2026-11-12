@@ -16,6 +16,8 @@ supported_modalities = "OMOP,Images,Waveforms,Metadata"
 
 # OPTIONAL file processing page size. database is updated after each page. default is 1000
 # page_size = 1000
+# worker threads for journal update, upload and verify.  default: derived from the CPU count.
+# nthreads = 8
 
 # OPTIONAL profile journaling and upload performance.  defaults to false
 # profile = false
@@ -45,7 +47,11 @@ journaling_mode = "append"
     [journal.source.auth]
     # CONDITIONAL if file is in cloud
     # REQUIRED authentication mode.  either "login" or "sas_token"
+    # auth_mode: "login" (default), "sas", or "connection_string" (connection string, or account name + key).
+    #   if auth_mode is omitted, a connection string or account key selects "connection_string".
     auth_mode = "login" 
+    # TLS certificate verification is off by default (required by the upload proxy).  set to true to enable it.
+    # connection_verify = false
 
     # CONDITIONAL
     # REQUIRED 

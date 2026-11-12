@@ -22,12 +22,13 @@ def _recreate_params(filtered_args: dict):
     params = ""
     common_params = ""
     command = ""
+    full_command = ""
     # catch verbose and config first
     for arg, val in filtered_args.items():
         if (arg in ["verbose", "config"]) and (val is not None):
             arg_str = arg.replace("_", "-")
             if (type(val) == bool):
-                if val == True:
+                if val:
                     common_params += f" --{arg_str}"
             else:
                 common_params += f" --{arg_str} {val}"
@@ -39,6 +40,9 @@ def _recreate_params(filtered_args: dict):
     if (command in ["journal", "file"]):    
         full_command = command + " " + filtered_args[command + "_command"] # concate command and subcommand
         exclude_params.append(command + "_command")  # fixed bug where command was previously concate of command and subcommand.
+    else:
+        # top-level commands without a sub-command (e.g. history).
+        full_command = command
             
             
     # cat the rest
@@ -46,7 +50,7 @@ def _recreate_params(filtered_args: dict):
         if (arg not in exclude_params) and (val is not None):
             arg_str = arg.replace("_", "-")
             if type(val) == bool:
-                if val == True:
+                if val:
                     params += f" --{arg_str}"
             else:
                 params += f" --{arg_str} {val}"
@@ -102,12 +106,9 @@ def save_command_history(common_params:str, cmd:str, parameters:str,
     CommandHistoryDispatcher.create_command_history_table(databasename)
  
     _, command_id = CommandHistoryDispatcher.insert_command_history_entry(databasename,
-                                             (f"'{curtimestamp}'", 
-                                              f"'{common_params}'", 
-                                              f"'{cmd}'", 
-                                              f"'{parameters}'", 
-                                              f"'{src_paths}'", 
-                                              f"'{dest_path}'"))
+                                             (curtimestamp, common_params, cmd, parameters,
+                                              # stored as text, as before (None -> 'None').
+                                              str(src_paths), str(dest_path)))
     
     return command_id
 

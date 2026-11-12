@@ -63,7 +63,7 @@ def read_csv(csv_path):
 def resolve_modality_id(database_name, modality_name):
     """Resolve modality name to ID. Returns ID or None if not found."""
     result = SQLiteDB.query(database_name, "modalities", ["id"],
-                           where_clause=f"MODALITY = '{modality_name}'",
+                           where_clause=f"MODALITY = {SQLiteDB.quote(modality_name)}",
                            max_return=1)
     if result:
         # fetchone() returns a single tuple, not a list
@@ -172,7 +172,7 @@ def apply(database_name, csv_path, modality_name, srcpath_change_policy):
 
         # Look up SRC_PATH_ID for old parent dir
         src_path_result = query_single_result(database_name, "srcpaths", ["id"],
-                                             f"SRC_PATH = '{old_parent}'")
+                                             f"SRC_PATH = {SQLiteDB.quote(old_parent)}")
         if not src_path_result:
             log.warning(f"Old path not found: {old_path} (directory '{old_parent}' not in srcpaths)")
             not_found_rows.append((old_path, "old path not found"))
@@ -182,7 +182,7 @@ def apply(database_name, csv_path, modality_name, srcpath_change_policy):
 
         # Find matching FILE_IDs for this path and modality
         file_ids = SQLiteDB.query(database_name, "journal_v2", ["FILE_ID"],
-                                 where_clause=f"SRC_PATH_ID = {src_path_id} AND FILENAME = '{old_filename}' AND MODALITY_ID = {modality_id}")
+                                 where_clause=f"SRC_PATH_ID = {src_path_id} AND FILENAME = {SQLiteDB.quote(old_filename)} AND MODALITY_ID = {modality_id}")
 
         if not file_ids:
             log.warning(f"No matching rows found for {old_path} (modality: {modality_name})")
@@ -211,7 +211,7 @@ def apply(database_name, csv_path, modality_name, srcpath_change_policy):
 
         # Look up SRC_PATH_ID for old parent dir
         src_path_result = query_single_result(database_name, "srcpaths", ["id"],
-                                             f"SRC_PATH = '{old_parent}'")
+                                             f"SRC_PATH = {SQLiteDB.quote(old_parent)}")
         if not src_path_result:
             log.warning(f"Old path not found: {old_path} (directory '{old_parent}' not in srcpaths)")
             not_found_rows.append((old_path, "old path not found"))
@@ -221,7 +221,7 @@ def apply(database_name, csv_path, modality_name, srcpath_change_policy):
 
         # Find matching FILE_IDs for this path and modality
         file_ids = SQLiteDB.query(database_name, "journal_v2", ["FILE_ID"],
-                                 where_clause=f"SRC_PATH_ID = {src_path_id} AND FILENAME = '{old_filename}' AND MODALITY_ID = {modality_id}")
+                                 where_clause=f"SRC_PATH_ID = {src_path_id} AND FILENAME = {SQLiteDB.quote(old_filename)} AND MODALITY_ID = {modality_id}")
 
         if not file_ids:
             log.warning(f"No matching rows found for {old_path} (modality: {modality_name})")
@@ -248,7 +248,7 @@ def apply(database_name, csv_path, modality_name, srcpath_change_policy):
 
         # Look up SRC_PATH_ID for old parent dir
         src_path_result = query_single_result(database_name, "srcpaths", ["id"],
-                                             f"SRC_PATH = '{old_parent}'")
+                                             f"SRC_PATH = {SQLiteDB.quote(old_parent)}")
         if not src_path_result:
             continue
 
@@ -257,7 +257,7 @@ def apply(database_name, csv_path, modality_name, srcpath_change_policy):
 
         # Find matching FILE_IDs for this path and modality
         file_ids = SQLiteDB.query(database_name, "journal_v2", ["FILE_ID"],
-                                 where_clause=f"SRC_PATH_ID = {src_path_id} AND FILENAME = '{old_filename}' AND MODALITY_ID = {modality_id}")
+                                 where_clause=f"SRC_PATH_ID = {src_path_id} AND FILENAME = {SQLiteDB.quote(old_filename)} AND MODALITY_ID = {modality_id}")
 
         if file_ids:
             for (file_id,) in file_ids:
@@ -340,7 +340,7 @@ def verify(database_name, csv_path, modality_name):
 
         # Look up SRC_PATH_ID for old parent dir in backup
         src_path_result = query_single_result(database_name, "srcpaths", ["id"],
-                                             f"SRC_PATH = '{old_parent}'")
+                                             f"SRC_PATH = {SQLiteDB.quote(old_parent)}")
         if not src_path_result:
             log.warning(f"Old path not found: {old_path}")
             not_renamed.append((old_path, "old path not present in journal for this modality"))
@@ -350,7 +350,7 @@ def verify(database_name, csv_path, modality_name):
 
         # Find matching FILE_IDs in backup table
         backup_file_ids = SQLiteDB.query(database_name, "journal_v2_backup", ["FILE_ID"],
-                                        where_clause=f"SRC_PATH_ID = {old_src_path_id} AND FILENAME = '{old_filename}' AND MODALITY_ID = {modality_id}")
+                                        where_clause=f"SRC_PATH_ID = {old_src_path_id} AND FILENAME = {SQLiteDB.quote(old_filename)} AND MODALITY_ID = {modality_id}")
 
         if not backup_file_ids:
             log.warning(f"No matching rows found in backup for {old_path}")
@@ -393,7 +393,7 @@ def verify(database_name, csv_path, modality_name):
             if old_parent != new_parent:
                 # This row should have a new SRC_PATH_ID
                 new_src_path_result = query_single_result(database_name, "srcpaths", ["id"],
-                                                         f"SRC_PATH = '{new_parent}'")
+                                                         f"SRC_PATH = {SQLiteDB.quote(new_parent)}")
                 if not new_src_path_result:
                     log.error(f"FILE_ID {file_id}: new srcpath '{new_parent}' not found in database")
                     failed += 1

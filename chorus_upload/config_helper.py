@@ -27,6 +27,9 @@ def _print_config_usage(args, config, journal_fn):
     print("         azure-storage_connection_string.")
     print("         azure-account-name, azure-account-key. constructs a connection string")
     print("         connection string can be set as a environment variable: AZURE_STORAGE_CONNECTION_STRING")
+    print("         auth_mode selects the method: 'login' (default), 'sas', or 'connection_string' (also used for account name + key).")
+    print("         connection_verify = true turns TLS certificate verification on (off by default, as required by the upload proxy).")
+    print("  Google: gs_application_credentials (service account json file), gs_project.  requires the 'gs' extra.")
     # print("  Google: (UNTESTED) requires google-application-credentials")
     # print("         application credentials may be specified on the commandline, or as an environment variable (see subcommand help)")
 
@@ -67,7 +70,7 @@ def get_journal_site_config(config: dict, site: str):
 
 def get_modalities(config: dict):
     subconfig = config.get('configuration', {})
-    mods = subconfig.get('supported_modalities', "OMOP,Waveforms,Images,Metadata").split(',')
+    mods = [m.strip() for m in subconfig.get('supported_modalities', "OMOP,Waveforms,Images,Metadata").split(',') if m.strip()]
     if "Metadata" not in mods:
         mods.append("Metadata")
     return mods

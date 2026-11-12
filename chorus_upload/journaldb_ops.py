@@ -18,6 +18,12 @@ class SQLiteDB:
     # set a class variable for verbosity
     chunk_size = 1000
     max_where_clause = 200000
+
+    @staticmethod
+    def quote(value) -> str:
+        """SQL string literal for value.  SQLite's only escape inside '...' is a doubled quote,
+        so values with apostrophes (e.g. directory names) are safe to embed."""
+        return "'" + str(value).replace("'", "''") + "'"
     
     @classmethod
     def _make_select_stmt(cls, 
@@ -63,11 +69,12 @@ class SQLiteDB:
                       table_name: str,
                       columns : list, 
                       where_clause: str = None,
-                      groupby : list = [],
+                      groupby : list = None,
                       max_return:int = None):
         
-        # cannot use set because order need to be preserved.
-        cols = columns
+        # cannot use set because order need to be preserved.  copy: do not modify the caller's list.
+        groupby = groupby or []
+        cols = list(columns) if columns is not None else []
         for c in groupby:
             if c not in cols:
                 cols.append(c)
@@ -223,7 +230,7 @@ class SQLiteDB:
         if lookup is not None and (len(lookup) > 0):
             for i in range(0, len(lookup), cls.chunk_size):
                 batch = lookup_list[i:min(i + cls.chunk_size, len(lookup_list))]
-                where_clause = column_name + " in (" + ",".join([f"'{val}'" for val in batch]) + ")"
+                where_clause = column_name + " in (" + ",".join([cls.quote(val) for val in batch]) + ")"
                 value_ids.extend(SQLiteDB.query(database_name = database_name,
                                                 table_name = table_name,
                                                 columns = ['id', column_name],
@@ -240,92 +247,68 @@ class SQLiteDB:
     # params is a list of tuples, each containing the same number of elements as columns
     # order matters.
     @classmethod
+    def _execute_write(cls, database_name: str, stmt: str, params=None, many: bool = False):
+        """Run one write statement in its own transaction.
+
+        Commits on success.  On any sqlite error the whole statement is rolled back (no
+        partially applied batch) and the error is raised, so callers never continue on a
+        half-written journal.  Returns (rowcount, lastrowid).
+        """
+        conn = sqlite3.connect(database_name, check_same_thread=False)
+        try:
+            with conn:   # commit on success, rollback on exception
+                cur = conn.executemany(stmt, params) if many else conn.execute(stmt, params or ())
+                return cur.rowcount, cur.lastrowid
+        except sqlite3.Error as e:
+            log.error(f"{stmt.split(' ', 1)[0]} on {database_name} failed and was rolled back: {e}")
+            raise
+        finally:
+            conn.close()
+
+    @classmethod
     def insert(cls, 
                        database_name: str, 
                        table_name: str,
                        columns: list, 
                        params: list, unique:bool = False) -> int:
+        """Insert rows (list of tuples); returns the number inserted.  Raises on sqlite errors."""
         if (params is None) or (len(params) == 0):
-            return 0, None
+            return 0
         
         fields = ', '.join(columns)
         placeholders = ', '.join('?' * len(columns))
-        inserted = 0
-        with sqlite3.connect(database_name, check_same_thread=False) as conn:
-            with closing(conn.cursor()) as cur:
-                try:
-                    if unique is not None and unique:
-                        log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})")
-                        cur.executemany(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({placeholders})", params)
-                    else:
-                        log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})")
-                        cur.executemany(f"INSERT INTO {table_name} ({fields}) VALUES ({placeholders})", params)
-                    inserted = cur.rowcount
-                except sqlite3.IntegrityError as e:
-                    log.error(f"insert {e}")
-                    log.debug(params)
-                except sqlite3.InterfaceError as e:
-                    log.error(f"insert {e}")
-                    log.debug(params)
-                except sqlite3.ProgrammingError as e:
-                    log.error(f"insert {e}")
-                    log.debug(params)
-
-            conn.commit()
+        verb = "INSERT OR IGNORE" if unique else "INSERT"
+        stmt = f"{verb} INTO {table_name} ({fields}) VALUES ({placeholders})"
+        log.debug(stmt)
+        inserted, _ = cls._execute_write(database_name, stmt, params, many=True)
         return inserted
 
-    # columns is a list of columns names
-    # params is a list (not tuple, or list of tuples), each containing the same number of elements as columns
-    # order matters
     @classmethod
     def insert1(cls, 
                        database_name: str, 
                        table_name: str,
                        columns: list, 
                        params: tuple, unique:bool = False) -> int:
+        """Insert one row of raw values (bound as parameters); returns (inserted, lastrowid)."""
         if (columns is None) or (len(columns) == 0):
             return 0, None
         if (params is None) or (len(params) == 0):
             return 0, None
         
         fields = ', '.join(columns)
-        values = ', '.join(params)
-        inserted = 0
-        lastrowid = None
-        with sqlite3.connect(database_name, check_same_thread=False) as conn:
-            with closing(conn.cursor()) as cur:
-                try:
-                    if unique:
-                        log.debug(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
-                        cur.execute(f"INSERT OR IGNORE INTO {table_name} ({fields}) VALUES ({values})")
-                    else:
-                        log.debug(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
-                        cur.execute(f"INSERT INTO {table_name} ({fields}) VALUES ({values})")
-                    inserted = cur.rowcount
-                    lastrowid = cur.lastrowid
-                except sqlite3.IntegrityError as e:
-                    log.error(f"insert {e}")
-                    log.debug(params)
-                except sqlite3.InterfaceError as e:
-                    log.error(f"insert {e}")
-                    log.debug(params)
-                except sqlite3.ProgrammingError as e:
-                    log.error(f"insert {e}")
-                    log.debug(params)
-
-            conn.commit()
-        return inserted, lastrowid
-
-    # sets is a list of string predicates "column_name = value", where value may be '?'
-    # where_clause is a string in case  we have to deal with AND/OR, etc.
-    # params is a list of tuples corresponding to the '?' in set and where
-    # order matters, should match to sets and where_clause
+        placeholders = ', '.join('?' * len(params))
+        verb = "INSERT OR IGNORE" if unique else "INSERT"
+        stmt = f"{verb} INTO {table_name} ({fields}) VALUES ({placeholders})"
+        log.debug(stmt)
+        return cls._execute_write(database_name, stmt, tuple(params))
+    
     @classmethod
     def update(cls, database_name: str,
                table_name: str, 
                sets : list, 
                params: list,
                where_clause: str = ""):
+        """Run one UPDATE per params tuple; returns the number of rows changed.  Raises on sqlite errors."""
         if (sets is None) or (len(sets) == 0):
             return 0
         if (params is None) or (len(params) == 0):
@@ -337,60 +320,27 @@ class SQLiteDB:
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
         if (len(where_str) > cls.max_where_clause):
             log.warning(f"UPDATE where clause is long: {where_clause}")
-        
-        count = 0
-        with sqlite3.connect(database_name, check_same_thread=False) as conn:
-            with closing(conn.cursor()) as cur:
-                try:
-                    log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
-                    cur.executemany(f"UPDATE {table_name} SET {set_str} {where_str}", params)
-                    count = cur.rowcount
-                except sqlite3.IntegrityError as e:
-                    log.error(f"update {e}")
-                    log.debug(params)
-                except sqlite3.InterfaceError as e:
-                    log.error(f"update {e}")
-                    log.debug(params)
-                except sqlite3.ProgrammingError as e:
-                    log.error(f"update {e}")
-                    log.debug(params)
-                
-            conn.commit()
+        stmt = f"UPDATE {table_name} SET {set_str}{where_str}"
+        log.debug(stmt)
+        count, _ = cls._execute_write(database_name, stmt, params, many=True)
         return count
-    
+
     @classmethod
     def update1(cls, database_name: str,
                table_name: str, 
                sets : list, 
                where_clause: str = ""):
+        """Run a single UPDATE; returns the number of rows changed.  Raises on sqlite errors."""
         if (sets is None) or (len(sets) == 0):
             return 0
         
         set_str = ', '.join(sets)
         where_str = "" if (where_clause is None) or (where_clause == "") else f" WHERE {where_clause}"
-
-        count = 0
-        with sqlite3.connect(database_name, check_same_thread=False) as conn:
-            with closing(conn.cursor()) as cur:
-                try:
-                    log.debug(f"UPDATE {table_name} SET {set_str} {where_str}")
-                    cur.execute(f"UPDATE {table_name} SET {set_str} {where_str}")
-                    count = cur.rowcount
-                except sqlite3.IntegrityError as e:
-                    log.error(f"update {e}")
-                    log.debug(sets)
-                except sqlite3.InterfaceError as e:
-                    log.error(f"update {e}")
-                    log.debug(sets)
-                except sqlite3.ProgrammingError as e:
-                    log.error(f"update {e}")
-                    log.debug(sets)
-                
-            conn.commit()
+        stmt = f"UPDATE {table_name} SET {set_str}{where_str}"
+        log.debug(stmt)
+        count, _ = cls._execute_write(database_name, stmt)
         return count
-    
-
-
+        
     @classmethod
     def get_max_value(cls, database_name: str, table_name: str, column_name: str):
         with sqlite3.connect(database_name, check_same_thread=False) as conn:
@@ -421,7 +371,7 @@ class SQLiteDB:
         table_exists = cls.query(database_name = database_name,
                                  table_name = "sqlite_master",
                                  columns = ["name"],
-                                 where_clause = f"type='table' AND name='{table_name}'",
+                                 where_clause = f"type='table' AND name={cls.quote(table_name)}",
                                  max_return = 1)
             
         return (table_exists is not None) and (table_exists[0] == table_name)
@@ -816,7 +766,7 @@ class JournalTableV1:
                         upload_args: list):
         return SQLiteDB.update(database_name = database_name,
                         table_name = cls.table_name,
-                        sets = [f"upload_dtstr='{version}'"],
+                        sets = [f"upload_dtstr={SQLiteDB.quote(version)}"],
                         params = upload_args,
                         where_clause="file_id=?")
     
@@ -861,13 +811,13 @@ class JournalTableV1:
         if version is not None:
             if len(where_clause) > 0:
                 where_clause += " AND "
-            where_clause += f"VERSION = '{version}'"
+            where_clause += f"VERSION = {SQLiteDB.quote(version)}"
         
 
         if (modalities is not None) and (len(modalities) > 0):
             if len(where_clause) > 0:
                 where_clause += " AND "
-            modestr = [f"'{m}'" for m in modalities]
+            modestr = [SQLiteDB.quote(m) for m in modalities]
             where_clause += "MODALITY in (" + ",".join(modestr) + ")" 
             
         return where_clause if len(where_clause) > 0 else None
@@ -919,7 +869,7 @@ class JournalTableV1:
         cols.append("SUM(TIME_INVALID_us IS NULL) AS n_active")
         cols.append("SUM(TIME_INVALID_us IS NULL AND UPLOAD_DTSTR IS NULL) as n_upload")
                             
-        where_clause = cls._make_where_clause_for_join(version, None, **kwargs)
+        where_clause = cls._make_where_clause(version, kwargs.pop("modalities", None), **kwargs)
 
         # query = f"SELECT versions.VERSION as version, modalities.MODALITY as modality, g.row_count as row_count FROM {subquery}"
         # query += f" LEFT JOIN versions ON versions.id = g.VERSION_ID"
@@ -1298,13 +1248,13 @@ class JournalTableV2:
         if version is not None:
             if len(where_clause) > 0:
                 where_clause += " AND "
-            where_clause += f"version = '{version}'"
+            where_clause += f"version = {SQLiteDB.quote(version)}"
         
         # requires modality to be defined via "modalities.MODALITY as modality"
         if (modalities is not None) and (len(modalities) > 0):
             if len(where_clause) > 0:
                 where_clause += " AND "
-            modestr = [f"'{m}'" for m in modalities]
+            modestr = [SQLiteDB.quote(m) for m in modalities]
             where_clause += "modality in (" + ",".join(modestr) + ")" 
             
         return where_clause if len(where_clause) > 0 else None
@@ -1357,9 +1307,9 @@ class JournalTableV2:
         if uploaded is not None:
             conds.append(f"{t}.UPLOAD_DT_ID IS NOT NULL" if uploaded else f"{t}.UPLOAD_DT_ID IS NULL")
         if version is not None:
-            conds.append(f"versions.VERSION = '{version}'")
+            conds.append(f"versions.VERSION = {SQLiteDB.quote(version)}")
         if modalities:
-            conds.append("modalities.MODALITY IN (" + ",".join(f"'{m}'" for m in modalities) + ")")
+            conds.append("modalities.MODALITY IN (" + ",".join(SQLiteDB.quote(m) for m in modalities) + ")")
         if min_size is not None:
             conds.append(f"{t}.SIZE >= {int(min_size)}")
         if (max_size is not None) and (max_size != float('inf')):
@@ -1597,7 +1547,7 @@ class JournalTableV2:
             ("versions", "versions.id", "g.VERSION_ID"),
             ("modalities", "modalities.id", "g.MODALITY_ID"),
         ]
-        where_clause = cls._make_where_clause_for_join(version, None, **kwargs)
+        where_clause = cls._make_where_clause_for_join(version, kwargs.pop("modalities", None), **kwargs)
 
         results = SQLiteDB.query_with_left_join(database_name = database_name,
                         table_name = subquery,
@@ -1781,7 +1731,7 @@ def _upgrade_journal(local_path, lock_path):
 
     new_cmd_hist_class.create_command_history_table(local_fn)
     for (_, dt, common, command, param, src, dest, time) in history:
-        new_arg = (f"'{dt}'", f"'{common}'", f"'{command}'", f"'{param}'", f"'{src}'", f"'{dest}'")
+        new_arg = (dt, common, command, param, src, dest)
         (_, cmd_id) = new_cmd_hist_class.insert_command_history_entry(local_fn, new_arg)
         if (time is not None):
             new_cmd_hist_class.update_command_completion(local_fn, cmd_id, time)
@@ -1797,7 +1747,7 @@ def _upgrade_journal(local_path, lock_path):
                             max_return = None)
     
     if old_ver == "V1":
-        count = _copy_journal_v1_to_v2(local_fn, journals)
+        _copy_journal_v1_to_v2(local_fn, journals)
     
     # copy the orig_db_path as a backup.
     if lock_path is not None:

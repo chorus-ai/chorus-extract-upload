@@ -15,7 +15,6 @@ def _list_remote_files(args, config, journal_fn):
     client, internal_host =storage_helper._make_client(central_config)
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
-    nthreads = config_helper.get_config(config).get('nthreads', 1)
     page_size = config_helper.get_config(config).get('page_size', DEFAULT_REMOTE_OP_PAGE_SIZE)
     
     recursive = args.recursive
@@ -41,7 +40,6 @@ def _list_remote_files(args, config, journal_fn):
 # copy list of files from src_fs to dest_path, which should be directory.
 def __copy_parallel(src_fs, src_list, dest_path, nthreads):
     with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-        lock = threading.Lock()
         futures = {}
         for src in src_list:
             # copy, from src_fs to dest_path, preserving relpath src.
@@ -55,7 +53,7 @@ def __copy_parallel(src_fs, src_list, dest_path, nthreads):
                 future.result()
                 print(f"Copied {src_fs.root.joinpath(src)} to {dest}")
             except Exception as e:
-                print(f"Error copying file: {e}")
+                print(f"Error copying file {src}: {e}")
 
 def __copy_files(srcfs, src_patterns, destfs, dest, nthreads, page_size, recursive):
     wildcard = "**/*" if recursive else "*"
@@ -190,78 +188,81 @@ def _download_remote_files(args, config, journal_fn):
     
     
     
+def _protected_names(config) -> set:
+    """Base names never deleted by `remote delete`: the configured journal and its lock."""
+    journal_name = config_helper.get_journal_path(config).replace("\\", "/").rstrip("/").split("/")[-1]
+    names = {"journal.db", journal_name}
+    return names | {n + ".locked" for n in names}
+
+
+def _collect_files_to_delete(centralfs, patterns, recursive: bool, page_size: int, protected: set) -> set:
+    """Resolve file names, directories and wildcard patterns to the set of files to delete."""
+    wildcard = "**/*" if recursive else "*"
+    files_to_delete = set()
+
+    def keep(path_str) -> bool:
+        if path_str.replace("\\", "/").rstrip("/").split("/")[-1] in protected:
+            print(f"Skipping journal file {path_str}.")
+            return False
+        return True
+
+    def add_matches(pat):
+        for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
+            files_to_delete.update(path_str for path_str in paths if keep(path_str))
+
+    for pattern in patterns:
+        pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
+        if "*" in pat or "?" in pat:
+            add_matches(pat)
+        else:
+            p = centralfs.root.joinpath(pattern)
+            if not p.exists():
+                print(f"No files found matching {pattern}")
+            elif p.is_file():
+                if keep(pattern):
+                    files_to_delete.add(pattern)
+            else:
+                # a directory named without a trailing slash
+                add_matches(f"{pattern}/{wildcard}")
+    return files_to_delete
+
+
 def _delete_remote_files(args, config, journal_fn):
     central_config = config_helper.get_central_config(config)
     client, internal_host =storage_helper._make_client(central_config)
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
-    nthreads = config_helper.get_config(config).get('nthreads', 1)
     page_size = config_helper.get_config(config).get('page_size', DEFAULT_REMOTE_OP_PAGE_SIZE)
     
     if args.files is None or len(args.files) == 0:
         log.error("Please specify at least one file/directory to delete.")
         return
     
-    recursive = args.recursive
-    wildcard = "**/*" if recursive else "*"
-    
-    
     patterns = args.files
-    # get the file name/pattern
     print(f"Files to be deleted matching pattern(s): {patterns}")
-    files_to_delete = set()
-    for pattern in patterns:
-        pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-        if "*" not in pattern and "?" not in pattern:
-            for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
-                for path_str in paths:
-                    if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
-                        print(f"Skipping journal file {path_str}.")
-                        continue
-                    files_to_delete.add(path_str)
-        else:
-            p = centralfs.root.joinpath(pattern)
-            if p.exists():
-                if p.is_file():
-                    files_to_delete.add(pattern)
-                else:
-                    for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
-                        for path_str in paths:
-                            if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
-                                print(f"Skipping journal file {path_str}.")
-                                continue
-                            files_to_delete.add(path_str)
-            else:
-                print(f"No files found matching {pattern}")
-
+    files_to_delete = _collect_files_to_delete(centralfs, patterns, args.recursive, page_size,
+                                               _protected_names(config))
+                
     if len(files_to_delete) == 0:
         print("No files found to delete.")
         return
-    else:
-        # inverse sort to hopefully delete files first before directories.
-        files_to_delete = sorted(files_to_delete, reverse=True)
-        print(f"Files to be deleted:")
-        for f in files_to_delete:
-            print(f"  {f}")
-    
-    print(f"Are you sure you want to delete these files? (y/n)")
-    confirm = input().lower()
-    if confirm == 'n':
-        return
 
+    files_to_delete = sorted(files_to_delete, reverse=True)
+    print(f"Files to be deleted:")
+    for f in files_to_delete:
+        print(f"  {f}")
+    
+    # deletion needs an explicit yes; anything else (including Enter or end of input) aborts.
+    print(f"Are you sure you want to delete these {len(files_to_delete)} files? (y/n)")
+    try:
+        confirm = input().strip().lower()
+    except EOFError:
+        confirm = ""
+    if confirm not in ("y", "yes"):
+        print("Not deleted.")
+        return
+    
     for f in files_to_delete:
         p = centralfs.root.joinpath(f)
         print(f"Deleting from {centralfs} {p}")
         p.unlink()
-
-    # for pattern in patterns:
-    #     pat = f"{pattern}{wildcard}" if (pattern.endswith("/") or pattern.endswith("\\")) else pattern
-    #     for paths in centralfs.get_files_iter(pattern = pat, page_size=page_size):
-    #         for path_str in paths:
-    #             if path_str.endswith("journal.db") or path_str.endswith("journal.db.locked"):
-    #                 print(f"Skipping journal file {path_str}.")
-    #                 continue
-    #             p = centralfs.root.joinpath(path_str)
-    #             print(f"Deleting from {centralfs} {p}")
-    #             p.unlink()
-                

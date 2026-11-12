@@ -34,7 +34,8 @@ s3 = ["cloudpathlib[s3] == 0.18.1",
 ]
 gs = ["cloudpathlib[gs] == 0.18.1",
 ]
+test = ["pytest"]
 
 [tool.setuptools]    
-pacakges = ["chorus_upload", "tests.create_test_data"]
+packages = ["chorus_upload"]
 

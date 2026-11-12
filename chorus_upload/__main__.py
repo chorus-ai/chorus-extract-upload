@@ -183,7 +183,7 @@ def _update_journal(args, config, journal_fn):
     mod_configs = { mod: config_helper.get_site_config(config, mod) for mod in mods }
     journaling_mode = config_helper.get_journaling_mode(config)
 
-    nthreads = config_helper.get_config(config).get('nthreads', 1)
+    nthreads = config_helper.get_config(config).get('nthreads', None)   # None: derived from the CPU count
     page_size = config_helper.get_config(config).get('page_size', local_ops.DEFAULT_JOURNAL_PAGE_SIZE)
 
     # for each modality, create the file system help and process
@@ -275,14 +275,16 @@ def _select_files(args, config, journal_fn):
 # file or filelist should be local relative paths.
 # journal_fn is always local.
 def _mark_as_uploaded(args, config, journal_fn):
-    upload_datetime = args.upload_datetime if 'upload_datetime' in vars(args) else time.strftime("%Y%m%d%H%M%S")
+    # the attribute exists but is None when the option is omitted.
+    upload_datetime = getattr(args, 'upload_datetime', None) or time.strftime("%Y%m%d%H%M%S", time.gmtime())
     file = args.file if 'file' in vars(args) else None
     filelist = args.file_list if 'file_list' in vars(args) else None
     central_config = config_helper.get_central_config(config)
     client, internal_host =storage_helper._make_client(central_config)
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
-    journal_f = args.local_journal if 'local_journal' in vars(args) else journal_fn
+    # journal_fn already reflects --local-journal (resolved in the main dispatch).
+    journal_f = journal_fn
     
     mods = config_helper.get_modalities(config)
     # get the config path for each modality.  if not matched, use default.
@@ -330,7 +332,7 @@ def _upload_files(args, config, journal_fn):
     client, internal_host =storage_helper._make_client(central_config)
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
-    nthreads = config_helper.get_config(config).get('nthreads', 1)
+    nthreads = config_helper.get_config(config).get('nthreads', None)   # None: derived from the CPU count
     page_size = config_helper.get_config(config).get('page_size', DEFAULT_REMOTE_OP_PAGE_SIZE)
     
     remaining = max_upload_count
@@ -359,7 +361,7 @@ def _verify_files(args, config, journal_fn):
     client, internal_host =storage_helper._make_client(central_config)
     centralfs = FileSystemHelper(config_helper.get_path_str(central_config), client = client, internal_host = internal_host)
     
-    nthreads = config_helper.get_config(config).get('nthreads', 1)
+    nthreads = config_helper.get_config(config).get('nthreads', None)   # None: derived from the CPU count
     page_size = config_helper.get_config(config).get('page_size', DEFAULT_REMOTE_OP_PAGE_SIZE)
     
     # local roots, one per modality, for the local-file check.
@@ -377,7 +379,9 @@ def _verify_files(args, config, journal_fn):
     
 def _list_versions(args, config, journal_fn):
     version = args.version if ("version" in vars(args)) and (args.version is not None) else None
-    local_ops.list_versions(journal_fn, version=version)
+    modalities = [m.strip() for m in args.modalities.split(',') if m.strip()] \
+        if ("modalities" in vars(args)) and (args.modalities is not None) else None
+    local_ops.list_versions(journal_fn, version=version, modalities=modalities)
     # log.info("Backed up journals: ")
     # local_ops.list_journals(journal_fn)
 
@@ -425,10 +429,10 @@ if __name__ == "__main__":
     # create the parser for the "list" command
     parser_list = journal_subparsers.add_parser("list", help = "list the versions in a journal database")
     parser_list.add_argument("--modalities", 
-                               help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP,Metadata'.  case sensitive.", 
+                               help="comma-separated modalities to include in the summary.  defaults to all modalities in the journal.  case sensitive.", 
                                required=False)
     parser_list.add_argument("--version", 
-                               help="version string for the upcoming upload.  If not specified, the current datetime in YYYYMMDDHHMMSS format is used.", 
+                               help="only show this journal version.  defaults to all versions.", 
                                required=False)
     parser_list.set_defaults(func = _list_versions)
     
@@ -594,7 +598,8 @@ if __name__ == "__main__":
         # set a default client for central storage
         central_config = config_helper.get_central_config(config)
         central_client, internal_host =storage_helper._make_client(central_config)
-        central_client.set_as_default_client()
+        if central_client is not None:   # None for a local central path
+            central_client.set_as_default_client()
         
         local_journal_fn_override = args.local_journal if ('local_journal' in vars(args)) and (args.local_journal is not None) else None
         journal_path, lock_path, local_path = upload_ops.get_journal_paths(config, 

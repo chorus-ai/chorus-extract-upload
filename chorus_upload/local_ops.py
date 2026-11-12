@@ -21,6 +21,17 @@ log = logging.getLogger(__name__)
 
 DEFAULT_JOURNAL_PAGE_SIZE = 320
 
+
+def worker_threads(requested = None) -> int:
+    """Worker thread count for file scanning, upload and verify.
+
+    The configured `nthreads` when set (>= 1); otherwise derived from this machine's CPU
+    count (I/O-bound work, so cpu_count + 4, capped at 32).
+    """
+    if requested:
+        return max(1, int(requested))
+    return min(32, (os.cpu_count() or 1) + 4)
+
 # Concurrency characteristics for local MD5 computation by storage type:
 #
 # storage   bottleneck          optimal threads    notes
@@ -56,7 +67,7 @@ class _AdaptiveThreads:
     def __init__(self, initial: int, max_threads: int):
         self.nthreads = initial
         self._max = max_threads
-        self._prev_mbps: float | None = None
+        self._prev_mbps: float | None = None   # bytes/s of the previous page
         self._locked = False
         self._unchanged = 0
 
@@ -68,8 +79,9 @@ class _AdaptiveThreads:
         if self._prev_mbps is not None:
             if mbps >= self._prev_mbps * 0.95:          # improved or flat
                 new = min(self._max, self.nthreads * 2)
-            elif mbps <= self._prev_mbps * 0.75:        # degraded — lock in
+            elif mbps <= self._prev_mbps * 0.75:        # degraded — halve and lock in
                 new = max(1, self.nthreads // 2)
+                self._locked = True
             else:
                 new = self.nthreads
                 
@@ -169,8 +181,7 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
     all_args = []
     
     page_size = kwargs.get("page_size", DEFAULT_JOURNAL_PAGE_SIZE)
-    n_cores = kwargs.get("n_cores", 32)
-    nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
+    nthreads = worker_threads(kwargs.get("num_threads", kwargs.get("n_cores")))
     log.info(f"Scanning files to create journal. Calculating MD5 using {nthreads} threads")
 
     for modality in modalities:
@@ -233,7 +244,6 @@ def _gen_journal(root : FileSystemHelper, modalities: list[str],
         if persistent_executor is not None:
             persistent_executor.shutdown(wait=True)
         
-        del perf
         log.info(f"Journal Update took {time.time() - start} s")
         
 
@@ -246,7 +256,6 @@ def _update_journal_one_file(root: FileSystemHelper, relpath:str, modality:str, 
     # version can be none only if version is embedded in the path.
     
     # TODO need to handle version vs old version.
-    lock = kwargs.get("lock", None)
     
     relpath = Path(relpath).as_posix()
     
@@ -371,8 +380,7 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
     
     page_size = kwargs.get("page_size", DEFAULT_JOURNAL_PAGE_SIZE)
     
-    n_cores = kwargs.get("n_cores", 32)
-    nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
+    nthreads = worker_threads(kwargs.get("num_threads", kwargs.get("n_cores")))
     log.info(f"Updating journal {databasename} using {nthreads} threads")
 
     all_insert_args = []
@@ -517,7 +525,6 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
         if persistent_executor is not None:
             persistent_executor.shutdown(wait=True)
 
-        del perf
         log.info(f"Total added {total_count} and inactivated {total_deleted} files in journal.db")
         log.info(f"Journal Update Elapsed time {time.time() - start} s")
 
@@ -800,7 +807,7 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
     # convert the local path to a central path
     return out_pattern.format(patient_id = patient_id, filepath = filepath)
 
-def list_versions(databasename: str, version: str):
+def list_versions(databasename: str, version: str, modalities: list = None):
     """
     Retrieve a list of unique upload dates from the journal database.
 
@@ -822,7 +829,8 @@ def list_versions(databasename: str, version: str):
     # List unique values in upload_dtstr column in journal table
     # res = JournalDispatcher.get_versions(databasename)
     # versions = [u[0] for u in res]
-    versions = JournalDispatcher.get_stats(databasename, version = version)
+    # modalities None: all modalities in the journal.
+    versions = JournalDispatcher.get_stats(databasename, version = version, modalities = modalities)
   
     if (versions is not None) and (len(versions) > 0):
         vers = pd.DataFrame(versions, columns = ["version", "modality", "rows", "person", 
