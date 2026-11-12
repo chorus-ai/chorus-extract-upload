@@ -1459,6 +1459,25 @@ class JournalTableV2:
                 conn.execute(f"CREATE INDEX IF NOT EXISTS {cls.path_index} ON {cls.table_name} (SRC_PATH_ID, FILENAME)")
         conn.close()
 
+    person_index = "journal_v2_person_idx"
+
+    @classmethod
+    def ensure_person_index(cls, database_name: str):
+        """Create the (VERSION_ID, PERSON_ID, MODALITY_ID) index used to count persons per
+        version, if missing (~19 B/row; one-time build reads the whole table).  A journal
+        that cannot be written is left as is: the count then scans the table."""
+        with closing(sqlite3.connect(database_name, check_same_thread=False)) as conn:
+            exists = conn.execute("SELECT 1 FROM sqlite_master WHERE type='index' AND name=?",
+                                  (cls.person_index,)).fetchone()
+            if exists is None:
+                log.info(f"creating person index {cls.person_index} on {database_name} (one-time)")
+                try:
+                    conn.execute(f"CREATE INDEX IF NOT EXISTS {cls.person_index} ON {cls.table_name}"
+                                 " (VERSION_ID, PERSON_ID, MODALITY_ID)")
+                    conn.commit()
+                except sqlite3.OperationalError as e:
+                    log.warning(f"person index not created ({e}); counting persons without it")
+
     @classmethod
     def get_files_by_paths(cls, database_name: str, paths, *,
                            version: str = None, active: bool = None, uploaded: bool = None):
@@ -1590,18 +1609,21 @@ class JournalTableV2:
 
     @classmethod
     def count_persons_by_version(cls, database_name: str, version: str = None, modalities: list = None):
-        """{version: distinct persons}; a person in several modalities is counted once."""
-        t = cls.table_name
-        stmt = SQLiteDB._make_select_stmt_with_left_join(
-            t, [("versions.VERSION", "version"), ("COUNT(DISTINCT PERSON_ID)", "n")],
-            [("modalities", "modalities.id", f"{t}.MODALITY_ID"),
-             ("versions", "versions.id", f"{t}.VERSION_ID")],
-            cls._page_where(modalities, version=version))
-        with sqlite3.connect(database_name, check_same_thread=False) as conn:
-            with closing(conn.cursor()) as cur:
-                return dict(cur.execute(stmt + " GROUP BY versions.VERSION").fetchall())
-    
-    
+        """{version: distinct persons}; a person in several modalities is counted once.
+
+        One covering-index range per version (person index), not a scan of the journal.
+        """
+        cls.ensure_person_index(database_name)
+        inner = f"SELECT COUNT(DISTINCT PERSON_ID) FROM {cls.table_name} j WHERE j.VERSION_ID = v.id"
+        if modalities:
+            inner += (" AND j.MODALITY_ID IN (SELECT id FROM modalities WHERE MODALITY IN ("
+                      + ",".join(SQLiteDB.quote(m) for m in modalities) + "))")
+        stmt = f"SELECT v.VERSION, ({inner}) FROM versions v"
+        if version is not None:
+            stmt += f" WHERE v.VERSION = {SQLiteDB.quote(version)}"
+        with closing(sqlite3.connect(database_name, check_same_thread=False)) as conn:
+            return dict(conn.execute(stmt).fetchall())
+
     @classmethod
     def get_versions(cls, database_name: str):
         return SQLiteDB.query(database_name = database_name,

@@ -8,6 +8,7 @@ import pytest
 
 from chorus_upload import config_helper, local_ops, remote_file_ops, storage_helper, upload_ops
 from chorus_upload.storage_helper import FileSystemHelper
+from chorus_upload.journaldb_ops import JournalDispatcher
 
 MOD = "waveforms"
 
@@ -245,6 +246,16 @@ def test_update_journal_two_modalities_in_one_call_and_list_by_modality(tmp_path
     assert "images_upload" in everything.columns
     # P001 has waveforms and images: one person per version, not one per modality; no files columns.
     assert list(everything["person"]) == [1] and list(only["person"]) == [1]
+    write(src, "P002/Images/j.dcm")
+    local_ops.update_journal(fs, ["waveforms", "images"], db, journaling_mode="full", version="v3", page_size=2)
+    count = JournalDispatcher.count_persons_by_version
+    assert count(db) == {"v1": 1, "v3": 1}                               # v2 added nothing: no version row
+    assert count(db, modalities=["waveforms"]) == {"v1": 1, "v3": 0}
+    assert count(db, version="v3") == {"v3": 1}
+    with sqlite3.connect(db) as c:                                       # index built once, and used
+        plan = str(c.execute("EXPLAIN QUERY PLAN SELECT COUNT(DISTINCT PERSON_ID) FROM journal_v2 j"
+                             " WHERE j.VERSION_ID = 1").fetchall())
+    assert "COVERING INDEX journal_v2_person_idx" in plan
     assert list(everything.columns) == ["version", "rows", "person", "active", "upload",
                                         "images_active", "images_upload", "waveforms_active", "waveforms_upload"]
 
