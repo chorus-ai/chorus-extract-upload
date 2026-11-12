@@ -286,3 +286,98 @@ def test_async_client_follows_connection_verify(monkeypatch):
     asyncio.run(build({**base, "connection_verify": True}))    # opt-in: on for both
     assert [s[1] for s in seen] == [False, False, True, True]
     assert seen[1][2].startswith("https://acct1.blob.core.windows.net")
+
+
+# ---------------- async client: same 4 MB request size as the sync client
+
+def test_async_client_request_sizes_match_sync_client(monkeypatch):
+    import asyncio
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+
+    async def main():
+        client, _ = az_client({"azure_account_name": "acct1", "azure_account_key": KEY})
+        a = upload_ops._async_blob_service_client(client, 4)
+        try:
+            return ((a._config.max_single_put_size, a._config.max_block_size),
+                    (client.service_client._config.max_single_put_size, client.service_client._config.max_block_size))
+        finally:
+            await a.close()
+    async_sizes, sync_sizes = asyncio.run(main())
+    assert async_sizes == sync_sizes == (storage_helper.AZURE_MAX_BLOCK_SIZE, storage_helper.AZURE_MAX_BLOCK_SIZE)
+
+
+def test_async_block_upload_from_async_file_handle(tmp_path):
+    """Real SDK upload to a local server: files above 4 MB go as blocks read from an aiofiles
+    handle (a path that never ran before the 4 MB limit was applied to the async client)."""
+    import asyncio
+    import aiofiles
+    from aiohttp import web
+
+    small, big = os.urandom(1024), os.urandom(9 * 1024 * 1024 + 123)
+    (tmp_path / "small.dat").write_bytes(small)
+    (tmp_path / "big.dat").write_bytes(big)
+    requests, blocks, stored = [], {}, {}
+    headers = {"ETag": '"0x1"', "Last-Modified": "Mon, 01 Jan 2024 00:00:00 GMT", "x-ms-request-server-encrypted": "true"}
+
+    async def handle(request):
+        body = await request.read()
+        name, comp = request.path.rsplit("/", 1)[-1], request.query.get("comp")
+        requests.append((name, comp or "blob", len(body)))
+        if comp == "block":
+            blocks.setdefault(name, {})[request.query["blockid"]] = body
+        elif comp == "blocklist":
+            import re
+            ids = re.findall(r"<(?:Latest|Uncommitted|Committed)>([^<]+)</", body.decode())
+            stored[name] = b"".join(blocks[name][i] for i in ids)
+        else:
+            stored[name] = body
+        return web.Response(status=201, headers=headers)
+
+    async def main():
+        app = web.Application(client_max_size=64 * 1024 * 1024)
+        app.router.add_route("PUT", "/{tail:.*}", handle)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        site = web.TCPSite(runner, "127.0.0.1", 0)
+        await site.start()
+        port = site._server.sockets[0].getsockname()[1]
+        fake_sync = types.SimpleNamespace(service_client=types.SimpleNamespace(
+            url=f"http://127.0.0.1:{port}/devacct", credential=None, api_version="2021-08-06"))
+        try:
+            async with upload_ops._async_blob_service_client(fake_sync, 8) as client:
+                container = client.get_container_client("c")
+                for name in ("small.dat", "big.dat"):
+                    async with aiofiles.open(tmp_path / name, "rb") as f:
+                        await container.upload_blob(name=name, data=f, overwrite=True, max_concurrency=2)
+        finally:
+            await runner.cleanup()
+
+    try:
+        asyncio.run(main())
+    except OSError as e:
+        pytest.skip(f"local sockets unavailable: {e}")
+    assert stored == {"small.dat": small, "big.dat": big}
+    assert [r for r in requests if r[0] == "small.dat"] == [("small.dat", "blob", 1024)]     # one request
+    big_reqs = [r for r in requests if r[0] == "big.dat"]
+    assert sorted(r[2] for r in big_reqs if r[1] == "block") == [1024 * 1024 + 123, 4 * 1024 * 1024, 4 * 1024 * 1024]
+    assert [r[1] for r in big_reqs].count("blocklist") == 1
+
+
+# ---------------- fast paths give the same answers as the pathlib versions
+
+def test_fast_path_helpers_match_pathlib(tmp_path):
+    from pathlib import Path
+    from chorus_upload.journaldb_ops import _join_path
+    for srcpath in ["P001/Waveforms", ".", "", "a", "a/b/c", "./a/b", "a//b", "a/b/", "/abs/dir", "/"]:
+        assert _join_path(srcpath, "f.dat") == (Path(srcpath) / "f.dat").as_posix(), srcpath
+    for path in ["P001/Waveforms/a.dat", "a", "./a/b", "a//b", "a/./b", "a/b/", "a/b/.", "a\\b", "", ".", "/abs/x", "a/../b", "..a/b."]:
+        assert local_ops._normalized_posix(path) == Path(path).as_posix(), path
+
+    write(tmp_path, "P001/Waveforms/a.dat", b"12345", mtime=1_700_000_123)
+    root = FileSystemHelper(str(tmp_path))
+    meta = FileSystemHelper.get_metadata(root=root.root, path="P001/Waveforms/a.dat", with_metadata=True, with_md5=False)
+    check = lambda size, mtime, fn="P001/Waveforms/a.dat": upload_ops._local_outcome(root, fn, size, mtime)
+    assert check(meta["size"], meta["modify_time_us"]) == "matched"
+    assert check(meta["size"] + 1, meta["modify_time_us"]) == "changed"
+    assert check(meta["size"], meta["modify_time_us"] + 1) == "changed"
+    assert check(5, 0, "P001/Waveforms/none.dat") == "missing" and check(5, 0, "P001/Waveforms/a.dat/x") == "missing"

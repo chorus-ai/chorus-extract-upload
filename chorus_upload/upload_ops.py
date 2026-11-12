@@ -8,6 +8,7 @@ from time import strftime, gmtime
 from enum import Enum
 import concurrent.futures
 import threading
+import math
 import sqlite3
 import base64
 import binascii
@@ -391,11 +392,16 @@ def _async_blob_service_client(az_client, pool_size: int):
     connector = aiohttp.TCPConnector(limit=pool_size)
     transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector),
                                  connection_verify=verify)
+    # same request sizes as the sync client: files above AZURE_MAX_BLOCK_SIZE are sent as blocks,
+    # conn/file of them at a time, so memory per file is bounded by conn/file blocks instead of
+    # the whole file (the SDK default sends up to 64 MB in one request, read fully into memory).
     return AsyncBlobServiceClient(account_url=svc.url,
                                   credential=svc.credential,
                                   api_version=svc.api_version,
                                   transport=transport,
-                                  connection_verify=verify)
+                                  connection_verify=verify,
+                                  max_single_put_size=storage_helper.AZURE_MAX_BLOCK_SIZE,
+                                  max_block_size=storage_helper.AZURE_MAX_BLOCK_SIZE)
 
 
 async def _produce_pages(pages, queue: asyncio.Queue, n_workers: int, db_lock: asyncio.Lock = None):
@@ -485,7 +491,13 @@ def _thread_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     def upload_task(fn, info):
         if not hasattr(thread_local, 'client'):
             thread_local.client = storage_helper._clone_client(orig_client, pool_size=threads_per_file)
-        dated_dest_path = FileSystemHelper(dest_root.joinpath(info['version']), client=thread_local.client, internal_host=int_host)
+            thread_local.dests = {}
+        # one helper per (thread, version): building one per file is slow, and every helper is
+        # kept in dated_dest_paths, which would grow by one object per uploaded file.
+        dated_dest_path = thread_local.dests.get(info['version'])
+        if dated_dest_path is None:
+            dated_dest_path = FileSystemHelper(dest_root.joinpath(info['version']), client=thread_local.client, internal_host=int_host)
+            thread_local.dests[info['version']] = dated_dest_path
         return _upload_and_verify(src_path, fn, info, dated_dest_path,
                                   nthreads=threads_per_file, lock=lock)
 
@@ -592,16 +604,20 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
         async with _async_blob_service_client(dest_path.client, pool_size) as async_client:
             queue = asyncio.Queue(maxsize=queue_size)
             db_lock = asyncio.Lock()
+            dests = {}   # one helper per version (see _thread_upload)
 
             async def worker():
                 while (item := await queue.get()) is not None:
                     fn, info = item
-                    dated_dest_path = FileSystemHelper(
-                        dest_path.root.joinpath(info['version']),
-                        client=dest_path.client,
-                        internal_host=dest_path.internal_host,
-                        async_azclient=async_client,
-                    )
+                    dated_dest_path = dests.get(info['version'])
+                    if dated_dest_path is None:
+                        dated_dest_path = FileSystemHelper(
+                            dest_path.root.joinpath(info['version']),
+                            client=dest_path.client,
+                            internal_host=dest_path.internal_host,
+                            async_azclient=async_client,
+                        )
+                        dests[info['version']] = dated_dest_path
                     result = await _async_upload_and_verify(src_path, fn, info, dated_dest_path,
                                                             nthreads=connections_per_file)
                     _record_upload_result(result, src_path, upload_dt_str, update_args,
@@ -805,6 +821,48 @@ def _parallel_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
             dated_paths)
 
 
+def _mark_pending_deleted(databasename: str, modalities: list, upload_dt_str: str, step: int) -> int:
+    """Mark inactive (deleted/outdated), never-uploaded rows as uploaded; returns how many.
+
+    Streamed in pages; marked rows drop out of the query, and the FILE_ID keyset keeps
+    paging stable.
+    """
+    del_page_rows = step * max(c * k for (_, _, _, c, k) in UPLOAD_SIZE_GROUPS.values())
+    n_deleted = 0
+    for fids in iter_pending_deleted_ids(databasename, modalities, del_page_rows):
+        JournalDispatcher.mark_as_uploaded(databasename,
+                                      version = upload_dt_str,
+                                      upload_args = [(fid,) for fid in fids])
+        n_deleted += len(fids)
+    if n_deleted > 0:
+        log.info(f"Marked as deleted and uploaded: {n_deleted}")
+    return n_deleted
+
+
+def _backup_journal(journal_path: FileSystemHelper, journal_fn: str, dest_path: FileSystemHelper,
+                    dest_roots: list, nthreads: int, verbose: bool = False):
+    """Copy the journal into each dated destination folder touched by this upload.
+
+    The journal can be several GB: it is uploaded once (nthreads blocks at a time) and, for
+    cloud destinations, copied to the other folders on the server.  If a server-side copy is
+    not possible it falls back to a direct upload, so a backup is always attempted.
+    """
+    first = None
+    for root in dest_roots:
+        target = FileSystemHelper(root, client=dest_path.client, internal_host=dest_path.internal_host)
+        if verbose:
+            log.info(f"UPLOAD: backing up journal to {str(target.root)}")
+        if first is not None and target.is_cloud:
+            try:
+                first.copy_file_to(relpath=journal_fn, dest_path=target)
+                continue
+            except Exception as e:
+                log.warning(f"server-side journal copy to {str(target.root)} failed ({type(e).__name__}: {e}); uploading instead")
+        journal_path.copy_file_to(relpath=journal_fn, dest_path=target, nthreads=nthreads)
+        if first is None:
+            first = target
+
+
 def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
                  modalities: list[str], databasename: str,
                  max_num_files : int = None,
@@ -856,6 +914,8 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     total_pending = sum(count for count, _ in group_stats.values())
     if total_pending == 0:
         log.info("no files to upload.  Done")
+        _mark_pending_deleted(databasename, modalities, upload_dt_str,
+                              kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE))
         return None, max_num_files
     else:
         log.info(f"uploading {total_pending} files to {str(dest_path.root)}")
@@ -935,27 +995,15 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     # replaced = set(replaced)
 
     # handle all deleted (only undeleted files that are not "uploaded" are the ones that are were added and deleted between uploads.).
-    # for ones that are mark deleted, we mark them as uploaded as well.  Streamed in pages;
-    # marked rows drop out of the query, and the FILE_ID keyset keeps paging stable.
-    del_page_rows = step * max(c * k for (_, _, _, c, k) in UPLOAD_SIZE_GROUPS.values())
-    n_deleted = 0
-    for fids in iter_pending_deleted_ids(databasename, modalities, del_page_rows):
-        JournalDispatcher.mark_as_uploaded(databasename,
-                                      version = upload_dt_str,
-                                      upload_args = [(fid,) for fid in fids])
-        n_deleted += len(fids)
-    if n_deleted > 0:
-        log.info(f"Marked as deleted and uploaded: {n_deleted}")
+    # for ones that are mark deleted, we mark them as uploaded as well.
+    if _mark_pending_deleted(databasename, modalities, upload_dt_str, step) > 0:
         perf.report()
     
     # create a versioned backup - AFTER updating the journal.
     # do not do backup the table - this will create really big files.
     # backup_journal(databasename, suffix=upload_dt_str)
     # just copy the journal file to the dated dest path as a backup, and locally sa well
-    for dated_dest_path in dated_dest_paths.values():
-        if verbose:
-            log.info(f"UPLOAD: backing up journal to {str(dated_dest_path.root)}")
-        journal_path.copy_file_to(relpath=journal_fn, dest_path=dated_dest_path)
+    _backup_journal(journal_path, journal_fn, dest_path, list(dated_dest_paths.keys()), nthreads, verbose)
         
     # dest_fn = src_path.root.joinpath("_".join([journal_fn, upload_dt_str]))
     # journal_path.copy_file_to(journal_fn, dest_fn)
@@ -1032,6 +1080,14 @@ def _remote_outcome(meta, size, md5) -> str:
 
 def _local_outcome(src_root: FileSystemHelper, fn: str, size, mtime) -> str:
     """'matched' (L), 'changed' (~L), or 'missing' (X) for the local file vs the journal."""
+    if not src_root.is_cloud:
+        # one stat call; same size / modify-time values as FileSystemHelper.get_metadata.
+        try:
+            st = os.stat(os.path.join(src_root.root, fn))
+        except (FileNotFoundError, NotADirectoryError):
+            return 'missing'
+        mtime_us = int(math.floor(st.st_mtime * 1e6)) if st.st_mtime else None
+        return 'matched' if (st.st_size == size and mtime_us == mtime) else 'changed'
     meta = FileSystemHelper.get_metadata(root=src_root.root, path=fn, with_metadata=True, with_md5=False)
     if meta is None or meta.get('size') is None:
         return 'missing'
@@ -1489,16 +1545,28 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
     matched = []
     
     log.info(f"marking {len(files)} files as uploaded.")
+    to_check = []
     for f in files:
-   
         if f not in db_files:
             log.warning(f"file {f} not found in journal or was previously uploaded.")
             continue
-        
         for (_fid, _fn, _, _size, _md5, _mod, _, _ver, _) in db_files[f]:
-            _info = (_fid, _fn, _size, _md5, _ver, _mod)
+            to_check.append((_fid, _fn, _size, _md5, _ver, _mod))
 
-            (dest_meta, dest_md5, dest_root, fid, fn, size, md5) = _get_file_info2(dest_path, _info, **kwargs)
+    def check(info):
+        # one destination request per file: run them concurrently.
+        try:
+            return info, _get_file_info2(dest_path, info, **kwargs), None
+        except Exception as e:
+            return info, None, e
+
+    nthreads = worker_threads(kwargs.get("num_threads", kwargs.get("n_cores")))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
+        for info, result, error in executor.map(check, to_check):
+            if error is not None:
+                log.error(f"check failed {info[0]} {info[1]}, due to {type(error).__name__}: {str(error)}")
+                continue
+            (dest_meta, dest_md5, dest_root, fid, fn, size, md5) = result
 
             # sync get_metadata returns a dict of Nones (not None) for a missing file.
             if dest_meta is None or dest_meta.get('size') is None:

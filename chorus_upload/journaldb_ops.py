@@ -1,5 +1,6 @@
 import sqlite3
 from contextlib import closing, contextmanager
+from functools import lru_cache
 import os
 from enum import Enum
 from pathlib import Path
@@ -13,6 +14,21 @@ log = logging.getLogger(__name__)
 
 #TODO: incrementally process the parameters.
 #TODO: check length of where clause.
+
+@lru_cache(maxsize=65536)
+def _dir_prefix(srcpath: str) -> str:
+    """'dir/' prefix for a stored source directory ('' for the root), normalized like pathlib."""
+    posix = Path(srcpath).as_posix()
+    if posix == ".":
+        return ""
+    return posix if posix.endswith("/") else posix + "/"
+
+
+def _join_path(srcpath: str, filename: str) -> str:
+    """Same result as (Path(srcpath) / filename).as_posix() for a plain file name, without
+    building a Path per row (rows of one directory are adjacent, so the prefix is cached)."""
+    return _dir_prefix(srcpath) + filename
+
 
 class SQLiteDB:
     # set a class variable for verbosity
@@ -1293,7 +1309,7 @@ class JournalTableV2:
                         max_return = max_return)
 
         # create a generator to yield the results
-        return [(fid, (Path(srcpath) / fn).as_posix(), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
+        return [(fid, _join_path(srcpath, fn), mtime, size, md5, mod, invalidtime, ver, uploaddt) for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in result]
 
     @classmethod
     def _page_where(cls, modalities: list, *, version: str = None, active: bool = None,
@@ -1367,7 +1383,7 @@ class JournalTableV2:
 
     @staticmethod
     def _to_file_tuples(rows):
-        return [(fid, (Path(srcpath) / fn).as_posix(), mtime, size, md5, mod, invalidtime, ver, uploaddt)
+        return [(fid, _join_path(srcpath, fn), mtime, size, md5, mod, invalidtime, ver, uploaddt)
                 for (fid, srcpath, fn, mtime, size, md5, mod, invalidtime, ver, uploaddt) in rows]
 
     @classmethod
@@ -1509,7 +1525,7 @@ class JournalTableV2:
                         max_return = max_return)
 
         # create a generator to yield the results
-        return [(fid, (Path(srcpath) / fn).as_posix()) for (fid, srcpath, fn) in result]
+        return [(fid, _join_path(srcpath, fn)) for (fid, srcpath, fn) in result]
     
     @classmethod
     def get_stats(cls, 

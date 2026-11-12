@@ -786,6 +786,15 @@ MOD_STRING = {
     "metadata": "Metadata"
 }
 
+def _normalized_posix(path: str) -> str:
+    """Path(path).as_posix(), skipping pathlib for strings it would return unchanged
+    (journal paths are already normalized; this runs once per file)."""
+    if ("\\" in path) or ("//" in path) or ("/./" in path) or path.startswith("./") \
+            or path.endswith("/") or path.endswith("/.") or path in ("", "."):
+        return Path(path).as_posix()
+    return path
+
+
 # if version is specified, then it has priority over what's in the local_path string.
 def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Parser, modality:str, 
                                     omop_per_patient:bool = False, patient_centric: bool = True):
@@ -802,7 +811,7 @@ def convert_local_to_central_path(local_path:str, in_compiled_pattern:parse.Pars
 
     """
 
-    local_path = Path(local_path).as_posix()
+    local_path = _normalized_posix(local_path)
 
     parsed = in_compiled_pattern.parse(local_path)
     if parsed is None:

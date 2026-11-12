@@ -326,3 +326,101 @@ def test_thread_group_logs_the_conn_per_file_it_uses(monkeypatch, caplog):
         perf_counter.PerformanceCounter(total_file_count=1), nthreads=16)
     msg = next(r.getMessage() for r in caplog.records if "xlarge group, thread" in r.getMessage())
     assert f"× {captured['per_file']} conn/file" in msg
+
+
+# ---------------- one destination helper per version, not per uploaded file
+
+def _two_version_pages(n):
+    items = [(f"f{i}", {'file_id': i, 'size': 1, 'version': f"v{i % 2}"}) for i in range(n)]
+    return [items[i:i + 16] for i in range(0, n, 16)]
+
+
+def test_async_upload_keeps_one_destination_per_version(monkeypatch):
+    class FakeAz:
+        service_client = types.SimpleNamespace(url="u", credential=None, api_version=None)
+
+    class FakeAsyncClient:
+        def __init__(self, **kw): pass
+        async def __aenter__(self): return self
+        async def __aexit__(self, *a): return False
+
+    async def fake_upload(src, fn, info, dated, **kw):
+        return (fn, info, upload_ops.sync_state.MATCHED, dated, 0.0, 0.0)
+
+    monkeypatch.setattr(upload_ops, "AzureBlobClient", FakeAz)
+    monkeypatch.setattr(upload_ops, "AsyncBlobServiceClient", FakeAsyncClient)
+    monkeypatch.setattr(upload_ops, "AioHttpTransport", lambda **kw: None)
+    monkeypatch.setattr(upload_ops, "aiohttp", types.SimpleNamespace(
+        TCPConnector=lambda **kw: None, ClientSession=lambda **kw: None))
+    monkeypatch.setattr(upload_ops, "FileSystemHelper", _FakeFS)
+    monkeypatch.setattr(upload_ops, "_async_upload_and_verify", fake_upload)
+    monkeypatch.setattr(upload_ops.JournalDispatcher, "mark_as_uploaded_with_duration", lambda db, args: None)
+
+    n = 400
+    _, _, dated = upload_ops._async_upload(
+        types.SimpleNamespace(is_cloud=False, root=Path("src")), _fake_dest(FakeAz()),
+        iter(_two_version_pages(n)), "db", "20250202", [], 50,
+        perf_counter.PerformanceCounter(total_file_count=n), 8)
+    assert len(dated) == 2                       # was one object per uploaded file
+
+
+def test_thread_upload_keeps_one_destination_per_thread_and_version(monkeypatch):
+    def fake_upload(src, fn, info, dated, **kw):
+        return (fn, info, upload_ops.sync_state.MATCHED, dated, 0.0, 0.0)
+    monkeypatch.setattr(upload_ops.storage_helper, "_clone_client", lambda c, pool_size=None: None)
+    monkeypatch.setattr(upload_ops, "FileSystemHelper", _FakeFS)
+    monkeypatch.setattr(upload_ops, "_upload_and_verify", fake_upload)
+    monkeypatch.setattr(upload_ops.JournalDispatcher, "mark_as_uploaded_with_duration", lambda db, args: None)
+
+    n, nuploads = 400, 4
+    _, _, dated = upload_ops._thread_upload(
+        types.SimpleNamespace(is_cloud=False, root=Path("src")), _fake_dest(None),
+        iter(_two_version_pages(n)), "db", "20250202", [], 50,
+        perf_counter.PerformanceCounter(total_file_count=n), nuploads, 1)
+    assert len(dated) <= 2 * nuploads and {str(d.root) for d in dated} == {"dest/v0", "dest/v1"}
+
+
+# ---------------- deleted rows are marked even when no file is pending
+
+def test_upload_files_marks_deleted_when_nothing_is_pending(tmp_path):
+    db = make_journal(tmp_path / "journal.db", [("gone.dat", 100, "waveforms", False, False)] * 3)
+    _, remaining = upload_ops.upload_files(upload_ops.FileSystemHelper(str(tmp_path / "src")),
+                                           upload_ops.FileSystemHelper(str(tmp_path / "dest")),
+                                           ["waveforms"], db, page_size=2)
+    assert remaining is None and pending_ids(db, active=False) == set()
+
+
+# ---------------- journal backup: upload once, copy to the other folders
+
+def test_backup_journal_local_and_server_side_copy(tmp_path, monkeypatch):
+    journal = tmp_path / "j" / "journal.db"
+    journal.parent.mkdir()
+    journal.write_bytes(b"journal-bytes")
+    journal_path = upload_ops.FileSystemHelper(str(journal.parent))
+    dest = upload_ops.FileSystemHelper(str(tmp_path / "dest"))
+    roots = [str(tmp_path / "dest" / v) for v in ("v1", "v2")]
+    upload_ops._backup_journal(journal_path, "journal.db", dest, roots, nthreads=4)
+    assert all((Path(r) / "journal.db").read_bytes() == b"journal-bytes" for r in roots)
+
+    calls = []
+
+    class CloudFS:                                   # cloud destination stand-in
+        is_cloud = True
+        def __init__(self, root, **kw):
+            self.root = root
+        def copy_file_to(self, relpath, dest_path, **kw):
+            calls.append(("server-copy", self.root, dest_path.root))
+            if dest_path.root == "az://c/v3":
+                raise IOError("copy not permitted")
+
+    class Journal:
+        def copy_file_to(self, relpath, dest_path, **kw):
+            calls.append(("upload", dest_path.root, kw.get("nthreads")))
+
+    monkeypatch.setattr(upload_ops, "FileSystemHelper", CloudFS)
+    upload_ops._backup_journal(Journal(), "journal.db", types.SimpleNamespace(client=None, internal_host=None),
+                               ["az://c/v1", "az://c/v2", "az://c/v3"], nthreads=4)
+    assert calls == [("upload", "az://c/v1", 4),                       # uploaded once, in parallel blocks
+                     ("server-copy", "az://c/v1", "az://c/v2"),        # copied on the server
+                     ("server-copy", "az://c/v1", "az://c/v3"),        # copy fails ...
+                     ("upload", "az://c/v3", 4)]                       # ... so it is uploaded instead
