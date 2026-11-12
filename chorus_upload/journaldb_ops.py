@@ -631,6 +631,17 @@ class JournalDispatcher:
             raise ValueError(f"Unsupported Journal version {dbver}")
 
     @classmethod
+    def count_persons_by_version(cls, database_name: str, version: str = None, modalities: list = None):
+        """{version: distinct persons}; a person in several modalities is counted once."""
+        dbver = cls._get_version(database_name)
+        if dbver == 1:
+            return JournalTableV1.count_persons_by_version(database_name, version, modalities)
+        elif dbver == 2:
+            return JournalTableV2.count_persons_by_version(database_name, version, modalities)
+        else:
+            raise ValueError(f"Unsupported Journal version {dbver}")
+
+    @classmethod
     def get_versions(cls, database_name: str):
         dbver = cls._get_version(database_name)
         if dbver == 1:
@@ -878,10 +889,8 @@ class JournalTableV1:
         groupby_list = ['VERSION', 'MODALITY']
         group_list = ','.join(groupby_list)
         
-        cols = group_list
+        cols = list(groupby_list)
         cols.append("COUNT(FILE_ID) AS n_rows")
-        cols.append("COUNT(DISTINCT PERSON_ID) AS n_persons")
-        cols.append("COUNT(DISTINCT FILEPATH) AS n_files")
         cols.append("SUM(TIME_INVALID_us IS NULL) AS n_active")
         cols.append("SUM(TIME_INVALID_us IS NULL AND UPLOAD_DTSTR IS NULL) as n_upload")
                             
@@ -899,8 +908,18 @@ class JournalTableV1:
                         groupby = groupby_list,
                         max_return = None)
         # return results
-        return [(version, modality, n_rows, n_persons, n_files, n_active, n_upload) for (version, modality, n_rows, n_persons, n_files, n_active, n_upload) in results]
-    
+        return [tuple(r) for r in results]
+
+    @classmethod
+    def count_persons_by_version(cls, database_name: str, version: str = None, modalities: list = None):
+        results = SQLiteDB.query(database_name = database_name,
+                        table_name = cls.table_name,
+                        columns = ["VERSION", "COUNT(DISTINCT PERSON_ID) AS n_persons"],
+                        where_clause = cls._make_where_clause(version, modalities),
+                        groupby = ["VERSION"],
+                        max_return = None)
+        return dict(results)
+
         
     @classmethod
     def get_versions(cls, database_name: str):
@@ -1539,8 +1558,6 @@ class JournalTableV2:
         subquery = f"(SELECT {group_list}, "
         cols = [
             "COUNT(FILE_ID) AS n_rows",
-            "COUNT(DISTINCT(PERSON_ID)) AS n_persons",
-            "COUNT(DISTINCT CAST(SRC_PATH_ID AS TEXT) || '|' || FILENAME) AS n_files",
             "SUM(TIME_INVALID_us IS NULL) AS n_active",
             "SUM(TIME_INVALID_us IS NULL AND UPLOAD_DT_ID IS NULL) AS n_upload",
         ]
@@ -1554,8 +1571,6 @@ class JournalTableV2:
         ]        
         columns.extend([
             ("g.n_rows", "n_rows"),
-            ("g.n_persons", "n_persons"),
-            ("g.n_files", "n_files"),
             ("g.n_active", "n_active"),
             ("g.n_upload", "n_upload"),
         ])
@@ -1571,9 +1586,20 @@ class JournalTableV2:
                         join_criteria=join_criteria,
                         where_clause = where_clause,
                         max_return = None)
-        return [(version, modality, n_rows, n_persons, n_files, n_active, n_upload) for (version, modality, n_rows, n_persons, n_files, n_active, n_upload) in results]
-        
-        # return results
+        return [tuple(r) for r in results]
+
+    @classmethod
+    def count_persons_by_version(cls, database_name: str, version: str = None, modalities: list = None):
+        """{version: distinct persons}; a person in several modalities is counted once."""
+        t = cls.table_name
+        stmt = SQLiteDB._make_select_stmt_with_left_join(
+            t, [("versions.VERSION", "version"), ("COUNT(DISTINCT PERSON_ID)", "n")],
+            [("modalities", "modalities.id", f"{t}.MODALITY_ID"),
+             ("versions", "versions.id", f"{t}.VERSION_ID")],
+            cls._page_where(modalities, version=version))
+        with sqlite3.connect(database_name, check_same_thread=False) as conn:
+            with closing(conn.cursor()) as cur:
+                return dict(cur.execute(stmt + " GROUP BY versions.VERSION").fetchall())
     
     
     @classmethod

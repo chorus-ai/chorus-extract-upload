@@ -243,6 +243,10 @@ def test_update_journal_two_modalities_in_one_call_and_list_by_modality(tmp_path
     only = local_ops.list_versions(db, None, modalities=["waveforms"])
     assert int(only["upload"].sum()) == 2 and not [c for c in only.columns if c.startswith("images")]
     assert "images_upload" in everything.columns
+    # P001 has waveforms and images: one person per version, not one per modality; no files columns.
+    assert list(everything["person"]) == [1] and list(only["person"]) == [1]
+    assert list(everything.columns) == ["version", "rows", "person", "active", "upload",
+                                        "images_active", "images_upload", "waveforms_active", "waveforms_upload"]
 
 
 def test_adaptive_threads_locks_after_slowdown():

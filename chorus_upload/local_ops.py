@@ -884,13 +884,15 @@ def list_versions(databasename: str, version: str, modalities: list = None):
     versions = JournalDispatcher.get_stats(databasename, version = version, modalities = modalities)
   
     if (versions is not None) and (len(versions) > 0):
-        vers = pd.DataFrame(versions, columns = ["version", "modality", "rows", "person", 
-                                                 "files", "active", "upload"])
+        vers = pd.DataFrame(versions, columns = ["version", "modality", "rows", "active", "upload"])
         
         # reformulate the dataframe.  first sum by version
-        agg_totals = vers.groupby("version")[["rows", "person", "files", "active", "upload"]].sum()
+        agg_totals = vers.groupby("version")[["rows", "active", "upload"]].sum()
+        # persons are counted once per version, not once per modality.
+        persons = JournalDispatcher.count_persons_by_version(databasename, version = version, modalities = modalities)
+        agg_totals["person"] = [persons.get(v, 0) for v in agg_totals.index]
         # next pivot using modality.
-        pivot = vers.pivot_table(index="version", columns="modality", values=["files", "active", "upload"], aggfunc="sum").fillna(0)
+        pivot = vers.pivot_table(index="version", columns="modality", values=["active", "upload"], aggfunc="sum").fillna(0)
         
         # flatten the multi-index columns
         pivot.columns = [f"{modality}_{metric}" for metric, modality in pivot.columns]
@@ -899,10 +901,10 @@ def list_versions(databasename: str, version: str, modalities: list = None):
         final = agg_totals.join(pivot)
 
         # ordering the columns
-        ordered = ["version", "rows", "person", "files", "active", "upload"]
+        ordered = ["version", "rows", "person", "active", "upload"]
         modalities = sorted(set(vers['modality']))
         for modality in modalities:
-            for metric in ["files", "active", "upload"]:
+            for metric in ["active", "upload"]:
                 col_name = f"{modality}_{metric}"
                 if col_name in pivot.columns:
                     ordered.append(col_name)
