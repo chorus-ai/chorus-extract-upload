@@ -417,6 +417,21 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             page_entries = snapshot.lookup({Path(p).as_posix() for p in paths_set})
             seen_ids = []
 
+            # reconcile an inconsistent journal: several active rows for one path.  Keep the
+            # newest (highest FILE_ID) as the entry to compare against the file on disk and
+            # outdate the others, instead of matching none and dropping the file.
+            dup_args = []
+            for dup_path, entries in page_entries.items():
+                if len(entries) > 1:
+                    newest = max(entries, key = lambda e: e[0])
+                    older = [e[0] for e in entries if e[0] != newest[0]]
+                    log.warning(f"{len(entries)} active journal rows for {dup_path}: keeping newest FILE_ID {newest[0]}, outdating {older}")
+                    dup_args.extend(("OUTDATED", fid) for fid in older)
+                    seen_ids.extend(older)
+                    page_entries[dup_path] = [newest]
+            if len(dup_args) > 0:
+                total_deleted += JournalDispatcher.inactivate_journal_entries(databasename, curtimestamp, dup_args)
+
             ctx = (contextlib.nullcontext(persistent_executor)
                    if persistent_executor is not None
                    else concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads))

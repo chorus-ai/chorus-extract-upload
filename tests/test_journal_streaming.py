@@ -192,3 +192,38 @@ def test_path_lookup_uses_lazy_index_and_matches_scan(tmp_path):
         plan = " ".join(r[-1] for r in c.execute(
             "EXPLAIN QUERY PLAN " + JournalTableV2._paths_lookup_stmt(active=True)))
     assert JournalTableV2.path_index in plan and "SCAN journal_v2" not in plan, plan
+
+
+# ---------------- several active rows for one path are reconciled by journal update
+
+def _duplicate_active_row(db, filename, version):
+    """Insert a second active copy of a row (as an inconsistent journal would have)."""
+    with sqlite3.connect(db) as c:
+        c.execute("INSERT OR IGNORE INTO versions (VERSION) VALUES (?)", (version,))
+        vid = c.execute("SELECT id FROM versions WHERE VERSION = ?", (version,)).fetchone()[0]
+        c.execute("INSERT INTO journal_v2 (PERSON_ID, SRC_PATH_ID, FILENAME, MODALITY_ID, SRC_MODTIME_us, SIZE, MD5,"
+                  " TIME_VALID_us, TIME_INVALID_us, UPLOAD_DT_ID, VERSION_ID)"
+                  " SELECT PERSON_ID, SRC_PATH_ID, FILENAME, MODALITY_ID, SRC_MODTIME_us, SIZE, MD5,"
+                  " TIME_VALID_us, NULL, NULL, ? FROM journal_v2 WHERE FILENAME = ? AND TIME_INVALID_us IS NULL",
+                  (vid, filename))
+
+
+@pytest.mark.parametrize("mode", ["full", "append"])
+def test_update_journal_reconciles_duplicate_active_rows(site, mode):
+    src, db = site
+    run_update(src, db, "v1", mode)
+    _duplicate_active_row(db, "a.dat", "v0")       # unchanged file, two active rows
+    _duplicate_active_row(db, "c.dat", "v0")       # file that also changed on disk
+    write(src, "P001/Waveforms/c.dat", b"changed!", mtime=1_700_000_500)
+    run_update(src, db, "v2", mode)
+
+    rows = journal_rows(db)
+    # a.dat: the newest row is kept as is; the older duplicate is outdated; the file is not dropped.
+    assert rows["P001/Waveforms/a.dat"] == [(False, "v1"), (True, "v0")]
+    # c.dat: duplicates collapse, then the normal "updated" handling applies to the newest.
+    assert rows["P001/Waveforms/c.dat"] == [(False, "v1"), (False, "v0"), (True, "v2")]
+    assert all(sum(active for active, _ in v) == 1 for v in rows.values())
+
+    before = journal_rows(db)
+    run_update(src, db, "v3", mode)               # consistent now: nothing changes
+    assert journal_rows(db) == before
