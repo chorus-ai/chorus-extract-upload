@@ -379,6 +379,25 @@ def _upload_and_verify(src_path : FileSystemHelper,
             copy_time, verify_time)
 
 
+def _async_blob_service_client(az_client, pool_size: int):
+    """Async Azure client for the same account, credential and TLS setting as the sync client.
+
+    Must be called inside a running event loop.  TLS certificate verification follows the
+    `connection_verify` config option of the sync client (off by default, as the upload
+    proxy requires), so sync and async requests behave the same.
+    """
+    svc = az_client.service_client
+    verify = getattr(az_client, "_connection_verify", False)
+    connector = aiohttp.TCPConnector(limit=pool_size)
+    transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector),
+                                 connection_verify=verify)
+    return AsyncBlobServiceClient(account_url=svc.url,
+                                  credential=svc.credential,
+                                  api_version=svc.api_version,
+                                  transport=transport,
+                                  connection_verify=verify)
+
+
 async def _produce_pages(pages, queue: asyncio.Queue, n_workers: int, db_lock: asyncio.Lock = None):
     """Feed items from an iterator of pages into a bounded queue, then one None per worker.
 
@@ -569,14 +588,8 @@ def _async_upload(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     queue_size = max(queue_size or 0, 2 * concurrency)
 
     async def process_uploads():
-        svc = dest_path.client.service_client
         pool_size = min(concurrency * connections_per_file, async_pool_max)
-        connector = aiohttp.TCPConnector(limit=pool_size)
-        transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector))
-        async with AsyncBlobServiceClient(account_url=svc.url,
-                                          credential=svc.credential,
-                                          api_version=svc.api_version,
-                                          transport=transport) as async_client:
+        async with _async_blob_service_client(dest_path.client, pool_size) as async_client:
             queue = asyncio.Queue(maxsize=queue_size)
             db_lock = asyncio.Lock()
 
@@ -1213,13 +1226,8 @@ def _verify_async(dest_path: FileSystemHelper, src_root, pages, ledger: _VerifyL
     writes share one lock (SQLite single writer).
     """
     async def process():
-        svc = dest_path.client.service_client
-        connector = aiohttp.TCPConnector(limit=min(concurrency, UPLOAD_ASYNC_POOL_MAX))
-        transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector))
-        async with AsyncBlobServiceClient(account_url=svc.url,
-                                          credential=svc.credential,
-                                          api_version=svc.api_version,
-                                          transport=transport) as async_client:
+        async with _async_blob_service_client(dest_path.client,
+                                              min(concurrency, UPLOAD_ASYNC_POOL_MAX)) as async_client:
             dests = {}
 
             def dest_for(version):

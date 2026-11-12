@@ -228,6 +228,8 @@ def __make_az_client(auth_params: dict) -> AzureBlobClient:
             blob_service_client=factory_fn(),
             file_cache_mode=FileCacheMode.cloudpath_object)
         az_client._clone_factory = factory_fn
+        # read by the async client (upload_ops) so both use the same TLS setting.
+        az_client._connection_verify = _bsc_kwargs["connection_verify"]
         return az_client
 
     def _make_transport(pool_size):
@@ -358,6 +360,7 @@ def __clone_az_client(orig: AzureBlobClient, pool_size: int = None) -> AzureBlob
             blob_service_client=orig._clone_factory(pool_size=pool_size),
             file_cache_mode=FileCacheMode.cloudpath_object)
         az_client._clone_factory = orig._clone_factory
+        az_client._connection_verify = getattr(orig, "_connection_verify", False)
         return az_client
     # Fallback for clients not built through _make_client (e.g. in tests):
     # share the existing BlobServiceClient — it is thread-safe.

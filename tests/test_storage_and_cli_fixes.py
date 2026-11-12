@@ -259,3 +259,30 @@ def test_adaptive_threads_locks_after_slowdown():
 def test_modalities_are_stripped():
     mods = config_helper.get_modalities({"configuration": {"supported_modalities": "OMOP, Waveforms ,Images"}})
     assert mods == ["OMOP", "Waveforms", "Images", "Metadata"]
+
+
+def test_async_client_follows_connection_verify(monkeypatch):
+    import asyncio
+    monkeypatch.delenv("AZURE_STORAGE_CONNECTION_STRING", raising=False)
+    seen = []
+
+    class FakeAsyncClient:
+        def __init__(self, **kw):
+            seen.append(("client", kw["connection_verify"], kw["account_url"]))
+    monkeypatch.setattr(upload_ops, "AsyncBlobServiceClient", FakeAsyncClient)
+    monkeypatch.setattr(upload_ops, "AioHttpTransport",
+                        lambda **kw: seen.append(("transport", kw["connection_verify"])))
+    monkeypatch.setattr(upload_ops, "aiohttp", types.SimpleNamespace(
+        TCPConnector=lambda **kw: None, ClientSession=lambda **kw: None))
+
+    async def build(auth):
+        client, _ = az_client(auth)
+        clone = storage_helper._clone_client(client, pool_size=2)
+        assert clone._connection_verify == client._connection_verify
+        upload_ops._async_blob_service_client(clone, 4)
+
+    base = {"azure_account_name": "acct1", "azure_account_key": KEY}
+    asyncio.run(build(base))                                   # default: off, like the sync client
+    asyncio.run(build({**base, "connection_verify": True}))    # opt-in: on for both
+    assert [s[1] for s in seen] == [False, False, True, True]
+    assert seen[1][2].startswith("https://acct1.blob.core.windows.net")
