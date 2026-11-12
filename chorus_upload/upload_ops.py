@@ -9,6 +9,9 @@ from enum import Enum
 import concurrent.futures
 import threading
 import sqlite3
+import base64
+import binascii
+from collections import Counter
 from contextlib import contextmanager
 from itertools import islice
 
@@ -333,7 +336,8 @@ def _upload_and_verify(src_path : FileSystemHelper,
             dest_meta = None
         # case 2 missing in cloud.  this is the missing case;
         verify_time = time.time() - start
-        if dest_meta is None:
+        # sync get_metadata returns a dict of Nones (not None) for a missing file.
+        if dest_meta is None or dest_meta.get('size') is None:
             state = sync_state.MISSING_DEST
             #log.error(f"missing file at destination {destfn}")
     
@@ -949,20 +953,6 @@ def upload_files(src_path : FileSystemHelper, dest_path : FileSystemHelper,
     del perf
     return upload_dt_str, remaining  # if max_num_files is None, remaining is None, meaning no limit.
 
-def _get_file_info(dated_dest_path: FileSystemHelper, file_info: tuple, **kwargs):
-    
-    fid, fn, size, md5, modality = file_info
-    compiled_patterns = kwargs.get("compiled_patterns", {})
-    modality_configs = kwargs.get("modality_configs", {})
-    central_fn = convert_local_to_central_path(fn, in_compiled_pattern = compiled_patterns.get(modality, None), 
-                                            modality = modality,
-                                            omop_per_patient = modality_configs.get(modality, {}).get("omop_per_patient", False))
-    
-    dest_meta = FileSystemHelper.get_metadata(root = dated_dest_path.root, path = central_fn, with_metadata = True, with_md5 = True, local_md5 = md5, **kwargs)
-    dest_md5 = dest_meta['md5'] if (dest_meta is not None) else None
-
-    return (dest_meta, dest_md5, fid, fn, size, md5)
-
 def _get_file_info2(dest_path: FileSystemHelper, file_info: tuple,  **kwargs):
     
     fid, fn, size, md5, version, modality = file_info
@@ -982,270 +972,161 @@ def _get_file_info2(dest_path: FileSystemHelper, file_info: tuple,  **kwargs):
     return (dest_meta, dest_md5, dest_root, fid, fn, size, md5)
 
 
-def _async_verify(dated_dest_path: FileSystemHelper,
-                  pages,
-                  concurrency: int, *,
-                  compute_md5: bool = False,
-                  queue_size: int = None,
-                  needs_download=None,
-                  **kwargs) -> tuple:
-    """Async verification for Azure destinations.
+# ------------------------------------------------------------------------------------ verify
+#
+# For each active journal entry (one version, or all versions; per modality), in FILE_ID pages:
+#   local  (path, size, mtime)  vs journal:  L matched, ~L changed, X missing
+#   remote (version/path, size, md5) vs journal:  R matched, ~R corrupt, Y missing
+# Actions:
+#   ~L or X     -> journal needs `journal update`; upload time left as is (remote not checked).
+#   L and R     -> if upload time is null, set it to the latest upload time of the same journal
+#                  version (from any row), else to the remote file's modify time.
+#   L and ~R/Y  -> clear upload time so the next upload re-sends the file.
+# Journal changes are applied only when apply=True; otherwise they are counted (dry run).
 
-    needs_download: optional sink with .append() (e.g. a disk-backed _DownloadSpill);
-      defaults to a new list.  A file whose check raises is reported in `failed`, not
-      missing, and does not stop the run.
+VERIFY_ASYNC_CONCURRENCY = 128   # get_blob_properties is cheap and uniform; no size grouping
 
-    pages: iterable of lists of (fid, fn, size, md5, modality).  Streamed through a bounded
-      queue (>= 2 * concurrency) to `concurrency` workers, so memory is bounded by ~2 pages.
-
-    Phase 1 (compute_md5=False): fetches blob properties only — fast, no downloads.
-      Files where both remote and journal md5 are absent are returned in needs_download.
-    Phase 2 (compute_md5=True): streams and hashes blobs with no md5 anywhere.
-      needs_download will be empty on return.
-
-    Returns (n_matched, mismatched, missing, needs_download, failed); matched files are only counted.
-    """
-    if not isinstance(dated_dest_path.client, AzureBlobClient):
-        raise ValueError("_async_verify only supports Azure Blob Storage destinations.")
-
-    n_matched = 0
-    mismatched = []
-    missing = []
-    failed = []
-    if needs_download is None:
-        needs_download = []
-
-    verbose = kwargs.get("verbose", False)
-    compiled_patterns = kwargs.get("compiled_patterns", {})
-    modality_configs = kwargs.get("modality_configs", {})
-
-    async def process():
-        svc = dated_dest_path.client.service_client
-        connector = aiohttp.TCPConnector(limit=min(concurrency, 256))
-        transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector))
-        async with AsyncBlobServiceClient(account_url=svc.url,
-                                          credential=svc.credential,
-                                          api_version=svc.api_version,
-                                          transport=transport) as async_client:
-            async_dest = FileSystemHelper(
-                dated_dest_path.root,
-                client=dated_dest_path.client,
-                internal_host=dated_dest_path.internal_host,
-                async_azclient=async_client,
-            )
-            queue = asyncio.Queue(maxsize=max(queue_size or 0, 2 * concurrency))
-
-            async def worker():
-                nonlocal n_matched
-                while (item := await queue.get()) is not None:
-                    fid, fn, size, md5, modality = item
-                    try:
-                        central_fn = convert_local_to_central_path(
-                            fn,
-                            in_compiled_pattern=compiled_patterns.get(modality, None),
-                            modality=modality,
-                            omop_per_patient=modality_configs.get(modality, {}).get("omop_per_patient", False))
-                        dest_meta = await async_dest.async_get_metadata(
-                            path=central_fn, with_metadata=True, with_md5=True,
-                            local_md5=md5, compute_md5=compute_md5)
-                    except Exception as e:
-                        log.error(f"verify failed {fid} {fn}, due to {type(e).__name__}: {str(e)}")
-                        failed.append(fn)
-                        continue
-                    if _classify_verify(dest_meta, fid, fn, size, md5, modality,
-                                        mismatched, missing, needs_download, verbose):
-                        n_matched += 1
-
-            await asyncio.gather(_produce_pages(pages, queue, concurrency),
-                                 *(worker() for _ in range(concurrency)))
-
-    asyncio.run(process())
-    return n_matched, mismatched, missing, needs_download, failed
+# phase 2 (download + hash, Azure only, remote md5 absent): (concur_type, min, max, concurrency)
+VERIFY_DOWNLOAD_GROUPS = {
+    'small':   ('async',  0,       2**20,  32),
+    'medium':  ('async',  2**20,   2**23,  16),
+    'large':   ('async',  2**23,   2**26,   8),
+    'xlarge':  ('async',  2**26,   2**27,   4),
+    'xxlarge': ('thread', 2**27,   2**28,   4),
+    'huge':    ('thread', 2**28,   float('inf'), 2),
+}
 
 
-def _classify_verify(dest_meta, fid, fn, size, md5, modality,
-                     mismatched, missing, needs_download, verbose) -> bool:
-    """Classify one async verify result into the given lists; returns True if matched."""
-    if dest_meta is None or dest_meta['size'] is None:
-        missing.append(fn)
-        log.error(f"missing file {fn}")
-    elif size != dest_meta['size']:
-        log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
-        mismatched.append(fn)
-    elif dest_meta['md5'] is None and md5 is None:
-        # both md5s absent: size matches but content unverifiable without download
-        needs_download.append((fid, fn, size, md5, modality))
-    elif md5 is not None and dest_meta['md5'] is not None and md5 != dest_meta['md5']:
-        log.error(f"mismatched file {fid} {fn}: remote md5 {dest_meta['md5']} journal md5 {md5}")
-        mismatched.append(fn)
-    else:
-        # size matches; md5 either matches or one side is None (size-only match)
-        if verbose:
-            log.debug(f"verified {fn} {fid}")
-        else:
-            print(".", end="", flush=True)
+def _md5_equal(remote_md5: str, journal_md5: str) -> bool:
+    if remote_md5 == journal_md5:
         return True
-    return False
+    # known artifact: md5 stored doubly base64-encoded on the blob.
+    try:
+        return base64.b64decode(bytes.fromhex(remote_md5)).hex() == journal_md5
+    except (ValueError, binascii.Error):
+        return False
 
 
-def _thread_verify(dated_dest_path: FileSystemHelper,
-                   pages,
-                   nthreads: int,
-                   **kwargs) -> tuple:
-    """Thread-pool verification. Used for huge files that require blob download+hash.
+def _remote_outcome(meta, size, md5) -> str:
+    """'missing' (Y), 'corrupt' (~R), 'matched' (R), or 'no_md5' (size matches, remote md5 unknown)."""
+    if meta is None or meta.get('size') is None:
+        return 'missing'
+    if meta['size'] != size:
+        return 'corrupt'
+    remote_md5 = meta.get('md5')
+    if remote_md5 is None or '-' in remote_md5:   # absent, or S3 multipart etag (not an md5)
+        return 'no_md5'
+    return 'matched' if _md5_equal(remote_md5, md5) else 'corrupt'
 
-    pages: iterable of lists of (fid, fn, size, md5, modality); at most 2 * nthreads
-    checks are in flight.  A check that raises is reported in `failed` and does not stop
-    the run.  Returns (n_matched, mismatched, missing, [], failed).
-    """
-    verbose = kwargs.get("verbose", False)
-    n_matched = 0
-    mismatched = []
-    missing = []
-    failed = []
 
-    dtstr = dated_dest_path.root.name
-    lock = threading.Lock()
+def _local_outcome(src_root: FileSystemHelper, fn: str, size, mtime) -> str:
+    """'matched' (L), 'changed' (~L), or 'missing' (X) for the local file vs the journal."""
+    meta = FileSystemHelper.get_metadata(root=src_root.root, path=fn, with_metadata=True, with_md5=False)
+    if meta is None or meta.get('size') is None:
+        return 'missing'
+    return 'matched' if (meta['size'] == size and meta['modify_time_us'] == mtime) else 'changed'
 
-    def check(item):
+
+def _check_local_page(src_root: FileSystemHelper, rows, executor):
+    """[(row, outcome, error)] for a page of journal rows, checked in parallel."""
+    def check(row):
         try:
-            return _get_file_info(dated_dest_path, item, **{**kwargs, "lock": lock}), None
+            return row, _local_outcome(src_root, row[1], row[3], row[2]), None
         except Exception as e:
-            return None, (item, e)
-
-    def on_done(future):
-        nonlocal n_matched
-        result, error = future.result()
-        if error is not None:
-            (item, e) = error
-            log.error(f"verify failed {item[0]} {item[1]}, due to {type(e).__name__}: {str(e)}")
-            failed.append(item[1])
-            return
-        dest_meta, dest_md5, fid, fn, size, md5 = result
-
-        if dest_meta is None or dest_meta['size'] is None:
-            missing.append(fn)
-            log.error(f"missing file {fn}")
-        elif size != dest_meta['size']:
-            log.error(f"mismatched file {fid} {fn}: remote size {dest_meta['size']} journal size {size}")
-            mismatched.append(fn)
-        elif md5 is not None and dest_md5 is not None and md5 != dest_md5:
-            log.error(f"mismatched file {fid} {fn} for upload {dtstr}: remote md5 {dest_md5} journal md5 {md5}")
-            mismatched.append(fn)
-        else:
-            if verbose:
-                log.debug(f"verified {fn} {fid}")
-            else:
-                print(".", end="", flush=True)
-            n_matched += 1
-
-    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor:
-        _bounded_submit(executor, pages, lambda item: executor.submit(check, item),
-                        2 * nthreads, on_done)
-
-    return n_matched, mismatched, missing, [], failed  # no needs_download from thread path
+            return row, None, e
+    return list(executor.map(check, rows))
 
 
-def _parallel_verify(dated_dest_path: FileSystemHelper,
-                     source,
-                     nthreads: int, *,
-                     compute_md5: bool = True,
-                     **kwargs) -> tuple:
-    """Dispatch verification to _async_verify or _thread_verify by cloud type and file size.
+def _upload_dt_from_us(modify_time_us: int) -> str:
+    """Same format as upload_files' upload_dt_str."""
+    return strftime("%Y%m%d%H%M%S", gmtime(modify_time_us / 1e6))
 
-    Design rationale
-    ----------------
-    This function is the size-group dispatcher for verification — the verify-side
-    analogue of _parallel_upload.  It is intentionally not responsible for the
-    two-phase orchestration (metadata-only phase 1 vs. download+hash phase 2);
-    that logic belongs in verify_files, which calls this function only for the
-    phase 2 download+hash pass.
 
-    Phase 1 (metadata-only, flat concurrency=128) does not benefit from size
-    grouping because it issues only a get_blob_properties call per file.
-    Routing it through this function would add unnecessary complexity.  Phase 1
-    is therefore dispatched directly from verify_files.
+class _VerifyLedger:
+    """Outcome counts and batched journal changes for verify_files.
 
-    This function handles phase 2: files whose md5 is absent from both the remote
-    blob and the journal, requiring a full content download+hash.  Files are
-    grouped by size to balance concurrency against per-connection memory pressure:
-
-    # group    size        type    concurrency   notes
-    # small   <   1MB     async       32         stream+hash
-    # medium  <   8MB     async       16         stream+hash
-    # large   <  64MB     async        8         stream+hash
-    # xlarge  < 128MB     async        4         stream+hash
-    # xxlarge < 256MB     thread       4         sync stream+hash
-    # huge    >= 256MB    thread       2         sync stream+hash
-
-    For non-Azure destinations the async path is unavailable; all groups fall
-    back to _thread_verify.
-
-    Args:
-        files_to_verify: iterable of (fid, fn, size, md5, modality)
-        compute_md5: passed through to _async_verify; True means stream+hash.
-
-    Args:
-        source: has count(min_size, max_size) and iter_pages(min_size, max_size, batch)
-          yielding lists of (fid, fn, size, md5, modality) — e.g. a _DownloadSpill.  Each
-          group is streamed in pages of page_size × concurrency rows.
-
-    Returns:
-        (n_matched, mismatched, missing, failed) — a count and plain lists.
+    counts keys:
+      local_changed, local_missing            ~L, X: run `journal update`; upload time untouched.
+      matched                                 L, R; upload time already set.
+      matched_set_upload_time                 L, R; upload time was null -> set to the version's
+                                              latest upload time, else the remote mtime.
+      remote_missing_cleared, remote_corrupt_cleared
+                                              L, Y / ~R with an upload time -> cleared for re-upload.
+      remote_missing_not_uploaded, remote_corrupt_not_uploaded
+                                              L, Y / ~R; upload time already null.
+      unverifiable                            L, size matches, remote md5 unavailable (e.g. S3 multipart).
+      failed                                  a check raised (e.g. network); rerun verify.
+    Rows are journal tuples (fid, path, mtime, size, md5, modality, invalid, version, upload_dt).
     """
-    verbose = kwargs.get("verbose", False)
 
-    if not isinstance(dated_dest_path.client, AzureBlobClient):
-        raise ValueError("_parallel_verify only supports Azure Blob Storage destinations.")
+    def __init__(self, databasename: str, step: int, apply: bool, version_upload_dt: dict = None):
+        self.databasename = databasename
+        self.step = step
+        self.apply = apply
+        # {journal version: latest upload time recorded for it}; null upload times of matched
+        # files borrow it, so the uploads table does not grow per file.
+        self.version_upload_dt = version_upload_dt or {}
+        self.counts = Counter()
+        self._set = []     # (upload_dt, upload_dur, verify_dur, fid)
+        self._clear = []   # (fid,)
 
-    use_async = True  # already guaranteed Azure by the guard above
+    def record_local(self, outcome: str, row):
+        key = 'local_changed' if outcome == 'changed' else 'local_missing'
+        self.counts[key] += 1
+        log.debug(f"{key} {row[0]} {row[1]}")
 
-    download_groups = {
-        'small':   ('async',  0,       2**20,  32),
-        'medium':  ('async',  2**20,   2**23,  16),
-        'large':   ('async',  2**23,   2**26,   8),
-        'xlarge':  ('async',  2**26,   2**27,   4),
-        'xxlarge': ('thread', 2**27,   2**28,   4),
-        'huge':    ('thread', 2**28,   float('inf'), 2),
-    }
+    def record_failed(self, row, e: Exception):
+        self.counts['failed'] += 1
+        log.error(f"verify failed {row[0]} {row[1]}, due to {type(e).__name__}: {str(e)}")
 
-    step = kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE)
-    matched = 0
-    mismatched = []
-    missing = []
-    failed = []
-
-    for group_name, (concur_type, min_size, max_size, concurrency) in download_groups.items():
-        n_group = source.count(min_size, max_size)
-        if n_group == 0:
-            continue
-
-        if concur_type == 'async' and use_async:
-            page_rows = step * concurrency
-            log.info(f"VERIFY {n_group} files in {group_name} group, async")
-            m, mm, mi, _, fa = _async_verify(dated_dest_path, source.iter_pages(min_size, max_size, page_rows),
-                                             concurrency, compute_md5=compute_md5,
-                                             queue_size=page_rows, **kwargs)
+    def record_remote(self, outcome: str, row, meta):
+        fid, fn, _mtime, _size, _md5, _mod, _inv, version, upload_dt = row
+        if outcome == 'matched':
+            borrowed = self.version_upload_dt.get(version)
+            if upload_dt is None and (borrowed is not None or meta.get('modify_time_us') is not None):
+                # prefer the version's existing upload time; else the remote modify time.
+                new_dt = borrowed if borrowed is not None else _upload_dt_from_us(meta['modify_time_us'])
+                self._set.append((new_dt, None, None, fid))
+                key = 'matched_set_upload_time'
+            else:
+                key = 'matched'
+        elif outcome in ('missing', 'corrupt'):
+            if upload_dt is not None:
+                self._clear.append((fid,))
+                key = f'remote_{outcome}_cleared'
+            else:
+                key = f'remote_{outcome}_not_uploaded'
+            log.error(f"{outcome} at destination: {fid} {fn} version {version}")
         else:
-            nuploads = min(concurrency, nthreads)
-            log.info(f"VERIFY {n_group} files in {group_name} group, thread")
-            m, mm, mi, _, fa = _thread_verify(dated_dest_path,
-                                              source.iter_pages(min_size, max_size, step * nuploads),
-                                              nuploads, **kwargs)
-        matched += m
-        mismatched += mm
-        missing += mi
-        failed += fa
+            key = 'unverifiable'
+            log.warning(f"remote md5 unavailable, size-only match: {fid} {fn} version {version}")
+        self.counts[key] += 1
 
-    return matched, mismatched, missing, failed
+    def needs_flush(self) -> bool:
+        return len(self._set) + len(self._clear) >= self.step
+
+    def take(self):
+        batch = (self._set, self._clear)
+        self._set, self._clear = [], []
+        return batch
+
+    def write(self, batch):
+        """Apply a batch from take() to the journal (no-op in dry run)."""
+        to_set, to_clear = batch
+        if not self.apply:
+            return
+        if to_set:
+            JournalDispatcher.mark_as_uploaded_with_duration(self.databasename, to_set)
+        if to_clear:
+            JournalDispatcher.mark_as_not_uploaded(self.databasename, to_clear)
 
 
 class _DownloadSpill:
-    """Disk-backed list of (fid, fn, size, md5, modality) awaiting phase-2 download+hash.
+    """Disk-backed list of journal rows awaiting phase-2 download+hash (remote md5 absent).
 
     append() buffers up to buffer_rows in memory, then writes to a scratch SQLite file
     (indexed by size) next to the journal; the file is removed on close.  Phase 2 streams
-    it per size group, so memory stays bounded however many files lack an md5.
+    it per size group, so memory stays bounded however many blobs lack an md5.
     """
 
     def __init__(self, path: str, buffer_rows: int):
@@ -1255,8 +1136,8 @@ class _DownloadSpill:
         self._count = 0
         self._remove()
         with self._connect() as c:
-            c.execute("CREATE TABLE pending (FILE_ID INTEGER PRIMARY KEY, PATH TEXT, SIZE INTEGER,"
-                      " MD5 TEXT, MODALITY TEXT)")
+            c.execute("CREATE TABLE pending (FILE_ID INTEGER PRIMARY KEY, PATH TEXT, MTIME INTEGER,"
+                      " SIZE INTEGER, MD5 TEXT, MODALITY TEXT, INVALID INTEGER, VERSION TEXT, UPLOAD_DT TEXT)")
             c.execute("CREATE INDEX pending_size ON pending (SIZE)")
 
     def _connect(self):
@@ -1268,8 +1149,8 @@ class _DownloadSpill:
         if os.path.exists(self.path):
             os.remove(self.path)
 
-    def append(self, item):
-        self._buf.append(item)
+    def append(self, row):
+        self._buf.append(tuple(row))
         self._count += 1
         if len(self._buf) >= self.buffer_rows:
             self.flush()
@@ -1277,30 +1158,33 @@ class _DownloadSpill:
     def flush(self):
         if self._buf:
             with self._connect() as c:
-                c.executemany("INSERT OR IGNORE INTO pending VALUES (?,?,?,?,?)", self._buf)
+                c.executemany("INSERT OR IGNORE INTO pending VALUES (?,?,?,?,?,?,?,?,?)", self._buf)
             self._buf.clear()
 
     def __len__(self):
         return self._count
 
+    def _size_where(self, min_size, max_size):
+        if max_size == float('inf'):
+            return "SIZE >= ?", [min_size]
+        return "SIZE >= ? AND SIZE < ?", [min_size, max_size]
+
     def count(self, min_size, max_size) -> int:
         self.flush()
-        hi = "" if max_size == float('inf') else " AND SIZE < ?"
-        args = (min_size,) if max_size == float('inf') else (min_size, max_size)
+        where, args = self._size_where(min_size, max_size)
         with self._connect() as c:
-            return c.execute(f"SELECT COUNT(*) FROM pending WHERE SIZE >= ?{hi}", args).fetchone()[0]
+            return c.execute(f"SELECT COUNT(*) FROM pending WHERE {where}", args).fetchone()[0]
 
     def iter_pages(self, min_size, max_size, batch: int):
-        """Yield lists of (fid, fn, size, md5, modality) in [min_size, max_size), FILE_ID order."""
+        """Yield lists of journal rows with size in [min_size, max_size), FILE_ID order."""
         self.flush()
-        hi = "" if max_size == float('inf') else " AND SIZE < ?"
+        where, args = self._size_where(min_size, max_size)
         last = None
         while True:
-            after = "" if last is None else " AND FILE_ID > ?"
-            args = [min_size] + ([] if max_size == float('inf') else [max_size]) + ([] if last is None else [last])
+            after, after_args = ("", []) if last is None else (" AND FILE_ID > ?", [last])
             with self._connect() as c:
-                rows = c.execute(f"SELECT FILE_ID, PATH, SIZE, MD5, MODALITY FROM pending WHERE SIZE >= ?{hi}{after}"
-                                 " ORDER BY FILE_ID LIMIT ?", args + [batch]).fetchall()
+                rows = c.execute(f"SELECT * FROM pending WHERE {where}{after} ORDER BY FILE_ID LIMIT ?",
+                                 args + after_args + [batch]).fetchall()
             if not rows:
                 return
             last = rows[-1][0]
@@ -1321,130 +1205,259 @@ def closing_commit(conn):
         conn.close()
 
 
+def _verify_async(dest_path: FileSystemHelper, src_root, pages, ledger: _VerifyLedger,
+                  central_of, *, concurrency: int, queue_size: int, nthreads: int,
+                  compute_md5: bool = False, spill: _DownloadSpill = None):
+    """Azure: local checks per page (thread pool), remote checks by `concurrency` async workers.
+
+    src_root None skips the local check (phase 2 rows already passed it).  Rows whose remote
+    md5 is absent go to `spill` when given, else count as unverifiable.  Page reads and journal
+    writes share one lock (SQLite single writer).
+    """
+    async def process():
+        svc = dest_path.client.service_client
+        connector = aiohttp.TCPConnector(limit=min(concurrency, UPLOAD_ASYNC_POOL_MAX))
+        transport = AioHttpTransport(session=aiohttp.ClientSession(connector=connector))
+        async with AsyncBlobServiceClient(account_url=svc.url,
+                                          credential=svc.credential,
+                                          api_version=svc.api_version,
+                                          transport=transport) as async_client:
+            dests = {}
+
+            def dest_for(version):
+                if version not in dests:
+                    dests[version] = FileSystemHelper(dest_path.root.joinpath(version),
+                                                      client=dest_path.client,
+                                                      internal_host=dest_path.internal_host,
+                                                      async_azclient=async_client)
+                return dests[version]
+
+            queue = asyncio.Queue(maxsize=max(queue_size, 2 * concurrency))
+            db_lock = asyncio.Lock()
+
+            async def flush(force=False):
+                if force or ledger.needs_flush():
+                    batch = ledger.take()
+                    async with db_lock:
+                        await asyncio.to_thread(ledger.write, batch)
+
+            async def producer():
+                page_iter = iter(pages)
+                with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as local_ex:
+                    while True:
+                        async with db_lock:
+                            rows = await asyncio.to_thread(next, page_iter, None)
+                        if rows is None:
+                            break
+                        if src_root is None:
+                            checked = [(row, 'matched', None) for row in rows]
+                        else:
+                            checked = await asyncio.to_thread(_check_local_page, src_root, rows, local_ex)
+                        for row, outcome, err in checked:
+                            if err is not None:
+                                ledger.record_failed(row, err)
+                            elif outcome != 'matched':
+                                ledger.record_local(outcome, row)
+                            else:
+                                await queue.put(row)
+                        await flush()
+                for _ in range(concurrency):
+                    await queue.put(None)
+
+            async def worker():
+                while (row := await queue.get()) is not None:
+                    fid, fn, _mtime, size, md5, modality, _inv, version, _up = row
+                    try:
+                        meta = await dest_for(version).async_get_metadata(
+                            path=central_of(fn, modality), with_metadata=True, with_md5=True,
+                            local_md5=None, compute_md5=compute_md5)
+                    except Exception as e:
+                        ledger.record_failed(row, e)
+                        continue
+                    outcome = _remote_outcome(meta, size, md5)
+                    if outcome == 'no_md5' and spill is not None:
+                        spill.append(row)
+                        continue
+                    ledger.record_remote(outcome, row, meta)
+                    await flush()
+
+            await asyncio.gather(producer(), *(worker() for _ in range(concurrency)))
+            await flush(force=True)
+
+    asyncio.run(process())
+
+
+def _verify_threads(dest_path: FileSystemHelper, src_root, pages, ledger: _VerifyLedger,
+                    central_of, *, nthreads: int):
+    """Thread-pool variant (non-Azure destinations, and huge files in phase 2).
+
+    The sync get_metadata computes the md5 when the remote has none (local file, or Azure
+    download); an S3 multipart etag stays unverifiable.  Page reads, local checks dispatch and
+    journal writes all run on the calling thread.
+    """
+    lock = threading.Lock()
+
+    def remote_check(row):
+        fid, fn, _mtime, size, md5, modality, _inv, version, _up = row
+        try:
+            meta = FileSystemHelper.get_metadata(root=dest_path.root.joinpath(version),
+                                                 path=central_of(fn, modality),
+                                                 with_metadata=True, with_md5=True, local_md5=None, lock=lock)
+            return row, meta, None
+        except Exception as e:
+            return row, None, e
+
+    def on_done(future):
+        row, meta, err = future.result()
+        if err is not None:
+            ledger.record_failed(row, err)
+        else:
+            outcome = _remote_outcome(meta, row[3], row[4])
+            ledger.record_remote('unverifiable' if outcome == 'no_md5' else outcome, row, meta)
+        if ledger.needs_flush():
+            ledger.write(ledger.take())
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as executor, \
+         concurrent.futures.ThreadPoolExecutor(max_workers=nthreads) as local_ex:
+        def locally_matched_pages():
+            for rows in pages:
+                if src_root is None:
+                    yield rows
+                    continue
+                keep = []
+                for row, outcome, err in _check_local_page(src_root, rows, local_ex):
+                    if err is not None:
+                        ledger.record_failed(row, err)
+                    elif outcome != 'matched':
+                        ledger.record_local(outcome, row)
+                    else:
+                        keep.append(row)
+                yield keep
+        _bounded_submit(executor, locally_matched_pages(),
+                        lambda row: executor.submit(remote_check, row), 2 * nthreads, on_done)
+    ledger.write(ledger.take())
+
+
+def _journal_pages(databasename: str, modality: str, version, page_rows: int):
+    """Keyset pages (FILE_ID order) of active rows of one modality, one version or all (None).
+    Short queries, so journal writes between pages are safe."""
+    last_id = None
+    while True:
+        rows = JournalDispatcher.get_files_page(databasename, [modality], version=version, active=True,
+                                                after_file_id=last_id, limit=page_rows)
+        if not rows:
+            return
+        last_id = rows[-1][0]
+        yield rows
+
+
 def verify_files(dest_path: FileSystemHelper, databasename: str = "journal.db",
                  version: Optional[str] = None,
                  modalities: Optional[list] = None,
+                 *,
+                 src_paths: dict = None,
+                 all_versions: bool = False,
+                 update_upload_status: bool = False,
                  **kwargs):
-    """Verify the integrity of uploaded files against the journal.
+    """Verify active journal entries against the local files and the uploaded copies.
 
-    Two-phase verification strategy
-    --------------------------------
-    For Azure Blob destinations, verification is split into two phases to avoid
-    downloading file content unless strictly necessary:
+    Scope: `version` (default: latest) or, with all_versions, every version's active files;
+    limited to `modalities`.  src_paths maps modality -> local root FileSystemHelper.
 
-    Phase 1 — metadata only, all files, high concurrency (async, concurrency=128):
-        Calls _async_verify with compute_md5=False.  For each file:
-        - If the remote blob is missing → missing.
-        - If sizes differ → mismatched.
-        - If either the remote blob md5 or the journal md5 is present → compared
-          directly; matched or mismatched.  (If only one side has an md5,
-          _async_verify writes the known md5 back to the blob so future verifications
-          are cheaper.)
-        - If both md5s are absent → deferred to phase 2 (needs_download list).
-        Phase 1 uses a single flat concurrency because get_blob_properties is
-        cheap and uniform regardless of file size — no size grouping needed.
+    Per entry (see the table at the top of this section): ~L / X are reported for
+    `journal update`; L+R sets a missing upload time to the latest upload time already
+    recorded for the entry's version (else the remote modify time); L+~R / L+Y
+    clears the upload time for re-upload.  Journal changes are made only with
+    update_upload_status=True; otherwise this is a dry run that reports what would change.
 
-    Phase 2 — content download + hash, deferred files only (Azure only):
-        Calls _parallel_verify, which groups files by size and dispatches each
-        group to _async_verify(compute_md5=True) for small/medium/large/xlarge
-        files, or to _thread_verify for very large files (>128 MB).  Phase 2
-        only runs when needs_download is non-empty, which is rare once blobs
-        have md5 attributes set.
-
-    For non-Azure destinations (S3, local):
-        _thread_verify is called directly (single phase).  The sync get_metadata
-        path always provides an md5 (S3 etag, local computed hash), so needs_download
-        is never populated and phase 2 is unreachable.
-
-    Args:
-        dest_path: Destination root (cloud or local).
-        databasename: Path to the journal SQLite database.
-        version: Upload version string to verify; defaults to the latest version.
-        modalities: List of modality names to check; None means all.
-
-    Active files of the version are streamed from the journal in batches of
-    page_size × concurrency rows; only mismatched/missing paths (and phase-2 candidates)
-    are kept in memory.
-
-    Phase-2 candidates are spilled to a scratch SQLite file next to the journal.  A file
-    whose check raises (e.g. a network error) is reported in `failed` and does not stop
-    the run; rerun verify for those.
+    Remote md5 is read as stored (never overwritten from the journal).  When absent on Azure,
+    the blob is downloaded and hashed in phase 2 (spilled to a scratch file next to the journal).
 
     Returns:
-        (n_matched, mismatched, missing, failed) — matched count; the others are sets of paths.
+        dict of outcome counts (keys documented in _VerifyLedger).
     """
-    verbose = kwargs.get("verbose", False)
-
+    if all_versions and (version is not None):
+        raise ValueError("specify either a version or all_versions, not both")
     if not os.path.exists(databasename):
         log.error(f"No journal exists for filename {databasename}")
-        return
+        return None
+    if not modalities:
+        raise ValueError("modalities are required")
+    src_paths = src_paths or {}
+    missing_roots = [m for m in modalities if m not in src_paths]
+    if missing_roots:
+        raise ValueError(f"no local root given for modalities {missing_roots}")
 
-    dtstr = version if version is not None else JournalDispatcher.get_latest_version(databasename)
-
-    filters = {'version': dtstr, 'active': True}
-    n_files = sum(n for _, n in JournalDispatcher.count_files_by_version(databasename, modalities, **filters))
-
-    if n_files == 0:
-        log.info("no files to verify.")
-        return
-
-    dated_dest_path = FileSystemHelper(dest_path.root.joinpath(dtstr),
-                                       client=dest_path.client,
-                                       internal_host=dest_path.internal_host)
-
+    ver = None if all_versions else (version if version is not None
+                                     else JournalDispatcher.get_latest_version(databasename))
+    step = kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE)
     n_cores = kwargs.get("n_cores", 32)
     nthreads = min(n_cores, min(32, (os.cpu_count() or 1) + 4))
+    compiled_patterns = kwargs.get("compiled_patterns", {})
+    modality_configs = kwargs.get("modality_configs", {})
 
-    step = kwargs.get("page_size", DEFAULT_REMOTE_OP_PAGE_SIZE)
+    def central_of(fn, modality):
+        return convert_local_to_central_path(fn, in_compiled_pattern=compiled_patterns.get(modality, None),
+                                             modality=modality,
+                                             omop_per_patient=modality_configs.get(modality, {}).get("omop_per_patient", False))
 
-    def file_info_pages(batch):
-        # read-only pass: one streaming cursor over the journal.
-        for rows in JournalDispatcher.iter_files_batches(databasename, modalities, batch, **filters):
-            yield [(fid, filepath, size, md5, modality)
-                   for (fid, filepath, _, size, md5, modality, _, _, _) in rows]
+    ledger = _VerifyLedger(databasename, step, apply=update_upload_status,
+                           version_upload_dt=JournalDispatcher.latest_upload_by_version(databasename))
+    use_async = isinstance(dest_path.client, AzureBlobClient)
+    scope = "all versions" if all_versions else f"version {ver}"
+    mode = "" if update_upload_status else " (dry run: journal not changed; use --update-upload-status to apply)"
 
-    if isinstance(dest_path.client, AzureBlobClient):
-        # Phase 1: metadata-only, all files.  Flat concurrency=128 is intentional —
-        # get_blob_properties cost is uniform regardless of file size, so size
-        # grouping adds no benefit here.
-        concurrency = 128
-        page_rows = step * concurrency
-        log.info(f"VERIFY phase 1: fetching metadata for {n_files} files (async, concurrency={concurrency}, page={page_rows})")
-        spill = _DownloadSpill(databasename + ".verify_download.tmp", buffer_rows=page_rows)
-        try:
-            matched, mismatched, missing, _, failed = _async_verify(
-                dated_dest_path, file_info_pages(page_rows), concurrency=concurrency,
-                queue_size=page_rows, needs_download=spill, **kwargs)
+    for modality in modalities:
+        n_files = sum(n for _, n in JournalDispatcher.count_files_by_version(
+            databasename, [modality], version=ver, active=True))
+        if n_files == 0:
+            log.info(f"VERIFY {modality}: no active files for {scope}.")
+            continue
 
-            if len(spill) > 0:
-                # Phase 2: content download + hash only for files with no md5 anywhere.
-                # _parallel_verify groups by size and dispatches to async or thread.
-                log.info(f"VERIFY phase 2: downloading and hashing {len(spill)} files with no md5")
-                m, mm, mi, fa = _parallel_verify(
-                    dated_dest_path, spill, nthreads,
-                    compute_md5=True, **kwargs)
-                matched += m
-                mismatched += mm
-                missing += mi
-                failed += fa
-        finally:
-            spill.close()
-    else:
-        # Non-Azure: single-phase thread verify.  The sync get_metadata path
-        # always returns an md5 (S3 etag or locally computed hash), so there
-        # is no deferred phase 2.
-        log.info(f"VERIFY: {n_files} files using {nthreads} threads")
-        matched, mismatched, missing, _, failed = _thread_verify(
-            dated_dest_path, file_info_pages(step * nthreads), nthreads, **kwargs)
+        if use_async:
+            concurrency = VERIFY_ASYNC_CONCURRENCY
+            page_rows = step * concurrency
+            log.info(f"VERIFY {modality}: {n_files} files, {scope}, async concurrency={concurrency}, page={page_rows}{mode}")
+            spill = _DownloadSpill(f"{databasename}.{modality}.verify_download.tmp", buffer_rows=page_rows)
+            try:
+                _verify_async(dest_path, src_paths[modality],
+                              _journal_pages(databasename, modality, ver, page_rows), ledger, central_of,
+                              concurrency=concurrency, queue_size=page_rows, nthreads=nthreads, spill=spill)
+                if len(spill) > 0:
+                    log.info(f"VERIFY {modality} phase 2: downloading and hashing {len(spill)} files with no remote md5")
+                    for group, (ctype, lo, hi, conc) in VERIFY_DOWNLOAD_GROUPS.items():
+                        n_group = spill.count(lo, hi)
+                        if n_group == 0:
+                            continue
+                        log.info(f"VERIFY {modality} phase 2: {n_group} files in {group} group, {ctype}")
+                        if ctype == 'async':
+                            _verify_async(dest_path, None, spill.iter_pages(lo, hi, step * conc), ledger,
+                                          central_of, concurrency=conc, queue_size=step * conc,
+                                          nthreads=nthreads, compute_md5=True)
+                        else:
+                            nworkers = min(conc, nthreads)
+                            _verify_threads(dest_path, None, spill.iter_pages(lo, hi, step * nworkers),
+                                            ledger, central_of, nthreads=nworkers)
+            finally:
+                spill.close()
+        else:
+            page_rows = step * nthreads
+            log.info(f"VERIFY {modality}: {n_files} files, {scope}, {nthreads} threads, page={page_rows}{mode}")
+            _verify_threads(dest_path, src_paths[modality],
+                            _journal_pages(databasename, modality, ver, page_rows), ledger, central_of,
+                            nthreads=nthreads)
 
-    mismatched = set(mismatched)
-    missing = set(missing)
-    failed = set(failed)
-
-    log.info(f"verified {matched} files, {len(mismatched)} mismatched, {len(missing)} missing, "
-             f"{len(failed)} failed to check{' (rerun verify)' if failed else ''}.")
-
-    return matched, mismatched, missing, failed
+    c = ledger.counts
+    verb = "" if update_upload_status else "would be "
+    log.info(f"VERIFY summary ({scope}){mode}: "
+             f"matched {c['matched'] + c['matched_set_upload_time']} "
+             f"(upload time {verb}set for {c['matched_set_upload_time']}); "
+             f"remote missing {c['remote_missing_cleared'] + c['remote_missing_not_uploaded']}, "
+             f"corrupt {c['remote_corrupt_cleared'] + c['remote_corrupt_not_uploaded']} "
+             f"(upload time {verb}cleared for {c['remote_missing_cleared'] + c['remote_corrupt_cleared']}); "
+             f"local changed {c['local_changed']}, local missing {c['local_missing']} (run journal update); "
+             f"unverifiable {c['unverifiable']}; failed {c['failed']}{' (rerun verify)' if c['failed'] else ''}.")
+    return dict(c)
 
 
 # verify a set of files that have been uploaded.  version being None means using the last upload
@@ -1479,7 +1492,8 @@ def mark_as_uploaded(dest_path: FileSystemHelper, databasename:str="journal.db",
         
         (dest_meta, dest_md5, dest_root, fid, fn, size, md5) = _get_file_info2(dest_path, _info, **kwargs)
         
-        if dest_meta is None:
+        # sync get_metadata returns a dict of Nones (not None) for a missing file.
+        if dest_meta is None or dest_meta.get('size') is None:
             log.error(f"missing file {fn} in destination {dest_root}")
             continue
 

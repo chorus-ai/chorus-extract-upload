@@ -127,66 +127,7 @@ def test_write_files_list_mode_streams_lazy_listing(site, tmp_path):
     assert sorted(out.read_text().splitlines()) == expected
 
 
-# ---------------- verify (streamed, local destination -> thread path)
-
-def test_verify_files_streams_and_reports_missing_and_mismatched(site, tmp_path):
-    from chorus_upload import upload_ops
-    import shutil
-    src, db = site
-    run_update(src, db, "v1", "full")
-    patterns = local_ops._compile_patterns(["waveforms"], {})
-    dest = tmp_path / "dest"
-    for page in local_ops.iter_upload_pages(db, ["waveforms"], 100, modality_configs={}):
-        for fn, info in page:
-            target = dest / "v1" / info["central_path"]
-            target.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(src / fn, target)
-    rel_missing = "P001/Waveforms/b.dat"
-    rel_bad = "P001/Waveforms/c.dat"
-    central = {fn: info["central_path"] for page in local_ops.iter_upload_pages(db, ["waveforms"], 100)
-               for fn, info in page}
-    (dest / "v1" / central[rel_missing]).unlink()
-    (dest / "v1" / central[rel_bad]).write_bytes(b"different size")
-
-    n_matched, mismatched, missing, failed = upload_ops.verify_files(
-        FileSystemHelper(str(dest)), db, version="v1", modalities=["waveforms"],
-        page_size=1, compiled_patterns=patterns, modality_configs={})
-    assert (n_matched, mismatched, missing, failed) == (3, {rel_bad}, {rel_missing}, set())
-
-
-def test_thread_verify_failed_check_does_not_stop_run(monkeypatch):
-    from chorus_upload import upload_ops
-    import types
-
-    def fake_info(dated, item, **kw):
-        fid, fn, size, md5, mod = item
-        if fn == "bad":
-            raise TimeoutError("network")
-        return ({'size': size}, md5, fid, fn, size, md5)
-    monkeypatch.setattr(upload_ops, "_get_file_info", fake_info)
-    items = [(i, f"f{i}", 1, "m", "waveforms") for i in range(20)] + [(99, "bad", 1, "m", "waveforms")]
-    pages = [items[i:i + 4] for i in range(0, len(items), 4)]
-    n, mm, mi, _, failed = upload_ops._thread_verify(
-        types.SimpleNamespace(root=types.SimpleNamespace(name="v1")), iter(pages), 3)
-    assert (n, mm, mi, failed) == (20, [], [], ["bad"])
-
-
-def test_download_spill_streams_by_size_and_cleans_up(tmp_path):
-    from chorus_upload import upload_ops
-    spill = upload_ops._DownloadSpill(str(tmp_path / "spill.tmp"), buffer_rows=7)
-    items = [(i, f"f{i}", (i % 3) * 100, None, "waveforms") for i in range(50)]
-    for it in items:
-        spill.append(it)
-    assert len(spill) == 50
-    assert spill.count(100, 200) == len([i for i in items if 100 <= i[2] < 200])
-    got = [r for page in spill.iter_pages(100, float('inf'), 4) for r in page]
-    assert all(len(p) <= 4 for p in spill.iter_pages(0, float('inf'), 4))
-    assert got == [i for i in items if i[2] >= 100]
-    spill.close()
-    assert not (tmp_path / "spill.tmp").exists()
-
-
-# ---------------- file-list lookups (streamed, memory bounded by the list)
+# ---------------- file-list lookups
 
 def test_mark_files_as_deleted_streams(site):
     src, db = site

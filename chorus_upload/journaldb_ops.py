@@ -605,6 +605,30 @@ class JournalDispatcher:
         return JournalTableV2.count_pending_by_size(database_name, modalities, bounds)
 
     @classmethod
+    def latest_upload_by_version(cls, database_name: str) -> dict:
+        """{journal version: latest UPLOAD_DT among its rows (active or not)}; versions with no
+        uploaded row are absent.  v2 journal only."""
+        cls._require_v2(database_name)
+        t = JournalTableV2.table_name
+        with sqlite3.connect(database_name, check_same_thread=False) as conn:
+            rows = conn.execute(f"SELECT versions.VERSION, MAX(uploads.UPLOAD_DT) FROM {t}"
+                                f" JOIN versions ON versions.id = {t}.VERSION_ID"
+                                f" JOIN uploads ON uploads.id = {t}.UPLOAD_DT_ID"
+                                " GROUP BY versions.VERSION").fetchall()
+        conn.close()
+        return dict(rows)
+
+    @classmethod
+    def mark_as_not_uploaded(cls, database_name: str, fid_args: list) -> int:
+        """Clear the upload time of [(FILE_ID,), ...] so the files are uploaded again.  v2 journal only."""
+        cls._require_v2(database_name)
+        return SQLiteDB.update(database_name = database_name,
+                               table_name = JournalTableV2.table_name,
+                               sets = ["UPLOAD_DT_ID = NULL"],
+                               params = fid_args,
+                               where_clause = "FILE_ID = ?")
+
+    @classmethod
     def get_files_by_paths(cls, database_name: str, paths, **kwargs):
         """Rows for the given local paths via the path index (created on first use).  v2 journal only."""
         cls._require_v2(database_name)

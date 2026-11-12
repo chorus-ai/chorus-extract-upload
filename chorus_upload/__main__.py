@@ -344,7 +344,7 @@ def _upload_files(args, config, journal_fn):
     
 # helper to report file verification
 def _verify_files(args, config, journal_fn):
-    log.info("This will NOT download files to verify md5.  It relies on file size and previously saved md5.")
+    log.info("Verifying journal entries against local files and uploaded copies.  Remote files without an md5 are downloaded to compute one.")
     
     default_modalities = config_helper.get_modalities(config)
     mods = args.modalities.split(',') if ("modalities" in vars(args)) and (args.modalities is not None) else default_modalities
@@ -362,7 +362,16 @@ def _verify_files(args, config, journal_fn):
     nthreads = config_helper.get_config(config).get('nthreads', 1)
     page_size = config_helper.get_config(config).get('page_size', DEFAULT_REMOTE_OP_PAGE_SIZE)
     
+    # local roots, one per modality, for the local-file check.
+    src_paths = {}
+    for mod, mod_config in mod_configs.items():
+        mod_client, mod_internal_host = storage_helper._make_client(mod_config)
+        src_paths[mod] = FileSystemHelper(config_helper.get_path_str(mod_config), client = mod_client, internal_host = mod_internal_host)
+
     upload_ops.verify_files(centralfs, journal_fn, version = args.version, modalities = mods,
+                            src_paths = src_paths,
+                            all_versions = args.all_versions,
+                            update_upload_status = args.update_upload_status,
                             **{'num_threads': nthreads, 'page_size': page_size, 'verbose' : args.verbose, 'modality_configs': mod_configs, 'compiled_patterns': compiled_patterns})
     
     
@@ -499,10 +508,18 @@ if __name__ == "__main__":
 
     
     parser_verify = file_subparsers.add_parser("verify", 
-                                          help = "verify a submssion version in cloud. Note Upload-files also verifies. WARNING files will be downloaded for md5 computation")
-    parser_verify.add_argument("--version", 
+                                          help = "verify active journal entries against local files and the uploaded copies. "
+                                                 "WARNING remote files without an md5 will be downloaded for md5 computation")
+    verify_scope = parser_verify.add_mutually_exclusive_group()
+    verify_scope.add_argument("--version", 
                                help="datetime of a submission version.  defaults to most recent version.", 
                                required=False)
+    verify_scope.add_argument("--all-versions", action="store_true",
+                               help="verify the active files of all versions.")
+    parser_verify.add_argument("--update-upload-status", action="store_true",
+                               help="apply journal changes: set a missing upload time when the uploaded copy matches; "
+                                    "clear the upload time when it is missing or corrupt (so it is re-uploaded). "
+                                    "Without this flag, verify only reports.")
     parser_verify.add_argument("--modalities", 
                                help="list of modalities to include in the journal update. defaults to 'Waveforms,Images,OMOP,Metadata'.  case sensitive.", 
                                required=False)
