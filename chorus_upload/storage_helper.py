@@ -51,6 +51,9 @@ from pathlib import Path, WindowsPath, PureWindowsPath, PurePosixPath
 # from pathlib import PosixPath
 import hashlib
 import math
+import re
+import fnmatch
+import stat
 from typing import Optional, Union
 import sys
 if sys.version_info >= (3, 11):
@@ -893,6 +896,76 @@ class FileSystemHelper:
         log.info("completed retrieving files.")
         
 
+
+    def walk_files_iter(self, pattern: str = None, recursive: bool = True, page_size: int = 1000):
+        """
+        Local roots only: same files as get_files_iter, found by a directory walk (os.scandir)
+        that also returns size and modify time from a single stat per file.
+
+        Returns None when the root is not local or the pattern is outside what the walk
+        reproduces (the caller then uses get_files_iter); otherwise a generator of lists of
+        (relative posix path, size, modify_time_us).
+        """
+        if self.is_cloud:
+            return None
+        glob_pattern = self.convert_pattern(pattern, recursive)
+        parts = glob_pattern.split("/")
+        # pathlib glob semantics reproduced here: every component matches case-insensitively,
+        # hidden names included; "**" is zero or more directories and does not follow links.
+        if (any(p in ("", ".", "..") for p in parts) or parts.count("**") > 1 or parts[-1] == "**"
+                or any(("**" in p) and (p != "**") for p in parts)):
+            return None
+        matchers = [None if p == "**" else re.compile(fnmatch.translate(p), re.IGNORECASE).match for p in parts]
+        last = len(parts) - 1
+
+        def entries(dirpath):
+            try:
+                with os.scandir(dirpath) as it:
+                    yield from it
+            except (PermissionError, FileNotFoundError, NotADirectoryError) as e:
+                log.warning(f"skipping unreadable directory: {type(e).__name__}")
+
+        def walk(dirpath, rel, idx):
+            match = matchers[idx]
+            if match is None:
+                yield from walk(dirpath, rel, idx + 1)          # "**" matching no directory
+                for e in entries(dirpath):
+                    if e.is_dir(follow_symlinks = False):
+                        yield from walk(e.path, rel + e.name + "/", idx)
+                return
+            for e in entries(dirpath):
+                if not match(e.name):
+                    continue
+                if idx == last:
+                    try:
+                        info = e.stat()
+                    except OSError:
+                        continue                                  # broken link: not a file
+                    if stat.S_ISREG(info.st_mode):
+                        yield (rel + e.name, info.st_size,
+                               int(math.floor(info.st_mtime * 1e6)) if info.st_mtime else None)
+                else:
+                    try:
+                        is_dir = e.is_dir()
+                    except OSError:
+                        is_dir = False
+                    if is_dir:
+                        yield from walk(e.path, rel + e.name + "/", idx + 1)
+
+        def pages():
+            log.info(f"walking files for {pattern} converted to {glob_pattern}")
+            page = []
+            for item in walk(str(self.root), "", 0):
+                page.append(item)
+                if len(page) >= page_size:
+                    log.info(f"Found {len(page)} files in {pattern}")
+                    yield page
+                    page = []
+            if page:
+                yield page
+            log.info("completed retrieving files.")
+
+        return pages()
 
     # copy 1 file from one location to another.
     def copy_file_to(self, relpath: Union[str, tuple], dest_path: Union[Self, Path, CloudPath], verbose: bool = False, **kwargs):

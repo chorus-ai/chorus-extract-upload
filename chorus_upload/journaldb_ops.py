@@ -1795,29 +1795,21 @@ class ActiveSnapshot:
         self.path = database_name + f".{modality}.update_snapshot.tmp"
         self._remove()
         self.count = 0
-        with self._connect() as c:
-            c.execute("CREATE TABLE active (FILE_ID INTEGER PRIMARY KEY, PATH TEXT NOT NULL,"
-                      " SIZE INTEGER, SRC_MODTIME_us INTEGER, MD5 TEXT, UPLOAD_DT TEXT, VERSION TEXT,"
-                      " SEEN INTEGER NOT NULL DEFAULT 0)")
-            for rows in JournalDispatcher.iter_files_batches(database_name, [modality], batch, active=True):
-                c.executemany("INSERT INTO active (FILE_ID, PATH, SIZE, SRC_MODTIME_us, MD5, UPLOAD_DT, VERSION)"
-                              " VALUES (?,?,?,?,?,?,?)",
-                              [(fid, fn, size, mtime, md5, up, ver)
-                               for (fid, fn, mtime, size, md5, _mod, _inv, ver, up) in rows])
-                self.count += len(rows)
-            c.execute("CREATE INDEX active_path ON active (PATH)")
-
-    @contextmanager
-    def _connect(self):
-        conn = sqlite3.connect(self.path, check_same_thread=False)
-        try:
-            # scratch data: durability is not needed.
-            conn.execute("PRAGMA synchronous=OFF")
-            conn.execute("PRAGMA journal_mode=OFF")
-            yield conn
-            conn.commit()
-        finally:
-            conn.close()
+        # one connection for the whole run (single thread); scratch data, durability not needed.
+        self._conn = c = sqlite3.connect(self.path)
+        c.execute("PRAGMA synchronous=OFF")
+        c.execute("PRAGMA journal_mode=OFF")
+        c.execute("CREATE TABLE active (FILE_ID INTEGER PRIMARY KEY, PATH TEXT NOT NULL,"
+                  " SIZE INTEGER, SRC_MODTIME_us INTEGER, MD5 TEXT, UPLOAD_DT TEXT, VERSION TEXT,"
+                  " SEEN INTEGER NOT NULL DEFAULT 0)")
+        for rows in JournalDispatcher.iter_files_batches(database_name, [modality], batch, active=True):
+            c.executemany("INSERT INTO active (FILE_ID, PATH, SIZE, SRC_MODTIME_us, MD5, UPLOAD_DT, VERSION)"
+                          " VALUES (?,?,?,?,?,?,?)",
+                          [(fid, fn, size, mtime, md5, up, ver)
+                           for (fid, fn, mtime, size, md5, _mod, _inv, ver, up) in rows])
+            self.count += len(rows)
+        c.execute("CREATE INDEX active_path ON active (PATH)")
+        c.commit()
 
     def _remove(self):
         if os.path.exists(self.path):
@@ -1828,33 +1820,34 @@ class ActiveSnapshot:
         paths = list(paths)
         out = {}
         chunk = 500   # stay under SQLITE_MAX_VARIABLE_NUMBER on old SQLite builds (999)
-        with self._connect() as c:
-            for i in range(0, len(paths), chunk):
-                part = paths[i:i + chunk]
-                q = ("SELECT PATH, FILE_ID, SIZE, SRC_MODTIME_us, MD5, UPLOAD_DT, VERSION FROM active"
-                     f" WHERE PATH IN ({','.join('?' * len(part))}) ORDER BY FILE_ID")
-                for (p, *entry) in c.execute(q, part):
-                    out.setdefault(p, []).append(tuple(entry))
+        for i in range(0, len(paths), chunk):
+            part = paths[i:i + chunk]
+            q = ("SELECT PATH, FILE_ID, SIZE, SRC_MODTIME_us, MD5, UPLOAD_DT, VERSION FROM active"
+                 f" WHERE PATH IN ({','.join('?' * len(part))}) ORDER BY FILE_ID")
+            for (p, *entry) in self._conn.execute(q, part):
+                out.setdefault(p, []).append(tuple(entry))
         return out
 
     def mark_seen(self, fids):
         if fids:
-            with self._connect() as c:
-                c.executemany("UPDATE active SET SEEN = 1 WHERE FILE_ID = ?", [(f,) for f in fids])
+            self._conn.executemany("UPDATE active SET SEEN = 1 WHERE FILE_ID = ?", [(f,) for f in fids])
+            self._conn.commit()
 
     def iter_unseen(self, batch: int):
         """Yield lists of (FILE_ID, PATH) for entries never marked seen, in FILE_ID order."""
         last = 0
         while True:
-            with self._connect() as c:
-                rows = c.execute("SELECT FILE_ID, PATH FROM active WHERE SEEN = 0 AND FILE_ID > ?"
-                                 " ORDER BY FILE_ID LIMIT ?", (last, batch)).fetchall()
+            rows = self._conn.execute("SELECT FILE_ID, PATH FROM active WHERE SEEN = 0 AND FILE_ID > ?"
+                                      " ORDER BY FILE_ID LIMIT ?", (last, batch)).fetchall()
             if not rows:
                 return
             last = rows[-1][0]
             yield rows
 
     def close(self):
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None
         self._remove()
 
     def __enter__(self):

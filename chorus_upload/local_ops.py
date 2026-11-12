@@ -406,15 +406,26 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
         lock = threading.Lock()
         tuner = _AdaptiveThreads(initial=min(4, nthreads), max_threads=nthreads)
-        persistent_executor = None
+        executor, executor_threads = None, 0
 
-        for paths in root.get_files_iter(pattern = pattern, page_size = page_size ):
+        # local source: one directory walk gives path, size and modify time (one stat per file),
+        # so unchanged files are settled here without the thread pool.  Other sources: glob.
+        walked = root.walk_files_iter(pattern = pattern, page_size = page_size)
+        pages = walked if walked is not None else root.get_files_iter(pattern = pattern, page_size = page_size)
+
+        for paths in pages:
             page_start = time.time()
             page_bytes = 0
             modality_files_to_inactivate_in_iter = {}
-            paths_set = set(paths)
-            # same normalization as _update_journal_one_file applies to relpath.
-            page_entries = snapshot.lookup({Path(p).as_posix() for p in paths_set})
+            if walked is not None:
+                known = {p: (size, mtime) for (p, size, mtime) in paths}
+                paths_set = set(known)
+                page_entries = snapshot.lookup(paths_set)     # walk paths are already posix
+            else:
+                known = {}
+                paths_set = set(paths)
+                # same normalization as _update_journal_one_file applies to relpath.
+                page_entries = snapshot.lookup({Path(p).as_posix() for p in paths_set})
             seen_ids = []
 
             # reconcile an inconsistent journal: several active rows for one path.  Keep the
@@ -432,12 +443,30 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
             if len(dup_args) > 0:
                 total_deleted += JournalDispatcher.inactivate_journal_entries(databasename, curtimestamp, dup_args)
 
-            ctx = (contextlib.nullcontext(persistent_executor)
-                   if persistent_executor is not None
-                   else concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads))
-            with ctx as executor:
+            # unchanged files (one active row, same size and modify time, path fits the pattern)
+            # are kept on this thread; only new or changed files go to the pool for md5.
+            to_check = []
+            for relpath in paths_set:
+                entries = page_entries.get(relpath) if relpath in known else None
+                if (entries is not None and len(entries) == 1
+                        and known[relpath] == (entries[0][1], entries[0][2])
+                        and compiled_pattern.parse(relpath) is not None):
+                    perf.add_file(entries[0][1])
+                    seen_ids.append(entries[0][0])
+                    if verbose:
+                        log.debug(f"KEEP {relpath}")
+                else:
+                    to_check.append(relpath)
+
+            if len(to_check) > 0:
+                # one pool reused across pages; rebuilt only when the tuner changes the thread count.
+                if executor_threads != tuner.nthreads:
+                    if executor is not None:
+                        executor.shutdown(wait = True)
+                    executor = concurrent.futures.ThreadPoolExecutor(max_workers = tuner.nthreads)
+                    executor_threads = tuner.nthreads
                 futures = []
-                for relpath in paths_set:
+                for relpath in to_check:
                     futures.append(executor.submit(_update_journal_one_file, root, relpath, modality, curtimestamp,
                                                    page_entries,
                                                    compiled_pattern, None if version_in_pattern else journal_version,
@@ -477,8 +506,6 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
 
             snapshot.mark_seen(seen_ids)
             tuner.update(page_bytes, time.time() - page_start)
-            if tuner.locked and persistent_executor is None:
-                persistent_executor = concurrent.futures.ThreadPoolExecutor(max_workers=tuner.nthreads)
 
             # remove the outdated items.
             del_args_in_iter = []
@@ -537,8 +564,8 @@ def _update_journal(root: FileSystemHelper, modalities: list[str],
         elif to_delete > 0:
             log.info(f"deleted/outdated {total_deleted} of {to_delete} from journal." )
 
-        if persistent_executor is not None:
-            persistent_executor.shutdown(wait=True)
+        if executor is not None:
+            executor.shutdown(wait=True)
 
         log.info(f"Total added {total_count} and inactivated {total_deleted} files in journal.db")
         log.info(f"Journal Update Elapsed time {time.time() - start} s")

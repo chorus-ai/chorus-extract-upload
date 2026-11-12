@@ -227,3 +227,88 @@ def test_update_journal_reconciles_duplicate_active_rows(site, mode):
     before = journal_rows(db)
     run_update(src, db, "v3", mode)               # consistent now: nothing changes
     assert journal_rows(db) == before
+
+
+# ---------------- directory walk for local sources (journal update)
+
+WALK_PATTERNS = ["{patient_id:w}/Waveforms/{filepath}", "OMOP/{filepath}", "Metadata/{filepath}",
+                 "{version:w}/{patient_id:w}/Images/{filepath}", "{patient_id}/Waveforms/*.dat", None]
+
+
+@pytest.fixture
+def tree(tmp_path):
+    """Mixed case, hidden names, nesting, links to a file / a directory, a broken link."""
+    src = tmp_path / "src"
+    for rel in ["P001/Waveforms/a.dat", "P001/waveforms/b.DAT", "P001/WAVEFORMS/sub/deep/c.dat",
+                "P002/Waveforms/.hidden", "P002/Waveforms/.hid/d.dat", "P002/Other/e.dat",
+                "omop/person.csv", "OMOP/sub/visit.csv", "Metadata/m.json", "top.txt",
+                "v1/P003/Images/i.dcm", "v1/P003/images/s/j.dcm"]:
+        write(src, rel, rel.encode(), mtime=1_700_000_000)
+    (src / "P002/Waveforms/emptydir").mkdir()
+    outside = tmp_path / "outside"
+    write(outside, "x/linked.dat", b"linked")
+    os.symlink(outside / "x/linked.dat", src / "P001/Waveforms/filelink.dat")
+    os.symlink(outside / "x", src / "P001/Waveforms/dirlink")       # below "**": not followed
+    os.symlink(outside, src / "P009")                                # at "*": followed
+    os.symlink(src / "nowhere", src / "P001/Waveforms/broken.dat")
+    return src
+
+
+@pytest.mark.parametrize("pattern", WALK_PATTERNS)
+def test_walk_finds_the_same_files_as_glob(tree, pattern):
+    fs = FileSystemHelper(str(tree))
+    globbed = sorted(p for page in fs.get_files_iter(pattern=pattern, page_size=3) for p in page)
+    pages = list(fs.walk_files_iter(pattern=pattern, page_size=3))
+    walked = sorted(p for page in pages for (p, _, _) in page)
+    assert walked == globbed and len(walked) == len(set(walked))
+    assert all(len(page) <= 3 for page in pages)
+    for page in pages:                                   # same size / modify time as get_metadata
+        for p, size, mtime in page:
+            meta = FileSystemHelper.get_metadata(root=fs.root, path=p)
+            assert (size, mtime) == (meta['size'], meta['modify_time_us'])
+
+
+def test_walk_declines_patterns_it_does_not_reproduce(tree):
+    fs = FileSystemHelper(str(tree))
+    for pattern in ["**/x/**/*.dat", "../{filepath}", "a**/b"]:
+        assert fs.walk_files_iter(pattern=pattern) is None
+
+
+def test_unchanged_files_skip_the_pool(site, monkeypatch):
+    src, db = site
+    run_update(src, db, "v1", "full")
+    checked = []
+    real = local_ops._update_journal_one_file
+    monkeypatch.setattr(local_ops, "_update_journal_one_file",
+                        lambda root, relpath, *a, **kw: checked.append(relpath) or real(root, relpath, *a, **kw))
+    run_update(src, db, "v2", "full")
+    assert checked == [] and journal_rows(db) == {p: [(True, "v1")] for p in journal_rows(db)}
+
+    write(src, "P001/Waveforms/c.dat", b"changed!", mtime=1_700_000_500)
+    write(src, "P002/Waveforms/e.dat", b"new")
+    (src / "P001/Waveforms/b.dat").unlink()
+    run_update(src, db, "v3", "full")
+    assert sorted(checked) == ["P001/Waveforms/c.dat", "P002/Waveforms/e.dat"]
+    rows = journal_rows(db)
+    assert rows["P001/Waveforms/c.dat"] == [(False, "v1"), (True, "v3")]
+    assert rows["P002/Waveforms/e.dat"] == [(True, "v3")]
+    assert rows["P001/Waveforms/b.dat"] == [(False, "v1")]
+    assert rows["P001/Waveforms/a.dat"] == [(True, "v1")]
+
+
+def test_walk_and_glob_sources_give_the_same_journal(site, tmp_path, monkeypatch):
+    src, db = site
+    db_glob = str(tmp_path / "glob.db")
+
+    def scenario(dbname):
+        run_update(src, dbname, "v1", "full")
+        write(src, "P001/Waveforms/c.dat", b"changed!", mtime=1_700_000_500)
+        (src / "P001/Waveforms/b.dat").unlink()
+        run_update(src, dbname, "v2", "full")
+        write(src, "P001/Waveforms/c.dat", b"P001/Waveforms/c.dat", mtime=1_700_000_000)   # restore
+        write(src, "P001/Waveforms/b.dat", b"P001/Waveforms/b.dat", mtime=1_700_000_000)
+        return journal_rows(dbname)
+
+    walked = scenario(db)
+    monkeypatch.setattr(FileSystemHelper, "walk_files_iter", lambda self, **kw: None)   # as a cloud source
+    assert scenario(db_glob) == walked
